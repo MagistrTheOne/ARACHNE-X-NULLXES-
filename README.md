@@ -453,18 +453,9 @@ Nothing in this Model Card should be interpreted as altering or restricting the 
 We kindly encourage citation of our work if you find it useful.
 
 ```
-@misc{meituanlongcatteam2025longcatvideotechnicalreport,
-      title={LongCat-Video Technical Report}, 
-      author={Meituan LongCat Team and Xunliang Cai and Qilong Huang and Zhuoliang Kang and Hongyu Li and Shijun Liang and Liya Ma and Siyu Ren and Xiaoming Wei and Rixu Xie and Tong Zhang},
-      year={2025},
-      eprint={2510.22200},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2510.22200}, 
-}
-@misc{meituanlongcatteam2025longcatvideoavatartechnicalreport,
-      title={LongCat-Video-Avatar Technical Report}, 
-      author={Meituan LongCat Team},
+@misc{nullxes2025arachnexavatartechnicalreport,
+      title={ARACHNE-X: Hyper-Realistic Avatar Generation Technical Report}, 
+      author={NULLXES LLC and Advanced Avatar Engineering Team},
       year={2025},
       eprint={},
       archivePrefix={arXiv},
@@ -475,8 +466,11 @@ We kindly encourage citation of our work if you find it useful.
 
 ## Acknowledgements
 
-We would like to thank the contributors to the [Wan](https://huggingface.co/Wan-AI), [UMT5-XXL](https://huggingface.co/google/umt5-xxl), [Diffusers](https://github.com/huggingface/diffusers) and [HuggingFace](https://huggingface.co) repositories, for their open research.
+We would like to thank the contributors to the [LongCat-Video](https://github.com/meituan-longcat), [Wan](https://huggingface.co/Wan-AI), [UMT5-XXL](https://huggingface.co/google/umt5-xxl), [Diffusers](https://github.com/huggingface/diffusers) and [HuggingFace](https://huggingface.co) repositories, for their open research.
 
 
 ## Contact
-Please contact us at <a href="mailto:longcat-team@meituan.com">longcat-team@meituan.com</a> or join our <a href="assets/wechat_group.png">WeChat Group</a> if you have any questions.
+For issues, support, or inquiries about ARACHNE-X:
+- Email: <a href="mailto:nullxesinfo@gmail.com">nullxesinfo@gmail.com</a>
+- GitHub Issues: [ARACHNE-X Issues](https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-/issues)
+- Company: NULLXES LLC
