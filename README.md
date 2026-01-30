@@ -399,7 +399,8 @@ streamlit run ./run_streamlit.py --server.fileWatcherType none --server.headless
 ### Text-to-Video
 The *Text-to-Video* MOS evaluation results on our internal benchmark.
 
-| **MOS score** | **Veo3** | **PixVerse-V5** | **Wan 2.2-T2V-A14B** | **LongCat-Video** |
+| **MOS score** | **Veo3** | **PixVerse-V5** | **Wan 2.2-T2V-A14B** | **
+ARACHNE-X-Video** |
 |---------------|-------------------|--------------------|-------------|-------------|
 | **Accessibility** | Proprietary | Proprietary | Open Source | Open Source |
 | **Architecture** | - | - | MoE | Dense |
@@ -413,7 +414,8 @@ The *Text-to-Video* MOS evaluation results on our internal benchmark.
 ### Image-to-Video
 The *Image-to-Video* MOS evaluation results on our internal benchmark.
 
-| **MOS score** | **Seedance 1.0** | **Hailuo-02** | **Wan 2.2-I2V-A14B** | **LongCat-Video** |
+| **MOS score** | **Seedance 1.0** | **Hailuo-02** | **Wan 2.2-I2V-A14B** | **
+ARACHNE-X-Video** |
 |---------------|-------------------|--------------------|-------------|-------------|
 | **Accessibility** | Proprietary | Proprietary | Open Source | Open Source |
 | **Architecture** | - | - | MoE | Dense |
