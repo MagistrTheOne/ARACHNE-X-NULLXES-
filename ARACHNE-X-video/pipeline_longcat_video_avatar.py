@@ -2,6 +2,7 @@ import os
 from typing import Any, Dict, List, Optional, Union, Literal
 
 import gc
+import time
 import math
 import torch
 import loguru
@@ -28,6 +29,8 @@ import html
 import scipy.signal as ss
 import pyloudnorm as pyln
 from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
+from longcat_video.audio_process.multi_stream_processor import MultiStreamAudioProcessor
+from longcat_video.utils.monitoring import MetricsLogger, sha256_of_audio_array
 from transformers import Wav2Vec2FeatureExtractor
 from diffusers.image_processor import is_valid_image, is_valid_image_imagelist
 import warnings
@@ -140,6 +143,9 @@ class LongCatVideoAvatarPipeline:
 
         self.audio_encoder=audio_encoder
         self.wav2vec_feature_extractor = wav2vec_feature_extractor
+        # audio processing and monitoring
+        self.audio_processor = MultiStreamAudioProcessor()
+        self.metrics = MetricsLogger()
 
     def _get_t5_prompt_embeds(
         self,
@@ -527,6 +533,24 @@ class LongCatVideoAvatarPipeline:
     @torch.no_grad()
     def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
             
+        # optional disk cache for audio embeddings to accelerate repeated runs
+        cache_dir = getattr(self, 'audio_cache_dir', './audio_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+
+        key = sha256_of_audio_array(np.ascontiguousarray(speech_array)) + f"_fps{fps}_sr{sample_rate}"
+        cache_path = os.path.join(cache_dir, key + '.npz')
+
+        if os.path.exists(cache_path):
+            try:
+                with self.metrics.timeit('audio_cache_load'):
+                    npz = np.load(cache_path)
+                    audio_emb = torch.from_numpy(npz['audio_emb']).to(device=device)
+                    # return shape (T, B, D)
+                    return audio_emb
+            except Exception:
+                # fallthrough to recompute
+                pass
+
         audio_duration = len(speech_array) / sample_rate
         video_length = audio_duration * fps
 
@@ -543,10 +567,42 @@ class LongCatVideoAvatarPipeline:
         audio_feature = audio_feature.unsqueeze(0)
 
         # audio embedding
-        embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
+        with self.metrics.timeit('wav2vec_encode'):
+            embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
 
         audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
         audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
+
+
+        # try to compute fused multi-stream features and persist to cache
+        try:
+            fused_emb = None
+            try:
+                # audio_emb shape may be [T, B, D] or [T, D]
+                a = audio_emb
+                if a.dim() == 3:
+                    # [T, B, D] -> [B, T, D]
+                    wav2vec_feats = a.permute(1, 0, 2).contiguous()
+                elif a.dim() == 2:
+                    wav2vec_feats = a.unsqueeze(0)
+                else:
+                    wav2vec_feats = a
+
+                processor_in = wav2vec_feats.cpu()
+                proc_out = self.audio_processor(processor_in)
+                fused_emb = proc_out.get('fused_embeddings', None)
+            except Exception:
+                fused_emb = None
+
+            if fused_emb is not None:
+                np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy(), fused_emb=fused_emb.cpu().numpy())
+            else:
+                np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy())
+
+            self.metrics.record('audio_cache_saved', 1)
+        except Exception:
+            pass
+
         return audio_emb
 
     @torch.no_grad()
@@ -716,6 +772,7 @@ class LongCatVideoAvatarPipeline:
         if context_parallel_util.get_cp_size() > 1:
             torch.distributed.barrier(group=context_parallel_util.get_cp_group())
 
+        start_time = time.time()
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -759,6 +816,13 @@ class LongCatVideoAvatarPipeline:
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or (i + 1) % self.scheduler.order == 0:
                     progress_bar.update()
+
+        total_time = time.time() - start_time
+        try:
+            self.metrics.record('denoise_seconds', total_time)
+            self.metrics.record('denoise_p95', total_time)
+        except Exception:
+            pass
 
         self._current_timestep = None
 

@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 import numpy as np
+import os
 
 
 class FacialAnchorEmbedder(nn.Module):
@@ -123,62 +124,183 @@ class FacialAnchorConstrainer(nn.Module):
         return constrained_latents
 
 
-class LandmarkExtractor(nn.Module):
-    """
-    Extracts 68 facial landmarks from video frames using lightweight detector.
-    Can use MediaPipe, DLIB, or other facial detection frameworks.
-    """
+class KalmanFilter2D:
+    """Simple 2D Kalman filter for (x,y) with velocity state for temporal smoothing."""
+    def __init__(self, device='cpu', process_var: float = 1e-3, measure_var: float = 1e-2):
+        self.device = device
+        # State: [x, y, vx, vy]
+        self.F = torch.tensor([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=torch.float32, device=device)
+        self.H = torch.tensor([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=torch.float32, device=device)
+        self.Q = torch.eye(4, device=device) * process_var
+        self.R = torch.eye(2, device=device) * measure_var
+
+    def init_state(self, x: float, y: float):
+        self.x = torch.tensor([x, y, 0.0, 0.0], dtype=torch.float32, device=self.device)
+        self.P = torch.eye(4, dtype=torch.float32, device=self.device)
+
+    def predict(self):
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.t() + self.Q
+
+    def update(self, meas_x: float, meas_y: float):
+        z = torch.tensor([meas_x, meas_y], dtype=torch.float32, device=self.device)
+        y = z - (self.H @ self.x)
+        S = self.H @ self.P @ self.H.t() + self.R
+        K = self.P @ self.H.t() @ torch.inverse(S)
+        self.x = self.x + K @ y
+        I = torch.eye(self.P.shape[0], device=self.device)
+        self.P = (I - K @ self.H) @ self.P
+
+    def state(self):
+        return self.x[0].item(), self.x[1].item()
+
+
+class LandmarkDetectorV2(nn.Module):
+    """Robust landmark detector with MediaPipe primary and optional DLIB fallback. Returns coords and per-landmark confidence."""
     def __init__(self, device: str = "cuda"):
         super().__init__()
         self.device = device
+        self.use_mediapipe = False
+        self.use_dlib = False
         try:
             import mediapipe as mp
+            self.mp = mp
             self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
                 static_image_mode=False,
                 max_num_faces=1,
-                min_detection_confidence=0.5
+                min_detection_confidence=0.3,
+                min_tracking_confidence=0.3
             )
             self.use_mediapipe = True
-        except ImportError:
+        except Exception:
             self.use_mediapipe = False
-            print("MediaPipe not available, using DLIB fallback")
-    
-    def forward(self, video_frames: torch.Tensor) -> torch.Tensor:
+
+        if not self.use_mediapipe:
+            try:
+                import dlib
+                import cv2
+                self.dlib = dlib
+                self.cv2 = cv2
+                # shape predictor must be provided by deployment; try local file
+                predictor_path = "shape_predictor_68_face_landmarks.dat"
+                if os.path.exists(predictor_path):
+                    self.shape_predictor = dlib.shape_predictor(predictor_path)
+                    self.detector = dlib.get_frontal_face_detector()
+                    self.use_dlib = True
+                else:
+                    self.use_dlib = False
+            except Exception:
+                self.use_dlib = False
+
+    def forward(self, frame_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Args:
-            video_frames: [B, T, H, W, 3] RGB frames normalized to 0-255
-            
+            frame_rgb: HxW x3 uint8 RGB image
         Returns:
-            landmarks: [B, T, 68, 2] normalized facial keypoints (0-1)
+            lmks: (68,2) normalized coords (0..1), confidences: (68,) floats 0..1
         """
-        B, T, H, W, C = video_frames.shape
-        landmarks_list = []
-        
-        for b in range(B):
-            frame_landmarks = []
-            for t in range(T):
-                frame = (video_frames[b, t] * 255).byte().cpu().numpy()
-                
-                if self.use_mediapipe:
-                    results = self.mp_face_mesh.process(frame)
-                    if results.multi_face_landmarks:
-                        # Extract first face landmarks
-                        face_landmarks = results.multi_face_landmarks[0].landmark
-                        # Convert to normalized coordinates, select key 68 points
-                        lmks = np.array([[lm.x, lm.y] for lm in face_landmarks[:68]])
-                    else:
-                        # Fallback to zeros if no face detected
-                        lmks = np.zeros((68, 2))
+        H, W, _ = frame_rgb.shape
+        if self.use_mediapipe:
+            results = self.mp_face_mesh.process(frame_rgb)
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0].landmark
+                lmks = np.array([[lm.x, lm.y] for lm in face_landmarks[:68]], dtype=np.float32)
+                # MediaPipe doesn't expose per-point confidence; use overall detection confidence approximation
+                det_conf = float(results.multi_face_landmarks[0].landmark[0].visibility) if hasattr(results.multi_face_landmarks[0].landmark[0], 'visibility') else 0.9
+                confidences = np.clip(np.ones(68, dtype=np.float32) * det_conf, 0.0, 1.0)
+                return lmks, confidences
+            else:
+                return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
+
+        if self.use_dlib:
+            gray = self.cv2.cvtColor(frame_rgb, self.cv2.COLOR_RGB2GRAY)
+            dets = self.detector(gray, 1)
+            if len(dets) > 0:
+                d = dets[0]
+                shape = self.shape_predictor(gray, d)
+                coords = np.zeros((68, 2), dtype=np.float32)
+                for i in range(68):
+                    coords[i, 0] = shape.part(i).x / W
+                    coords[i, 1] = shape.part(i).y / H
+                confidences = np.ones(68, dtype=np.float32) * 0.8
+                return coords, confidences
+            else:
+                return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
+
+        # Fallback: no detector available
+        return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
+
+
+class TemporalLandmarkTracker:
+    """Tracks and smooths landmarks across frames using per‑point Kalman filters and exponential smoothing of confidence."""
+    def __init__(self, device='cpu', num_landmarks: int = 68, smooth_alpha: float = 0.6):
+        self.device = device
+        self.num_landmarks = num_landmarks
+        self.smooth_alpha = smooth_alpha
+        self.initialized = False
+        self.kalman_filters = [KalmanFilter2D(device=device) for _ in range(num_landmarks)]
+        self.prev_conf = np.zeros(num_landmarks, dtype=np.float32)
+
+    def reset(self):
+        self.initialized = False
+        self.prev_conf = np.zeros(self.num_landmarks, dtype=np.float32)
+        self.kalman_filters = [KalmanFilter2D(device=self.device) for _ in range(self.num_landmarks)]
+
+    def smooth(self, landmarks: np.ndarray, confidences: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        landmarks: (T, 68, 2) numpy
+        confidences: (T, 68) numpy
+        Returns smoothed landmarks and smoothed confidences of same shape (T,68,2) and (T,68)
+        """
+        T = landmarks.shape[0]
+        out_lms = np.zeros_like(landmarks, dtype=np.float32)
+        out_conf = np.zeros_like(confidences, dtype=np.float32)
+
+        # Initialize filters with first frame if not initialized
+        if not self.initialized and T > 0:
+            first = landmarks[0]
+            first_conf = confidences[0]
+            for i in range(self.num_landmarks):
+                x0, y0 = float(first[i, 0]), float(first[i, 1])
+                if first_conf[i] > 0:
+                    self.kalman_filters[i].init_state(x0, y0)
+            self.prev_conf = first_conf.copy()
+            self.initialized = True
+
+        for t in range(T):
+            for i in range(self.num_landmarks):
+                meas_x, meas_y = float(landmarks[t, i, 0]), float(landmarks[t, i, 1])
+                conf = float(confidences[t, i])
+                kf = self.kalman_filters[i]
+                if conf > 0 and hasattr(kf, 'x'):
+                    kf.predict()
+                    kf.update(meas_x, meas_y)
+                    sx, sy = kf.state()
+                    # exponential smoothing with measured value weighted by confidence
+                    prev_x = out_lms[t-1, i, 0] if t > 0 else sx
+                    prev_y = out_lms[t-1, i, 1] if t > 0 else sy
+                    alpha = self.smooth_alpha * conf + 0.01
+                    sm_x = alpha * sx + (1 - alpha) * prev_x
+                    sm_y = alpha * sy + (1 - alpha) * prev_y
+                    out_lms[t, i, 0] = sm_x
+                    out_lms[t, i, 1] = sm_y
                 else:
-                    lmks = np.zeros((68, 2))
-                
-                frame_landmarks.append(torch.tensor(lmks, dtype=torch.float32))
-            
-            landmarks_list.append(torch.stack(frame_landmarks, dim=0))
-        
-        # Stack all batches: [B, T, 68, 2]
-        all_landmarks = torch.stack(landmarks_list, dim=0).to(self.device)
-        return all_landmarks
+                    # no measurement: predict only or copy previous
+                    if hasattr(kf, 'x'):
+                        kf.predict()
+                        px, py = kf.state()
+                        out_lms[t, i, 0] = px
+                        out_lms[t, i, 1] = py
+                    else:
+                        out_lms[t, i, :] = landmarks[t, i, :]
+
+                # smooth confidence
+                prev_conf = out_conf[t-1, i] if t > 0 else self.prev_conf[i]
+                out_conf[t, i] = prev_conf * (1 - 0.5) + conf * 0.5
+
+        # clamp coords to [0,1]
+        out_lms = np.clip(out_lms, 0.0, 1.0)
+        return out_lms, out_conf
 
 
 class FacialAnchorModule(nn.Module):
@@ -198,7 +320,9 @@ class FacialAnchorModule(nn.Module):
         
         self.embedder = FacialAnchorEmbedder(hidden_size, num_landmarks)
         self.constrainer = FacialAnchorConstrainer(hidden_size, latent_channels)
-        self.landmark_extractor = LandmarkExtractor()
+        # New detector + temporal tracker
+        self.landmark_detector = LandmarkDetectorV2(device='cuda' if torch.cuda.is_available() else 'cpu')
+        self.landmark_tracker = TemporalLandmarkTracker(device='cuda' if torch.cuda.is_available() else 'cpu', num_landmarks=num_landmarks)
         
     def forward(
         self,
@@ -223,29 +347,70 @@ class FacialAnchorModule(nn.Module):
         
         # Extract or use provided landmarks
         if landmarks is None and video_frames is not None:
-            # Extract landmarks from video frames
-            landmarks = self.landmark_extractor(video_frames)  # [B, T, 68, 2]
+            # video_frames: [B, T, H, W, 3]
+            Bf, Tf, Hf, Wf, Cf = video_frames.shape
+            landmarks_np = np.zeros((Bf, Tf, 68, 2), dtype=np.float32)
+            confs_np = np.zeros((Bf, Tf, 68), dtype=np.float32)
+            for b in range(Bf):
+                for t in range(Tf):
+                    frame = (video_frames[b, t] * 255).byte().cpu().numpy()
+                    lmks, confs = self.landmark_detector(frame)
+                    landmarks_np[b, t] = lmks
+                    confs_np[b, t] = confs
+
+            # Temporal smoothing per batch item
+            smoothed_landmarks = np.zeros_like(landmarks_np)
+            smoothed_confs = np.zeros_like(confs_np)
+            for b in range(Bf):
+                sm_lm, sm_cf = self.landmark_tracker.smooth(landmarks_np[b], confs_np[b])
+                smoothed_landmarks[b] = sm_lm
+                smoothed_confs[b] = sm_cf
+
+            landmarks = torch.from_numpy(smoothed_landmarks).to(latents.device)
+            confs = torch.from_numpy(smoothed_confs).to(latents.device)
+
         elif landmarks is None:
             # No landmarks provided, return unmodified latents
             anchor_embed = torch.zeros(B, self.hidden_size, device=latents.device)
             region_attn = torch.ones(B, 68, device=latents.device) / 68
             return latents, anchor_embed, region_attn
-        
-        # Average landmarks across time for stability
-        landmarks_avg = landmarks.mean(dim=1)  # [B, 68, 2]
-        
+
+        # landmarks: [B, T, 68, 2]
+        # confs: [B, T, 68] or default to ones
+        if 'confs' not in locals():
+            # if landmarks provided externally but no confidences, assume full confidence
+            confs = torch.ones(landmarks.shape[0], landmarks.shape[1], landmarks.shape[2], device=latents.device)
+
+        # Compute confidence‑weighted average across time for stability
+        # weights: [B, T, 68, 1]
+        weights = confs.unsqueeze(-1)
+        landmarks_weighted = landmarks * weights
+        landmarks_sum = landmarks_weighted.sum(dim=1)  # [B, 68, 2]
+        weights_sum = weights.sum(dim=1).clamp(min=1e-6)
+        landmarks_avg = landmarks_sum / weights_sum
+
+        # Compute region attention from mean confidences
+        region_attn = confs.mean(dim=1)  # [B, 68]
+        # Normalize region attention
+        region_attn = region_attn / (region_attn.sum(dim=1, keepdim=True) + 1e-6)
+
+        # Dynamic anchor weight scaling: higher when overall confidence high, lower when noisy
+        mean_conf = confs.mean(dim=(1,2))  # [B]
+        # scale between 0.05..0.6 around base anchor_weight
+        dynamic_anchor_weights = (self.anchor_weight * (0.5 + mean_conf)).clamp(min=0.05, max=0.6)
+
         # Embed landmarks
-        anchor_embed, region_attn = self.embedder(landmarks_avg)  # [B, hidden_size], [B, 68]
-        
+        anchor_embed, _ = self.embedder(landmarks_avg)  # [B, hidden_size]
+
         # Apply constraints to latents
         constrained_latents = self.constrainer(
             latents, anchor_embed, region_attn, spatial_shape
         )
-        
-        # Blend: keep anchor_weight of constraint, (1-anchor_weight) of original
-        constrained_latents = (
-            self.anchor_weight * constrained_latents + 
-            (1 - self.anchor_weight) * latents
-        )
-        
-        return constrained_latents, anchor_embed, region_attn
+
+        # Blend: per-batch dynamic anchor weight
+        out = torch.empty_like(latents)
+        for b in range(B):
+            aw = dynamic_anchor_weights[b].item() if dynamic_anchor_weights.numel() > 1 else float(dynamic_anchor_weights)
+            out[b:b+1] = aw * constrained_latents[b:b+1] + (1 - aw) * latents[b:b+1]
+
+        return out, anchor_embed, region_attn
