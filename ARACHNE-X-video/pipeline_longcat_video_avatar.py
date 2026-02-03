@@ -31,6 +31,7 @@ import pyloudnorm as pyln
 from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from longcat_video.audio_process.multi_stream_processor import MultiStreamAudioProcessor
 from longcat_video.utils.monitoring import MetricsLogger, sha256_of_audio_array
+from longcat_video.streaming_inference import RealtimeInferencePipeline, CUDAOptimizer
 from transformers import Wav2Vec2FeatureExtractor
 from diffusers.image_processor import is_valid_image, is_valid_image_imagelist
 import warnings
@@ -146,6 +147,16 @@ class LongCatVideoAvatarPipeline:
         # audio processing and monitoring
         self.audio_processor = MultiStreamAudioProcessor()
         self.metrics = MetricsLogger()
+        
+        # Real-time streaming support
+        self.streaming_enabled = True
+        self.realtime_pipeline: Optional[RealtimeInferencePipeline] = None
+        
+        # CUDA optimizations for H200
+        CUDAOptimizer.enable_flash_attention()
+        if hasattr(torch, 'compile'):
+            self.dit = CUDAOptimizer.compile_model(self.dit, mode='reduce-overhead')
+            self.vae = CUDAOptimizer.compile_model(self.vae, mode='reduce-overhead')
 
     def _get_t5_prompt_embeds(
         self,
@@ -1482,6 +1493,105 @@ class LongCatVideoAvatarPipeline:
         else: 
             return output_video
     
+    @torch.no_grad()
+    def generate_streaming_ai2v(
+        self,
+        image: PipelineImageInput,
+        prompt: Union[str, List[str]] = None,
+        audio_stream=None,  # Generator yielding audio chunks
+        resolution: Literal["480p", "720p"] = "480p",
+        num_frames: int = 93,
+        num_inference_steps: int = 8,  # Distilled: 8 steps instead of 50
+        text_guidance_scale: float = 4.0,
+        audio_guidance_scale: float = 4.0,
+        generator: Optional[torch.Generator] = None,
+        attention_kwargs: Optional[Dict[str, Any]] = None,
+        max_sequence_length: int = 512,
+        audio_emb: torch.Tensor = None,
+        resize_mode: Optional[str] = "crop",
+    ):
+        r"""
+        Real-time streaming video generation (Image-to-Video).
+        Yields video frames as they are decoded, enabling true streaming inference.
+        
+        Args:
+            image: Input image for video generation.
+            prompt: Text prompt(s) for video content generation.
+            audio_stream: Generator yielding audio chunks [sample_rate=16000].
+            resolution: "480p" or "720p".
+            num_frames: Number of frames to generate.
+            num_inference_steps: Denoising steps (8 = distilled fast mode).
+            text_guidance_scale: CFG scale for text.
+            audio_guidance_scale: CFG scale for audio.
+            generator: Random seed generator.
+            audio_emb: Pre-computed audio embedding (alternative to audio_stream).
+            resize_mode: "default" or "crop".
+        
+        Yields:
+            np.ndarray: Frame as numpy array [H, W, 3] in range [0, 255].
+        """
+        
+        scale_factor_spatial = self.vae_scale_factor_spatial * 2
+        if self.dit.cp_split_hw is not None:
+            scale_factor_spatial *= max(self.dit.cp_split_hw)
+        
+        height, width = self.get_condition_shape(image, resolution, scale_factor_spatial=scale_factor_spatial)
+        self.check_inputs(prompt, None, height, width, scale_factor_spatial)
+        
+        if num_frames % self.vae_scale_factor_temporal != 1:
+            num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+        num_frames = max(num_frames, 1)
+        
+        device = self.device
+        dit_dtype = self.dit.dtype
+        
+        # Encode prompt
+        prompt_embeds, prompt_attention_mask, neg_embeds, neg_mask = self.encode_prompt(
+            prompt=prompt,
+            negative_prompt="",
+            do_classifier_free_guidance=True,
+            num_videos_per_prompt=1,
+            max_sequence_length=max_sequence_length,
+            dtype=dit_dtype,
+            device=device,
+        )
+        
+        # Prepare image latents
+        image = self.video_processor.preprocess(image, height=height, width=width, resize_mode=resize_mode)
+        image = image.to(device=device, dtype=prompt_embeds.dtype)
+        
+        image_latents = retrieve_latents(self.vae.encode(image.unsqueeze(2)), generator, sample_mode="argmax")
+        image_latents = self.normalize_latents(image_latents)
+        
+        # Initialize streaming pipeline
+        self.realtime_pipeline = RealtimeInferencePipeline(
+            self,
+            enable_cuda_opt=True,
+            distill_steps=num_inference_steps,
+            enable_kv_cache=True
+        )
+        
+        # Stream frames
+        for frame_np in self.realtime_pipeline.generate_streaming(
+            prompt=prompt,
+            audio_stream=audio_stream,
+            num_frames=num_frames,
+            height=height,
+            width=width,
+            text_guidance_scale=text_guidance_scale,
+            audio_guidance_scale=audio_guidance_scale,
+            generator=generator,
+        ):
+            yield frame_np
+        
+        # Log performance
+        fps = self.realtime_pipeline.get_fps()
+        p95_latency = self.realtime_pipeline.get_latency_p95()
+        self.metrics.record('streaming_fps', fps)
+        self.metrics.record('streaming_p95_latency_ms', p95_latency)
+        
+        if context_parallel_util.get_cp_rank() == 0:
+            loguru.logger.info(f"Streaming complete: {fps:.1f} FPS, P95 latency: {p95_latency:.1f}ms")
 
     
 
