@@ -432,8 +432,10 @@ class SingleStreamAttention(nn.Module):
     def forward(self, x, cond, shape=None, num_cond_latents=None, x_ref_attn_map=None, human_num=None):
 
         B, N, C = x.shape
-        if (num_cond_latents is None or num_cond_latents == 0): 
+        if (num_cond_latents is None or num_cond_latents == 0):
             # text to video
+            if shape is None:
+                raise ValueError("shape must be provided when num_cond_latents is 0 for text-to-video.")
             output = self._process_cross_attn(x, cond, shape[0], x_ref_attn_map)
             return None, output
         elif num_cond_latents is not None and num_cond_latents > 0:
@@ -454,4 +456,7 @@ class SingleStreamAttention(nn.Module):
             output_cond = torch.zeros((B, num_cond_latents_thw, C), dtype=output_noise.dtype, device=output_noise.device)
             return output_cond, output_noise
         else:
-            raise NotImplementedError
+            raise ValueError(
+                f"num_cond_latents must be >= 0, got {num_cond_latents}. "
+                "Use 0 for text-to-video or a positive integer for conditioned modes."
+            )

@@ -299,6 +299,35 @@ ARACHNE-X/
 
 ---
 
+## 🧭 TODOs (Code Gaps to Close)
+
+1. **Resolve unimplemented attention branches**
+   - `ARACHNE-X-video/modules/avatar/attention.py`: `raise NotImplementedError` path when `num_cond_latents` is unsupported.
+   - `ARACHNE-X-video/modules/attention.py`: `raise NotImplementedError` in the non-standard `num_cond_latents` branch.
+   - **Action**: define expected behavior for unsupported `num_cond_latents` values (error with guidance vs. implement fallback).
+
+2. **Replace placeholder optical flow estimator**
+   - `ARACHNE-X-video/inference_streaming.py`: TODO mentions replacing the simplified flow network with RAFT for production-grade flow.
+   - **Action**: integrate RAFT (or similar) + add inference-time fallback for environments without the dependency.
+
+3. **Harden streaming audio buffer behavior**
+   - `ARACHNE-X-video/streaming_inference.py`: `queue.Full` is silently ignored in the prefetch loop.
+   - **Action**: log and surface backpressure behavior (drop-oldest vs. drop-newest), add metrics.
+
+4. **Document/demo guardrails**
+   - Demo scripts raise `NotImplementedError` for unsupported `audio_type`, `stage_1`, or bbox scenarios.
+   - **Action**: document accepted values in CLI help and README, or implement broader handling.
+
+5. **Scheduler TODOs**
+   - `ARACHNE-X-video/modules/scheduling_flow_match_euler_discrete.py` contains TODOs to propagate Karras/exponential/beta logic to other schedulers.
+   - **Action**: refactor common logic or implement in other schedulers as indicated.
+
+6. **Pipeline integration audit**
+   - `pipeline_longcat_video_avatar.py` references multi-stream audio processor but does not guarantee fused embeddings are consumed in all paths.
+   - **Action**: verify audio-conditioning usage paths and align with new multi-stream outputs (lip/prosody/head).
+
+---
+
 ## 💡 KEY INNOVATIONS FOR ARACHNE-X
 
 1. **Facial Anchoring**: Constraint-based face generation for stability

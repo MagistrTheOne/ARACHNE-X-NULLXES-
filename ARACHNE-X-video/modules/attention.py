@@ -271,6 +271,9 @@ class MultiHeadCrossAttention(nn.Module):
                     output_noise
                 ], dim=1).contiguous()
             else:
-                raise NotImplementedError
+                raise ValueError(
+                    f"num_cond_latents must be >= 0, got {num_cond_latents}. "
+                    "Use 0 for text-to-video or a positive integer for conditioned modes."
+                )
                 
             return output

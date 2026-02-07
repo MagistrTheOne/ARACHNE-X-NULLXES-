@@ -4,12 +4,15 @@ Provides 68-point facial landmark anchoring for stable face generation
 and high-frequency detail preservation.
 """
 
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 import numpy as np
 import os
+
+logger = logging.getLogger(__name__)
 
 
 class FacialAnchorEmbedder(nn.Module):
@@ -162,6 +165,7 @@ class LandmarkDetectorV2(nn.Module):
         self.device = device
         self.use_mediapipe = False
         self.use_dlib = False
+        self._warned_no_detector = False
         try:
             import mediapipe as mp
             self.mp = mp
@@ -191,6 +195,12 @@ class LandmarkDetectorV2(nn.Module):
                     self.use_dlib = False
             except Exception:
                 self.use_dlib = False
+
+        if not self.use_mediapipe and not self.use_dlib:
+            logger.warning(
+                "LandmarkDetectorV2 is running without MediaPipe or DLIB. "
+                "Facial anchors will be zeros; install mediapipe or provide dlib predictor."
+            )
 
     def forward(self, frame_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -228,6 +238,9 @@ class LandmarkDetectorV2(nn.Module):
                 return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
 
         # Fallback: no detector available
+        if not self._warned_no_detector:
+            logger.debug("LandmarkDetectorV2 fallback returning zero landmarks (no detector available).")
+            self._warned_no_detector = True
         return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
 
 

@@ -556,9 +556,8 @@ class LongCatVideoAvatarPipeline:
                     audio_emb = torch.from_numpy(npz['audio_emb']).to(device=device)
                     # return shape (T, B, D)
                     return audio_emb
-            except Exception:
-                # fallthrough to recompute
-                pass
+            except Exception as exc:
+                loguru.logger.debug("Audio cache load failed; recomputing. Error: {}", exc)
 
         audio_duration = len(speech_array) / sample_rate
         video_length = audio_duration * fps
@@ -609,8 +608,8 @@ class LongCatVideoAvatarPipeline:
                 np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy())
 
             self.metrics.record('audio_cache_saved', 1)
-        except Exception:
-            pass
+        except Exception as exc:
+            loguru.logger.warning("Audio cache save failed; continuing without cache. Error: {}", exc)
 
         return audio_emb
 
@@ -830,8 +829,8 @@ class LongCatVideoAvatarPipeline:
         try:
             self.metrics.record('denoise_seconds', total_time)
             self.metrics.record('denoise_p95', total_time)
-        except Exception:
-            pass
+        except Exception as exc:
+            loguru.logger.debug("Metric logging failed; continuing. Error: {}", exc)
 
         self._current_timestep = None
 
