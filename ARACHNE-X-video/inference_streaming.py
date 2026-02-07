@@ -59,7 +59,7 @@ class OpticalFlowWarper(nn.Module):
     def __init__(self):
         super().__init__()
         
-        # Simplified optical flow network (would use RAFT in production)
+        # Simplified optical flow network (TODO: integrate RAFT for production quality)
         self.flow_estimator = nn.Sequential(
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -180,7 +180,9 @@ class KVCacheManager(nn.Module):
 
 class StreamingAvatarInferenceEngine(nn.Module):
     """
-    Complete streaming inference engine for real-time avatar generation.
+    Experimental frame-by-frame streaming inference engine.
+    NOTE: Not yet integrated with pipeline; DiT Avatar expects full-sequence audio.
+    Use generate_streaming_ai2v() for production (collects audio, runs full denoise, streams decode).
     """
     def __init__(
         self,

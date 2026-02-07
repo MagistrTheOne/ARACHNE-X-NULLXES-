@@ -31,7 +31,7 @@ import pyloudnorm as pyln
 from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from longcat_video.audio_process.multi_stream_processor import MultiStreamAudioProcessor
 from longcat_video.utils.monitoring import MetricsLogger, sha256_of_audio_array
-from longcat_video.streaming_inference import RealtimeInferencePipeline, CUDAOptimizer
+from longcat_video.streaming_inference import StreamingVAEDecoder, CUDAOptimizer
 from transformers import Wav2Vec2FeatureExtractor
 from diffusers.image_processor import is_valid_image, is_valid_image_imagelist
 import warnings
@@ -148,9 +148,7 @@ class LongCatVideoAvatarPipeline:
         self.audio_processor = MultiStreamAudioProcessor()
         self.metrics = MetricsLogger()
         
-        # Real-time streaming support
         self.streaming_enabled = True
-        self.realtime_pipeline: Optional[RealtimeInferencePipeline] = None
         
         # CUDA optimizations for H200
         CUDAOptimizer.enable_flash_attention()
@@ -507,7 +505,7 @@ class LongCatVideoAvatarPipeline:
         if resize_mode == 'default':
             mask_resized = F.interpolate(
                 mask.unsqueeze(0),  # [1, 3, H, W]
-                size=(new_h, new_w),
+                size=(target_h, target_w),
                 mode="bilinear",
                 align_corners=False
             ).squeeze(0)
@@ -539,7 +537,7 @@ class LongCatVideoAvatarPipeline:
             return mask_resized_cropped
         
         else:
-            raise NotImplementedError(f"Not supported resize_mode {resize_mode}")
+            raise NotImplementedError(f"Not supported resize_mode {resize_mode}. Use 'default' or 'crop'.")
 
     @torch.no_grad()
     def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
@@ -1543,55 +1541,72 @@ class LongCatVideoAvatarPipeline:
         num_frames = max(num_frames, 1)
         
         device = self.device
-        dit_dtype = self.dit.dtype
         
-        # Encode prompt
-        prompt_embeds, prompt_attention_mask, neg_embeds, neg_mask = self.encode_prompt(
+        # 1. Collect full audio from stream (required for correct audio_emb format)
+        audio_chunks = []
+        sample_rate = 16000
+        for chunk in audio_stream:
+            audio_chunks.append(chunk)
+        if not audio_chunks:
+            raise ValueError("audio_stream yielded no chunks")
+        full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32)
+        
+        # 2. Get audio embedding (full pipeline: wav2vec + seq_len)
+        # fps=16*stride so video_length matches latent frame count
+        audio_stride = self.vae_scale_factor_temporal
+        full_audio_emb = self.get_audio_embedding(
+            full_audio, fps=16 * audio_stride, device=device, sample_rate=sample_rate
+        )
+        
+        # 3. Build audio_emb in DiT format [B, T, W, S, C] via center_indices
+        audio_window = getattr(self.dit, 'audio_window', 5)
+        indices = torch.arange(2 * (audio_window // 2) + 1, device=full_audio_emb.device) - (audio_window // 2)
+        audio_start_idx = 0
+        audio_end_idx = audio_start_idx + audio_stride * num_frames
+        center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride, device=full_audio_emb.device)
+        center_indices = center_indices.unsqueeze(1) + indices.unsqueeze(0)
+        center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
+        audio_emb = full_audio_emb[center_indices][None, ...].to(device)
+        
+        # 4. Run full generate_ai2v with output_type='latent' (image + audio conditioning)
+        latents = self.generate_ai2v(
+            image=image,
             prompt=prompt,
             negative_prompt="",
-            do_classifier_free_guidance=True,
-            num_videos_per_prompt=1,
-            max_sequence_length=max_sequence_length,
-            dtype=dit_dtype,
-            device=device,
-        )
-        
-        # Prepare image latents
-        image = self.video_processor.preprocess(image, height=height, width=width, resize_mode=resize_mode)
-        image = image.to(device=device, dtype=prompt_embeds.dtype)
-        
-        image_latents = retrieve_latents(self.vae.encode(image.unsqueeze(2)), generator, sample_mode="argmax")
-        image_latents = self.normalize_latents(image_latents)
-        
-        # Initialize streaming pipeline
-        self.realtime_pipeline = RealtimeInferencePipeline(
-            self,
-            enable_cuda_opt=True,
-            distill_steps=num_inference_steps,
-            enable_kv_cache=True
-        )
-        
-        # Stream frames
-        for frame_np in self.realtime_pipeline.generate_streaming(
-            prompt=prompt,
-            audio_stream=audio_stream,
+            resolution=resolution,
             num_frames=num_frames,
-            height=height,
-            width=width,
+            num_inference_steps=num_inference_steps,
+            use_distill=(num_inference_steps <= 16),
             text_guidance_scale=text_guidance_scale,
             audio_guidance_scale=audio_guidance_scale,
             generator=generator,
-        ):
+            output_type="latent",
+            max_sequence_length=max_sequence_length,
+            audio_emb=audio_emb,
+            resize_mode=resize_mode,
+        )
+        
+        # 5. Stream decode: denormalize, decode frame-by-frame, yield
+        latents = latents.to(self.vae.dtype)
+        latents = self.denormalize_latents(latents)
+        vae_decoder = StreamingVAEDecoder(self.vae, chunk_size=1, enable_amp=True)
+        frame_times = []
+        for frame_idx, decoded in enumerate(vae_decoder.decode_streaming(latents)):
+            frame_time = time.time()
+            frame_np = (decoded[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+            frame_times.append(time.time() - frame_time)
             yield frame_np
         
-        # Log performance
-        fps = self.realtime_pipeline.get_fps()
-        p95_latency = self.realtime_pipeline.get_latency_p95()
-        self.metrics.record('streaming_fps', fps)
-        self.metrics.record('streaming_p95_latency_ms', p95_latency)
-        
-        if context_parallel_util.get_cp_rank() == 0:
-            loguru.logger.info(f"Streaming complete: {fps:.1f} FPS, P95 latency: {p95_latency:.1f}ms")
+        # 6. Log performance
+        if frame_times:
+            avg_frame_time = sum(frame_times) / len(frame_times)
+            fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+            sorted_times = sorted(frame_times)
+            p95_latency = sorted_times[int(len(sorted_times) * 0.95)] * 1000 if sorted_times else 0
+            self.metrics.record('streaming_fps', fps)
+            self.metrics.record('streaming_p95_latency_ms', p95_latency)
+            if context_parallel_util.get_cp_rank() == 0:
+                loguru.logger.info(f"Streaming complete: {fps:.1f} FPS, P95 latency: {p95_latency:.1f}ms")
 
     
 

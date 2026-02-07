@@ -47,7 +47,7 @@ class RealtimeBenchmark:
         
         frame_times = []
         
-        # Warmup
+        # Warmup (Avatar DiT: num_cond_latents=1 for image conditioning)
         with torch.inference_mode():
             for _ in range(2):
                 _ = self.pipeline.dit(
@@ -55,6 +55,7 @@ class RealtimeBenchmark:
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
                     encoder_attention_mask=prompt_mask,
+                    num_cond_latents=1,
                     audio_embs=audio_emb
                 )
         
@@ -70,6 +71,7 @@ class RealtimeBenchmark:
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
                     encoder_attention_mask=prompt_mask,
+                    num_cond_latents=1,
                     audio_embs=audio_emb
                 )
             
@@ -90,17 +92,16 @@ class RealtimeBenchmark:
         }
     
     def benchmark_streaming_pipeline(self,
-                                     num_frames: int = 93,
-                                     latents_shape: tuple = (1, 16, 12, 60, 104),
+                                     num_frames: int = 24,
+                                     latents_shape: tuple = (1, 16, 24, 60, 104),
                                      ) -> Dict[str, float]:
         """
-        Benchmark full streaming pipeline end-to-end.
-        
-        Returns performance metrics.
+        Benchmark full pipeline: denoise + VAE decode per frame.
+        Uses Avatar DiT audio_embs format [B, T, W, S, C].
         """
-        
+        num_latent = latents_shape[2]
         latents = torch.randn(latents_shape, dtype=torch.bfloat16, device=self.device)
-        audio_emb = torch.randn(1, 1, 1, 768, dtype=torch.bfloat16, device=self.device)
+        audio_emb = torch.randn(1, num_latent, 5, 12, 768, dtype=torch.bfloat16, device=self.device)
         prompt_embeds = torch.randn(1, 1, 512, 768, dtype=torch.bfloat16, device=self.device)
         prompt_mask = torch.ones(1, 512, dtype=torch.int64, device=self.device)
         timestep = torch.tensor([500.0], dtype=torch.bfloat16, device=self.device)
@@ -115,12 +116,13 @@ class RealtimeBenchmark:
             frame_start = time.perf_counter()
             
             with torch.inference_mode():
-                # Denoise step
+                # Denoise step (Avatar: num_cond_latents=1)
                 _ = self.pipeline.dit(
                     hidden_states=latents,
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
                     encoder_attention_mask=prompt_mask,
+                    num_cond_latents=1,
                     audio_embs=audio_emb
                 )
                 
@@ -154,8 +156,7 @@ class RealtimeBenchmark:
         torch.cuda.reset_peak_memory_stats(self.device)
         torch.cuda.synchronize(self.device)
         
-        # Generate dummy data
-        latents = torch.randn(1, 16, 12, 60, 104, dtype=torch.bfloat16, device=self.device)
+        latents = torch.randn(1, 16, 24, 60, 104, dtype=torch.bfloat16, device=self.device)
         
         with torch.inference_mode():
             _ = self.pipeline.vae.decode(latents, return_dict=False)
@@ -180,10 +181,12 @@ def run_benchmark(pipeline, hardware: str = "H200") -> Dict:
     
     benchmark = RealtimeBenchmark(pipeline)
     
-    # Single frame benchmark
+    # Single frame benchmark (Avatar DiT expects audio_embs [B, T, W, S, C])
     print("[*] Benchmarking single frame denoise...")
-    latents = torch.randn(1, 16, 12, 60, 104, dtype=torch.bfloat16, device=pipeline.device)
-    audio_emb = torch.randn(1, 1, 1, 768, dtype=torch.bfloat16, device=pipeline.device)
+    latents_shape = (1, 16, 24, 60, 104)  # B, C, T_latent, H, W
+    num_latent = latents_shape[2]
+    latents = torch.randn(*latents_shape, dtype=torch.bfloat16, device=pipeline.device)
+    audio_emb = torch.randn(1, num_latent, 5, 12, 768, dtype=torch.bfloat16, device=pipeline.device)
     prompt_embeds = torch.randn(1, 1, 512, 768, dtype=torch.bfloat16, device=pipeline.device)
     prompt_mask = torch.ones(1, 512, dtype=torch.int64, device=pipeline.device)
     timestep = torch.tensor([500.0], dtype=torch.bfloat16, device=pipeline.device)
@@ -239,15 +242,63 @@ def run_benchmark(pipeline, hardware: str = "H200") -> Dict:
     }
 
 
+def load_avatar_pipeline(checkpoint_dir: str, device: str = 'cuda'):
+    """Load LongCatVideoAvatarPipeline for benchmark."""
+    import os
+    from transformers import AutoTokenizer, UMT5EncoderModel, Wav2Vec2FeatureExtractor
+    from longcat_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
+    from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+    from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
+    from longcat_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+    from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
+
+    base_dir = os.path.join(checkpoint_dir, '..', 'LongCat-Video')
+    tokenizer = AutoTokenizer.from_pretrained(base_dir, subfolder="tokenizer", torch_dtype=torch.bfloat16)
+    text_encoder = UMT5EncoderModel.from_pretrained(base_dir, subfolder="text_encoder", torch_dtype=torch.bfloat16)
+    vae = AutoencoderKLWan.from_pretrained(base_dir, subfolder="vae", torch_dtype=torch.bfloat16)
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(base_dir, subfolder="scheduler", torch_dtype=torch.bfloat16)
+    dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+        checkpoint_dir, subfolder="avatar_single", torch_dtype=torch.bfloat16
+    )
+    wav2vec_path = os.path.join(checkpoint_dir, 'chinese-wav2vec2-base')
+    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(device)
+    audio_encoder.feature_extractor._freeze_parameters()
+    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_path, local_files_only=True)
+
+    pipe = LongCatVideoAvatarPipeline(
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        vae=vae,
+        scheduler=scheduler,
+        dit=dit,
+        audio_encoder=audio_encoder,
+        wav2vec_feature_extractor=wav2vec_feature_extractor,
+    )
+    pipe.to(device)
+    return pipe
+
+
 if __name__ == '__main__':
     import argparse
-    
+    import os
+
     parser = argparse.ArgumentParser(description="ARACHNE-X Benchmark")
     parser.add_argument('--checkpoint_dir', type=str, default='./weights/LongCat-Video-Avatar')
     parser.add_argument('--hardware', type=str, default='H200', choices=['H200', 'H100', 'A100'])
+    parser.add_argument('--no_load', action='store_true', help='Skip pipeline load (for testing with mock)')
     args = parser.parse_args()
-    
-    # Load pipeline (simplified for benchmark)
-    print("[*] Loading models...")
-    # ... (pipeline loading code here)
-    print("[*] Ready for benchmark")
+
+    if not args.no_load:
+        if not torch.cuda.is_available():
+            print("[!] CUDA not available. Benchmark requires GPU.")
+            exit(1)
+        if not os.path.isdir(args.checkpoint_dir):
+            print(f"[!] Checkpoint not found: {args.checkpoint_dir}")
+            print("    Run with --checkpoint_dir pointing to LongCat-Video-Avatar weights.")
+            exit(1)
+        print("[*] Loading models...")
+        pipeline = load_avatar_pipeline(args.checkpoint_dir)
+        print("[*] Ready for benchmark")
+        run_benchmark(pipeline, hardware=args.hardware)
+    else:
+        print("[*] Skipping load (--no_load). Provide pipeline manually for run_benchmark().")

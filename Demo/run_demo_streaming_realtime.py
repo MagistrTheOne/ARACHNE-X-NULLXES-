@@ -18,14 +18,13 @@ import torch.distributed as dist
 from transformers import AutoTokenizer, UMT5EncoderModel
 from diffusers.utils import load_image
 
-from ARACHNE-X_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
-from ARACHNE-X_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from ARACHNE-X_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-from ARACHNE-X_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-from ARACHNE-X_video.context_parallel import context_parallel_util
-from ARACHNE-X_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-from ARACHNE-X_video.audio_process.torch_utils import save_video_ffmpeg
-from ARACHNE-X_video.streaming_inference import RealtimeInferencePipeline
+from longcat_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
+from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
+from longcat_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from longcat_video.context_parallel import context_parallel_util
+from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
+from longcat_video.audio_process.torch_utils import save_video_ffmpeg
 from transformers import Wav2Vec2FeatureExtractor
 
 
