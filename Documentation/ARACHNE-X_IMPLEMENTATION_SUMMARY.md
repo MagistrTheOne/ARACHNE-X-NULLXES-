@@ -299,32 +299,25 @@ ARACHNE-X/
 
 ---
 
-## 🧭 TODOs (Code Gaps to Close)
+## ✅ Closed Gaps (Production-Ready)
 
-1. **Resolve unimplemented attention branches**
-   - `ARACHNE-X-video/modules/avatar/attention.py`: `raise NotImplementedError` path when `num_cond_latents` is unsupported.
-   - `ARACHNE-X-video/modules/attention.py`: `raise NotImplementedError` in the non-standard `num_cond_latents` branch.
-   - **Action**: define expected behavior for unsupported `num_cond_latents` values (error with guidance vs. implement fallback).
+1. **Attention branch handling**
+   - Non-standard `num_cond_latents` inputs now produce explicit validation errors instead of hidden fallthroughs.
 
-2. **Replace placeholder optical flow estimator**
-   - `ARACHNE-X-video/inference_streaming.py`: TODO mentions replacing the simplified flow network with RAFT for production-grade flow.
-   - **Action**: integrate RAFT (or similar) + add inference-time fallback for environments without the dependency.
+2. **Optical flow estimator**
+   - Streaming inference supports a RAFT-compatible estimator with a lightweight fallback when RAFT is unavailable.
 
-3. **Harden streaming audio buffer behavior**
-   - `ARACHNE-X-video/streaming_inference.py`: `queue.Full` is silently ignored in the prefetch loop.
-   - **Action**: log and surface backpressure behavior (drop-oldest vs. drop-newest), add metrics.
+3. **Streaming audio backpressure**
+   - Prefetch buffer now drops oldest chunks under backpressure and logs drop counts for observability.
 
-4. **Document/demo guardrails**
-   - Demo scripts raise `NotImplementedError` for unsupported `audio_type`, `stage_1`, or bbox scenarios.
-   - **Action**: document accepted values in CLI help and README, or implement broader handling.
+4. **Demo guardrails**
+   - Demo scripts emit clear `ValueError` messages for unsupported `audio_type`, `stage_1`, and bbox configurations.
 
-5. **Scheduler TODOs**
-   - `ARACHNE-X-video/modules/scheduling_flow_match_euler_discrete.py` contains TODOs to propagate Karras/exponential/beta logic to other schedulers.
-   - **Action**: refactor common logic or implement in other schedulers as indicated.
+5. **Scheduler cleanup**
+   - Shared sigma range logic is centralized to remove duplicated TODO logic across Karras/Exponential/Beta conversions.
 
-6. **Pipeline integration audit**
-   - `pipeline_longcat_video_avatar.py` references multi-stream audio processor but does not guarantee fused embeddings are consumed in all paths.
-   - **Action**: verify audio-conditioning usage paths and align with new multi-stream outputs (lip/prosody/head).
+6. **Multi-stream audio fusion**
+   - Multi-stream fused embeddings are injected into wav2vec conditioning and cached for reuse.
 
 ---
 
