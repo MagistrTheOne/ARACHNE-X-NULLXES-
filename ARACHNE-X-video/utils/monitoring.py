@@ -1,3 +1,4 @@
+import logging
 import time
 import hashlib
 import numpy as np
@@ -14,6 +15,8 @@ try:
     from torchvision import models, transforms
 except Exception:
     torch = None
+
+logger = logging.getLogger(__name__)
 
 
 class Timer:
@@ -76,7 +79,8 @@ class MetricsLogger:
 def compute_dtw_distance(x: np.ndarray, y: np.ndarray) -> float:
     """Compute DTW distance between two sequences of feature vectors using librosa if available."""
     if librosa is None:
-        raise RuntimeError('librosa is required for DTW metric')
+        logger.warning("compute_dtw_distance requires librosa; returning inf.")
+        return float("inf")
     # x: (T1, D), y: (T2, D)
     D = cdist(x, y, metric='euclidean')
     _, wp = librosa.sequence.dtw(C=D)

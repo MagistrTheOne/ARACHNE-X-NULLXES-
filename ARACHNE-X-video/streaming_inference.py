@@ -111,7 +111,15 @@ class StreamingAudioBuffer:
                     break
                 self.queue.put(chunk, timeout=1.0)
         except queue.Full:
-            pass
+            # Drop oldest chunk to apply backpressure instead of silently stalling.
+            try:
+                _ = self.queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self.queue.put(chunk, timeout=1.0)
+            except queue.Full:
+                return
         finally:
             self.queue.put(None)  # Sentinel
     
