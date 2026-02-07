@@ -5,6 +5,7 @@ Production-grade streaming decoder, KV-cache, async audio, CUDA optimizations
 
 import torch
 import torch.nn.functional as F
+import logging
 from torch.cuda.amp import autocast
 import collections
 import threading
@@ -102,25 +103,28 @@ class StreamingAudioBuffer:
         self.window_samples = window_samples
         self.queue = queue.Queue(maxsize=buffer_size)
         self.stop_event = threading.Event()
+        self.logger = logging.getLogger(__name__)
     
     def producer_thread(self, audio_stream, sample_rate: int = 16000):
         """Prefetch audio chunks into queue."""
+        dropped = 0
         try:
             for chunk in audio_stream:
                 if self.stop_event.is_set():
                     break
-                self.queue.put(chunk, timeout=1.0)
-        except queue.Full:
-            # Drop oldest chunk to apply backpressure instead of silently stalling.
-            try:
-                _ = self.queue.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                self.queue.put(chunk, timeout=1.0)
-            except queue.Full:
-                return
+                while True:
+                    try:
+                        self.queue.put(chunk, timeout=1.0)
+                        break
+                    except queue.Full:
+                        dropped += 1
+                        try:
+                            _ = self.queue.get_nowait()
+                        except queue.Empty:
+                            break
         finally:
+            if dropped:
+                self.logger.warning("StreamingAudioBuffer dropped %s audio chunks due to backpressure.", dropped)
             self.queue.put(None)  # Sentinel
     
     def get_chunk(self, timeout: float = 0.5) -> Optional[np.ndarray]:
