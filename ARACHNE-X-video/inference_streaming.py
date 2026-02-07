@@ -56,17 +56,34 @@ class OpticalFlowWarper(nn.Module):
     Estimates and applies optical flow warping between frames.
     Used for frame prediction and coherence maintenance.
     """
-    def __init__(self):
+    def __init__(self, flow_estimator: Optional[nn.Module] = None, use_raft: bool = False):
         super().__init__()
-        
-        # Simplified optical flow network (TODO: integrate RAFT for production quality)
-        self.flow_estimator = nn.Sequential(
+        self.flow_estimator_type = "lite"
+        if flow_estimator is not None:
+            self.flow_estimator = flow_estimator
+            self.flow_estimator_type = "custom"
+        elif use_raft:
+            self.flow_estimator, self.flow_estimator_type = self._build_raft_estimator()
+        else:
+            self.flow_estimator = self._build_lightweight_estimator()
+
+    def _build_lightweight_estimator(self) -> nn.Module:
+        return nn.Sequential(
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(64, 2, kernel_size=3, padding=1)  # 2D flow field
         )
+
+    def _build_raft_estimator(self) -> Tuple[nn.Module, str]:
+        try:
+            from torchvision.models.optical_flow import raft_small
+            raft = raft_small(weights=None, progress=False)
+            raft.eval()
+            return raft, "raft"
+        except Exception:
+            return self._build_lightweight_estimator(), "lite"
         
     def forward(
         self,
@@ -82,11 +99,16 @@ class OpticalFlowWarper(nn.Module):
             flow: [B, 2, H, W] optical flow
             warped: [B, C, H, W] frame1 warped towards frame2
         """
-        # Concatenate frames
-        concat = torch.cat([frame1, frame2], dim=1)  # [B, 2C, H, W]
-        
-        # Estimate flow
-        flow = self.flow_estimator(concat)  # [B, 2, H, W]
+        if self.flow_estimator_type == "raft" and frame1.shape[1] == 3:
+            with torch.no_grad():
+                flow = self.flow_estimator(frame1, frame2)
+                if isinstance(flow, (list, tuple)):
+                    flow = flow[-1]
+        else:
+            # Concatenate frames
+            concat = torch.cat([frame1, frame2], dim=1)  # [B, 2C, H, W]
+            # Estimate flow
+            flow = self.flow_estimator(concat)  # [B, 2, H, W]
         
         # Warp frame1 using flow to predict frame2
         warped = self._warp_frame(frame1, flow)
