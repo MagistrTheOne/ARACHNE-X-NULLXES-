@@ -5,6 +5,7 @@ import gc
 import time
 import math
 import torch
+import torch.nn as nn
 import loguru
 import numpy as np
 from einops import rearrange
@@ -146,6 +147,8 @@ class LongCatVideoAvatarPipeline:
         self.wav2vec_feature_extractor = wav2vec_feature_extractor
         # audio processing and monitoring
         self.audio_processor = MultiStreamAudioProcessor()
+        self.multi_stream_fusion_proj = nn.Linear(1024, 768)
+        self.multi_stream_fusion_scale = 0.2
         self.metrics = MetricsLogger()
         
         self.streaming_enabled = True
@@ -537,7 +540,36 @@ class LongCatVideoAvatarPipeline:
             return mask_resized_cropped
         
         else:
-            raise NotImplementedError(f"Not supported resize_mode {resize_mode}. Use 'default' or 'crop'.")
+            raise ValueError(f"Unsupported resize_mode {resize_mode}. Use 'default' or 'crop'.")
+
+    def _apply_multistream_fusion(
+        self,
+        audio_emb: torch.Tensor,
+        fused_emb: Optional[torch.Tensor],
+        device: torch.device
+    ) -> torch.Tensor:
+        if fused_emb is None:
+            return audio_emb
+        if audio_emb.dim() == 3:
+            audio_bt = audio_emb.permute(1, 0, 2).contiguous()
+        elif audio_emb.dim() == 2:
+            audio_bt = audio_emb.unsqueeze(0)
+        else:
+            return audio_emb
+
+        fused = fused_emb.to(device=device, dtype=audio_bt.dtype)
+        proj = self.multi_stream_fusion_proj.to(device=device, dtype=audio_bt.dtype)
+        fused_proj = proj(fused)  # [B, min_t, 768]
+        fused_proj = fused_proj.permute(0, 2, 1)
+        fused_proj = F.interpolate(
+            fused_proj, size=audio_bt.shape[1], mode="linear", align_corners=False
+        )
+        fused_proj = fused_proj.permute(0, 2, 1)
+        audio_bt = audio_bt + self.multi_stream_fusion_scale * fused_proj
+
+        if audio_emb.dim() == 3:
+            return audio_bt.permute(1, 0, 2).contiguous()
+        return audio_bt.squeeze(0)
 
     @torch.no_grad()
     def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
@@ -554,6 +586,10 @@ class LongCatVideoAvatarPipeline:
                 with self.metrics.timeit('audio_cache_load'):
                     npz = np.load(cache_path)
                     audio_emb = torch.from_numpy(npz['audio_emb']).to(device=device)
+                    fused_emb = None
+                    if 'fused_emb' in npz:
+                        fused_emb = torch.from_numpy(npz['fused_emb'])
+                    audio_emb = self._apply_multistream_fusion(audio_emb, fused_emb, device=device)
                     # return shape (T, B, D)
                     return audio_emb
             except Exception as exc:
@@ -603,6 +639,7 @@ class LongCatVideoAvatarPipeline:
                 fused_emb = None
 
             if fused_emb is not None:
+                audio_emb = self._apply_multistream_fusion(audio_emb, fused_emb, device=device)
                 np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy(), fused_emb=fused_emb.cpu().numpy())
             else:
                 np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy())

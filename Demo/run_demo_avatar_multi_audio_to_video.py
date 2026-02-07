@@ -83,7 +83,7 @@ def audio_prepare_multi(left_temp_vocal_path, right_temp_vocal_path, generate_du
         right_speech_array_ext = right_speech_array
         merge_raw_speech = left_raw_speech_array + right_raw_speech_array
     else:
-        raise NotImplementedError(f"Unsupported audio_type of {audio_type}")
+        raise ValueError(f"Unsupported audio_type {audio_type}. Use 'add' or 'para'.")
     
     assert len(left_speech_array_ext) == len(right_speech_array_ext), f"The two speech lengths should be equal"
    
@@ -276,7 +276,7 @@ def generate(args):
         left_y_min, left_x_min, left_y_max, left_x_max = left_person_bbox
         right_y_min, right_x_min, right_y_max, right_x_max = right_person_bbox
     else:
-        raise NotImplementedError(f"Not supported bbox type.")
+        raise ValueError("Unsupported bbox configuration. Provide both bboxes or neither.")
     human_mask1[left_y_min:left_y_max, left_x_min:left_x_max] = 1
     human_mask2[right_y_min:right_y_max, right_x_min:right_x_max] = 1
     background_mask += human_mask1
