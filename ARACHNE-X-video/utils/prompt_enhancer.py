@@ -1,4 +1,5 @@
 import io
+import logging
 import re
 import time
 import base64
@@ -6,6 +7,7 @@ import base64
 from PIL import Image
 from openai import OpenAI
 
+logger = logging.getLogger(__name__)
 
 def compress_image(image_path, max_size_kb=500, quality=85):
     img = Image.open(image_path)
@@ -107,6 +109,9 @@ def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3):
     """
     Enhance a prompt used for text-2-video
     """
+    if not APPKEY or APPKEY == "YOUR_APPKEY":
+        logger.warning("Prompt enhancer disabled: APPKEY not configured.")
+        return prompt
     client = OpenAI(
         api_key=f"{APPKEY}",
     )
@@ -155,6 +160,9 @@ def enhance_prompt_t2v(prompt: str, retry_times: int = 3):
     """
     Enhance a prompt used for text-2-video
     """
+    if not APPKEY or APPKEY == "YOUR_APPKEY":
+        logger.warning("Prompt enhancer disabled: APPKEY not configured.")
+        return prompt
     client = OpenAI(
         api_key=f"{APPKEY}",
     )
