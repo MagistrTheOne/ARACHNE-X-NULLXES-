@@ -248,7 +248,7 @@ def generate(args):
         del output
         torch_gc()
     else:
-        raise NotImplementedError(f"Not supported type of stage_1: {stage_1}")
+        raise ValueError(f"Unsupported stage_1 {stage_1}. Use 'at2v' or 'ai2v'.")
 
     if context_parallel_util.get_cp_size() > 1:
         torch.distributed.barrier(group=context_parallel_util.get_cp_group())
