@@ -6,32 +6,10 @@ import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Config
 from transformers import Wav2Vec2Model as Wav2Vec2Model_base
-from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2SamePadLayer, Wav2Vec2PositionalConvEmbedding
-from transformers.activations import ACT2FN
+from transformers.models.wav2vec2.modeling_wav2vec2 import Wav2Vec2SamePadLayer
 from transformers.modeling_outputs import BaseModelOutput
 
 from .torch_utils import linear_interpolation
-
-
-def _Wav2Vec2PositionalConvEmbedding_init_hack_(self, config):
-        super(Wav2Vec2PositionalConvEmbedding, self).__init__()
-        self.conv = nn.Conv1d(
-            config.hidden_size,
-            config.hidden_size,
-            kernel_size=config.num_conv_pos_embeddings,
-            padding=config.num_conv_pos_embeddings // 2,
-            groups=config.num_conv_pos_embedding_groups,
-        )
-
-        weight_norm = nn.utils.weight_norm
-        if hasattr(nn.utils.parametrizations, "weight_norm"):
-            weight_norm = nn.utils.parametrizations.weight_norm
-        self.conv = weight_norm(self.conv, name="weight", dim=2)
-
-        self.padding = Wav2Vec2SamePadLayer(config.num_conv_pos_embeddings)
-        self.activation = ACT2FN[config.feat_extract_activation]
-
-Wav2Vec2PositionalConvEmbedding.__init__ = _Wav2Vec2PositionalConvEmbedding_init_hack_
 
 
 class Wav2Vec2ModelWrapper(nn.Module):

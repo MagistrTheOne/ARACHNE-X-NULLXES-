@@ -400,10 +400,7 @@ class QuantizationUtils:
     @staticmethod
     def quantize_to_fp8(model: torch.nn.Module) -> torch.nn.Module:
         """FP8 quantization (requires FP8 support on GPU)."""
-        # Requires amp backend extension; fallback to INT8 if unavailable
-        try:
-            from torch.utils._python_dispatch import TorchDispatchMode
-            # Custom FP8 quantization would go here
-            return model
-        except Exception:
-            return QuantizationUtils.quantize_to_int8(model)
+        raise NotImplementedError(
+            "FP8 quantization is not implemented. Integrate an FP8 backend "
+            "before enabling this path in production."
+        )

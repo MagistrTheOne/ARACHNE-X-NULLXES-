@@ -70,7 +70,7 @@ class QuantizationConfig:
     USE_INT8 = False
     
     # FP8 quantization (H200 native support)
-    USE_FP8 = True
+    USE_FP8 = False
     
     # KV-cache compression dtype
     KV_CACHE_DTYPE = torch.float16  # float16 by default, can be torch.float8
@@ -133,11 +133,11 @@ def get_realtime_config(target_fps: int = 30, hardware: str = "H200") -> dict:
     if target_fps >= 30:
         num_inference_steps = 8  # Distilled
         quant = QuantizationConfig()
-        quant.USE_FP8 = True  # H200 native
+        quant.USE_FP8 = False
     elif target_fps >= 15:
         num_inference_steps = 12
         quant = QuantizationConfig()
-        quant.USE_FP8 = True
+        quant.USE_FP8 = False
     else:
         num_inference_steps = 20
         quant = QuantizationConfig()
