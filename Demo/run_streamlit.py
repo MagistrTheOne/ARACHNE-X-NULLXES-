@@ -7,14 +7,10 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 
-from transformers import AutoTokenizer, UMT5EncoderModel
 from diffusers.utils import export_to_video, load_image, load_video
 
-from longcat_video.context_parallel import context_parallel_util
-from longcat_video.pipeline_longcat_video import LongCatVideoPipeline
-from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-from longcat_video.modules.longcat_video_dit import LongCatVideoTransformer3DModel
+from arachne_x.context_parallel import context_parallel_util
+from arachne_x.loader import load_base_pipeline
 
 
 def torch_gc():
@@ -44,20 +40,12 @@ def load_model(checkpoint_dir):
     
     with st.spinner('Loading model...'):
         cp_split_hw = context_parallel_util.get_optimal_split(1)
-        tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, subfolder="tokenizer", torch_dtype=torch_dtype)
-        text_encoder = UMT5EncoderModel.from_pretrained(checkpoint_dir, subfolder="text_encoder", torch_dtype=torch_dtype)
-        vae = AutoencoderKLWan.from_pretrained(checkpoint_dir, subfolder="vae", torch_dtype=torch_dtype)
-        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(checkpoint_dir, subfolder="scheduler", torch_dtype=torch_dtype)
-        dit = LongCatVideoTransformer3DModel.from_pretrained(checkpoint_dir, subfolder="dit", cp_split_hw=cp_split_hw, torch_dtype=torch_dtype)
-
-        pipe = LongCatVideoPipeline(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            vae=vae,
-            scheduler=scheduler,
-            dit=dit,
+        pipe = load_base_pipeline(
+            checkpoint_dir,
+            device=device,
+            torch_dtype=torch_dtype,
+            cp_split_hw=cp_split_hw,
         )
-        pipe.to(device)
         
         cfg_step_lora_path = os.path.join(checkpoint_dir, 'lora/cfg_step_lora.safetensors')
         pipe.dit.load_lora(cfg_step_lora_path, 'cfg_step_lora')
@@ -71,7 +59,7 @@ def main():
     st.title("🎬 LongCatVideo Generator")
     st.markdown("Supports Text-to-Video (T2V), Image-to-Video (I2V), and Video Continuation (VC) generation")
     
-    checkpoint_dir = st.text_input("Model Dir", "./weights/LongCat-Video")
+    checkpoint_dir = st.text_input("Model Dir", "./weights/ARACHNE-X")
 
     # Load model
     try:

@@ -12,20 +12,14 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from transformers import AutoTokenizer, UMT5EncoderModel
 from diffusers.utils import load_image
 
-from longcat_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
-from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-from longcat_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-from longcat_video.context_parallel import context_parallel_util
+from arachne_x.loader import load_avatar_pipeline, get_vocal_separator_path
+from arachne_x.context_parallel import context_parallel_util
 
 # -------- avatar related --------
 import librosa
-from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-from longcat_video.audio_process.torch_utils import save_video_ffmpeg
-from transformers import Wav2Vec2FeatureExtractor
+from arachne_x.audio_process.torch_utils import save_video_ffmpeg
 from audio_separator.separator import Separator
 
 
@@ -98,20 +92,16 @@ def generate(args):
     cp_size = context_parallel_util.get_cp_size()
     cp_split_hw = context_parallel_util.get_optimal_split(cp_size)
 
-    # initialize models
-    tokenizer = AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), subfolder="tokenizer", torch_dtype=torch.bfloat16)
-    text_encoder = UMT5EncoderModel.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), subfolder="text_encoder", torch_dtype=torch.bfloat16)
-    vae = AutoencoderKLWan.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), subfolder="vae", torch_dtype=torch.bfloat16)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), subfolder="scheduler", torch_dtype=torch.bfloat16)
-    dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(checkpoint_dir, subfolder="avatar_single", cp_split_hw=cp_split_hw, torch_dtype=torch.bfloat16)
-    
-    # initialize audio models
-    wav2vec_path = os.path.join(checkpoint_dir, 'chinese-wav2vec2-base')    
-    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(local_rank)
-    audio_encoder.feature_extractor._freeze_parameters()
+    # initialize pipeline
+    pipe = load_avatar_pipeline(
+        checkpoint_dir,
+        variant="single",
+        device=local_rank,
+        torch_dtype=torch.bfloat16,
+        cp_split_hw=cp_split_hw,
+    )
 
-    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_path, local_files_only=True)
-    vocal_separator_path = os.path.join(checkpoint_dir, 'vocal_separator/Kim_Vocal_2.onnx')
+    vocal_separator_path = get_vocal_separator_path(checkpoint_dir)
     audio_output_dir_temp = f"./audio_temp_file"
     os.makedirs(audio_output_dir_temp, exist_ok=True)
     audio_output_dir_temp = Path(audio_output_dir_temp)
@@ -125,16 +115,6 @@ def generate(args):
     vocal_separator.load_model(audio_separator_model_name)
 
     
-    # initialize pipeline
-    pipe = LongCatVideoAvatarPipeline(
-        tokenizer = tokenizer,
-        text_encoder = text_encoder,
-        vae = vae,
-        scheduler = scheduler,
-        dit = dit,
-        audio_encoder=audio_encoder,
-        wav2vec_feature_extractor=wav2vec_feature_extractor
-    )
     pipe.to(local_rank)
 
     global_seed = 42
@@ -377,7 +357,7 @@ def _parse_args():
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default="./weights/LongCat-Video-Avatar",
+        default="./weights/ARACHNE-X-Avatar",
     )
 
     args = parser.parse_args()
@@ -388,3 +368,4 @@ def _parse_args():
 if __name__ == "__main__":
     args = _parse_args()
     generate(args)
+

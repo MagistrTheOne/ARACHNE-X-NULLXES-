@@ -15,17 +15,10 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from transformers import AutoTokenizer, UMT5EncoderModel
 from diffusers.utils import load_image
 
-from longcat_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
-from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-from longcat_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-from longcat_video.context_parallel import context_parallel_util
-from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-from longcat_video.audio_process.torch_utils import save_video_ffmpeg
-from transformers import Wav2Vec2FeatureExtractor
+from arachne_x.loader import load_avatar_pipeline
+from arachne_x.audio_process.torch_utils import save_video_ffmpeg
 
 
 def audio_stream_generator(audio_path: str, chunk_duration: float = 0.5, sample_rate: int = 16000):
@@ -52,7 +45,7 @@ def main():
     parser.add_argument('--audio', type=str, required=True, help='Input audio path')
     parser.add_argument('--prompt', type=str, default='A person speaking naturally', help='Text prompt')
     parser.add_argument('--output_dir', type=str, default='./outputs_streaming', help='Output directory')
-    parser.add_argument('--checkpoint_dir', type=str, default='./weights/LongCat-Video-Avatar', help='Checkpoint directory')
+    parser.add_argument('--checkpoint_dir', type=str, default='./weights/ARACHNE-X-Avatar', help='Checkpoint directory')
     parser.add_argument('--num_inference_steps', type=int, default=8, help='Denoising steps (8 = fast distilled)')
     parser.add_argument('--resolution', type=str, default='480p', choices=['480p', '720p'], help='Video resolution')
     args = parser.parse_args()
@@ -66,48 +59,11 @@ def main():
     
     # Load models
     print("[*] Loading models...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        os.path.join(args.checkpoint_dir, '..', 'LongCat-Video'),
-        subfolder="tokenizer",
-        torch_dtype=torch.bfloat16
-    )
-    text_encoder = UMT5EncoderModel.from_pretrained(
-        os.path.join(args.checkpoint_dir, '..', 'LongCat-Video'),
-        subfolder="text_encoder",
-        torch_dtype=torch.bfloat16
-    )
-    vae = AutoencoderKLWan.from_pretrained(
-        os.path.join(args.checkpoint_dir, '..', 'LongCat-Video'),
-        subfolder="vae",
-        torch_dtype=torch.bfloat16
-    )
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        os.path.join(args.checkpoint_dir, '..', 'LongCat-Video'),
-        subfolder="scheduler",
-        torch_dtype=torch.bfloat16
-    )
-    dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+    pipe = load_avatar_pipeline(
         args.checkpoint_dir,
-        subfolder="avatar_single",
-        torch_dtype=torch.bfloat16
-    )
-    
-    wav2vec_path = os.path.join(args.checkpoint_dir, 'chinese-wav2vec2-base')
-    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(local_rank)
-    audio_encoder.feature_extractor._freeze_parameters()
-    
-    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_path, local_files_only=True)
-    
-    # Create pipeline
-    print("[*] Creating streaming pipeline...")
-    pipe = LongCatVideoAvatarPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        scheduler=scheduler,
-        dit=dit,
-        audio_encoder=audio_encoder,
-        wav2vec_feature_extractor=wav2vec_feature_extractor
+        variant="single",
+        device=local_rank,
+        torch_dtype=torch.bfloat16,
     )
     pipe.to(device)
     
@@ -170,3 +126,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

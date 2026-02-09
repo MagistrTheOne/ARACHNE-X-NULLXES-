@@ -7,16 +7,12 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from transformers import AutoTokenizer, UMT5EncoderModel
 from torchvision.io import write_video
 from diffusers.utils import load_image
 
-from longcat_video.pipeline_longcat_video import LongCatVideoPipeline
-from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-from longcat_video.modules.longcat_video_dit import LongCatVideoTransformer3DModel
-from longcat_video.context_parallel import context_parallel_util
-from longcat_video.context_parallel.context_parallel_util import init_context_parallel
+from arachne_x.loader import load_base_pipeline
+from arachne_x.context_parallel import context_parallel_util
+from arachne_x.context_parallel.context_parallel_util import init_context_parallel
 
 
 def torch_gc():
@@ -51,23 +47,14 @@ def generate(args):
     cp_size = context_parallel_util.get_cp_size()
     cp_split_hw = context_parallel_util.get_optimal_split(cp_size)
 
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, subfolder="tokenizer", torch_dtype=torch.bfloat16)
-    text_encoder = UMT5EncoderModel.from_pretrained(checkpoint_dir, subfolder="text_encoder", torch_dtype=torch.bfloat16)
-    vae = AutoencoderKLWan.from_pretrained(checkpoint_dir, subfolder="vae", torch_dtype=torch.bfloat16)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(checkpoint_dir, subfolder="scheduler", torch_dtype=torch.bfloat16)
-    dit = LongCatVideoTransformer3DModel.from_pretrained(checkpoint_dir, subfolder="dit", cp_split_hw=cp_split_hw, torch_dtype=torch.bfloat16)
-
-    if enable_compile:
-        dit = torch.compile(dit)
-
-    pipe = LongCatVideoPipeline(
-        tokenizer = tokenizer,
-        text_encoder = text_encoder,
-        vae = vae,
-        scheduler = scheduler,
-        dit = dit,
+    pipe = load_base_pipeline(
+        checkpoint_dir,
+        device=local_rank,
+        torch_dtype=torch.bfloat16,
+        cp_split_hw=cp_split_hw,
     )
-    pipe.to(local_rank)
+    if enable_compile:
+        pipe.dit = torch.compile(pipe.dit)
 
     global_seed = 42
     seed = global_seed + global_rank
@@ -105,7 +92,7 @@ def generate(args):
     pipe.dit.enable_loras(['cfg_step_lora'])
 
     if enable_compile:
-        dit = torch.compile(dit)
+        pipe.dit = torch.compile(pipe.dit)
 
     output_distill = pipe.generate_i2v(
         image=image,
@@ -174,7 +161,7 @@ def _parse_args():
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default=None,
+        default="./weights/ARACHNE-X",
     )
     parser.add_argument(
         '--enable_compile',

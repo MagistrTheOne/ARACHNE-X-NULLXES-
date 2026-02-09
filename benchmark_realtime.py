@@ -10,6 +10,8 @@ import numpy as np
 from typing import Dict, List
 import statistics
 
+from arachne_x.loader import load_avatar_pipeline
+
 
 class RealtimeBenchmark:
     """Benchmark real-time inference performance."""
@@ -242,48 +244,12 @@ def run_benchmark(pipeline, hardware: str = "H200") -> Dict:
     }
 
 
-def load_avatar_pipeline(checkpoint_dir: str, device: str = 'cuda'):
-    """Load LongCatVideoAvatarPipeline for benchmark."""
-    import os
-    from transformers import AutoTokenizer, UMT5EncoderModel, Wav2Vec2FeatureExtractor
-    from longcat_video.pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
-    from longcat_video.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-    from longcat_video.modules.autoencoder_kl_wan import AutoencoderKLWan
-    from longcat_video.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-    from longcat_video.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-
-    base_dir = os.path.join(checkpoint_dir, '..', 'LongCat-Video')
-    tokenizer = AutoTokenizer.from_pretrained(base_dir, subfolder="tokenizer", torch_dtype=torch.bfloat16)
-    text_encoder = UMT5EncoderModel.from_pretrained(base_dir, subfolder="text_encoder", torch_dtype=torch.bfloat16)
-    vae = AutoencoderKLWan.from_pretrained(base_dir, subfolder="vae", torch_dtype=torch.bfloat16)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(base_dir, subfolder="scheduler", torch_dtype=torch.bfloat16)
-    dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-        checkpoint_dir, subfolder="avatar_single", torch_dtype=torch.bfloat16
-    )
-    wav2vec_path = os.path.join(checkpoint_dir, 'chinese-wav2vec2-base')
-    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(device)
-    audio_encoder.feature_extractor._freeze_parameters()
-    wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(wav2vec_path, local_files_only=True)
-
-    pipe = LongCatVideoAvatarPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        scheduler=scheduler,
-        dit=dit,
-        audio_encoder=audio_encoder,
-        wav2vec_feature_extractor=wav2vec_feature_extractor,
-    )
-    pipe.to(device)
-    return pipe
-
-
 if __name__ == '__main__':
     import argparse
     import os
 
     parser = argparse.ArgumentParser(description="ARACHNE-X Benchmark")
-    parser.add_argument('--checkpoint_dir', type=str, default='./weights/LongCat-Video-Avatar')
+    parser.add_argument('--checkpoint_dir', type=str, default='./weights/ARACHNE-X-Avatar')
     parser.add_argument('--hardware', type=str, default='H200', choices=['H200', 'H100', 'A100'])
     parser.add_argument('--no_load', action='store_true', help='Skip pipeline load (for testing with mock)')
     args = parser.parse_args()
@@ -294,11 +260,12 @@ if __name__ == '__main__':
             exit(1)
         if not os.path.isdir(args.checkpoint_dir):
             print(f"[!] Checkpoint not found: {args.checkpoint_dir}")
-            print("    Run with --checkpoint_dir pointing to LongCat-Video-Avatar weights.")
+            print("    Run with --checkpoint_dir pointing to ARACHNE-X-Avatar weights.")
             exit(1)
         print("[*] Loading models...")
-        pipeline = load_avatar_pipeline(args.checkpoint_dir)
+        pipeline = load_avatar_pipeline(args.checkpoint_dir, device="cuda")
         print("[*] Ready for benchmark")
         run_benchmark(pipeline, hardware=args.hardware)
     else:
         print("[*] Skipping load (--no_load). Provide pipeline manually for run_benchmark().")
+
