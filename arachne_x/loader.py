@@ -10,8 +10,8 @@ from .modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscrete
 from .modules.longcat_video_dit import LongCatVideoTransformer3DModel
 from .modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
 from .audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-from .pipeline_longcat_video import LongCatVideoPipeline
-from .pipeline_longcat_video_avatar import LongCatVideoAvatarPipeline
+from .pipeline_arachne_x_video import ArachneXVideoPipeline
+from .pipeline_arachne_x_video_avatar import ArachneXVideoAvatarPipeline
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ def load_base_pipeline(
     torch_dtype: torch.dtype = torch.bfloat16,
     cp_split_hw: Optional[Tuple[int, int]] = None,
     layout: WeightsLayout = WeightsLayout(),
-) -> LongCatVideoPipeline:
+) -> ArachneXVideoPipeline:
     tokenizer = AutoTokenizer.from_pretrained(_p(checkpoint_dir, layout.tokenizer), torch_dtype=torch_dtype)
     text_encoder = UMT5EncoderModel.from_pretrained(_p(checkpoint_dir, layout.text_encoder), torch_dtype=torch_dtype)
     vae = AutoencoderKLWan.from_pretrained(_p(checkpoint_dir, layout.vae), torch_dtype=torch_dtype)
@@ -49,7 +49,7 @@ def load_base_pipeline(
         torch_dtype=torch_dtype,
     )
 
-    pipe = LongCatVideoPipeline(
+    pipe = ArachneXVideoPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
         vae=vae,
@@ -67,7 +67,7 @@ def load_avatar_pipeline(
     torch_dtype: torch.dtype = torch.bfloat16,
     cp_split_hw: Optional[Tuple[int, int]] = None,
     layout: WeightsLayout = WeightsLayout(),
-) -> LongCatVideoAvatarPipeline:
+) -> ArachneXVideoAvatarPipeline:
     tokenizer = AutoTokenizer.from_pretrained(_p(checkpoint_dir, layout.tokenizer), torch_dtype=torch_dtype)
     text_encoder = UMT5EncoderModel.from_pretrained(_p(checkpoint_dir, layout.text_encoder), torch_dtype=torch_dtype)
     vae = AutoencoderKLWan.from_pretrained(_p(checkpoint_dir, layout.vae), torch_dtype=torch_dtype)
@@ -91,7 +91,7 @@ def load_avatar_pipeline(
         local_files_only=True,
     )
 
-    pipe = LongCatVideoAvatarPipeline(
+    pipe = ArachneXVideoAvatarPipeline(
         tokenizer=tokenizer,
         text_encoder=text_encoder,
         vae=vae,

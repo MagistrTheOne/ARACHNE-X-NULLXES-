@@ -31,6 +31,7 @@ import scipy.signal as ss
 import pyloudnorm as pyln
 from arachne_x.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from arachne_x.audio_process.multi_stream_processor import MultiStreamAudioProcessor
+from arachne_x.audio_process.phoneme_aligner import PhonemeTemporalAligner
 from arachne_x.utils.monitoring import MetricsLogger, sha256_of_audio_array
 from arachne_x.streaming_inference import StreamingVAEDecoder, CUDAOptimizer
 from transformers import Wav2Vec2FeatureExtractor
@@ -149,7 +150,71 @@ class LongCatVideoAvatarPipeline:
         self.audio_processor = MultiStreamAudioProcessor()
         self.multi_stream_fusion_proj = nn.Linear(1024, 768)
         self.multi_stream_fusion_scale = 0.2
+        # Step 3: phoneme-conditioned stream with robust wav2vec fallback.
+        self.phoneme_enabled = True
+        self.phoneme_num_classes = 10
+        self.phoneme_stream_scale = 0.20
+        self.phoneme_confidence_floor = 0.10
+        self.phoneme_fallback_to_wav2vec = True
+        self.phoneme_aligner = PhonemeTemporalAligner(num_phonemes=self.phoneme_num_classes)
+        audio_embed_dim = 768
+        self.phoneme_proj = nn.Sequential(
+            nn.Linear(self.phoneme_num_classes, audio_embed_dim),
+            nn.SiLU(),
+            nn.Linear(audio_embed_dim, audio_embed_dim),
+        )
+        self.phoneme_alignment_head = nn.Linear(audio_embed_dim, self.phoneme_num_classes)
+        # Step 4: explicit emotion control channel with lip-sync safety guard.
+        self.emotion_enabled = True
+        self.emotion_num_classes = 8
+        self.emotion_default_id = 0
+        self.emotion_default_intensity = 0.0
+        self.emotion_lipsync_guard_ratio = 0.35
+        self.emotion_label_to_id = {
+            "neutral": 0,
+            "happy": 1,
+            "sad": 2,
+            "angry": 3,
+            "surprised": 4,
+            "fearful": 5,
+            "disgusted": 6,
+            "calm": 7,
+        }
+        self.emotion_embedding = nn.Embedding(self.emotion_num_classes, audio_embed_dim)
+        nn.init.normal_(self.emotion_embedding.weight, mean=0.0, std=0.02)
+        self.emotion_proj = nn.Sequential(
+            nn.Linear(audio_embed_dim, audio_embed_dim),
+            nn.SiLU(),
+            nn.Linear(audio_embed_dim, audio_embed_dim),
+        )
+        # Step 5: hybrid renderer for controlled mouth zone.
+        self.hybrid_renderer_enabled = True
+        self.hybrid_renderer_mouth_strength = 0.35
+        self.hybrid_renderer_blur_passes = 2
+        self.hybrid_renderer_temporal_alpha = 0.70
+        self.hybrid_renderer_flicker_budget = 1.40
+        self.hybrid_renderer_artifact_budget = 0.08
         self.metrics = MetricsLogger()
+
+        # Identity token bank (Step 2): learnable per-identity vectors injected
+        # into text conditioning as extra tokens.
+        self.identity_bank_enabled = True
+        self.identity_bank_size = 1024
+        self.identity_tokens_per_id = 4
+        self.identity_token_dim = int(self.text_encoder.config.d_model)
+        self.identity_embedding = nn.Embedding(
+            self.identity_bank_size,
+            self.identity_tokens_per_id * self.identity_token_dim,
+        )
+        nn.init.normal_(self.identity_embedding.weight, mean=0.0, std=0.02)
+        latent_dim = int(getattr(self.vae.config, "z_dim", 16))
+        self.identity_latent_projector = nn.Sequential(
+            nn.Linear(latent_dim, self.identity_token_dim),
+            nn.SiLU(),
+            nn.Linear(self.identity_token_dim, self.identity_tokens_per_id * self.identity_token_dim),
+        )
+        self.identity_default_strength = 1.0
+        self.identity_default_negative_strength = 0.0
         
         self.streaming_enabled = True
         # Temporal compression memory (Step 1): keep a recent sliding window and
@@ -157,6 +222,7 @@ class LongCatVideoAvatarPipeline:
         self.temporal_memory_enabled = True
         self.temporal_memory_window_frames = 8
         self.temporal_memory_summary_frames = 2
+        self._emotion_guidance_scale = 0.0
         
         # CUDA optimizations for H200
         CUDAOptimizer.enable_flash_attention()
@@ -372,8 +438,16 @@ class LongCatVideoAvatarPipeline:
         return self._audio_guidance_scale
 
     @property
+    def emotion_guidance_scale(self):
+        return self._emotion_guidance_scale
+
+    @property
     def do_classifier_free_guidance(self):
-        return self._text_guidance_scale > 1.0 or self._audio_guidance_scale > 1.0
+        return (
+            self._text_guidance_scale > 1.0
+            or self._audio_guidance_scale > 1.0
+            or self._emotion_guidance_scale > 0.0
+        )
 
     @property
     def num_timesteps(self):
@@ -411,6 +485,229 @@ class LongCatVideoAvatarPipeline:
 
     def _update_kv_cache_dict(self, kv_cache_dict):
         self.kv_cache_dict = kv_cache_dict
+
+    def _normalize_identity_ids(
+        self,
+        identity_id: Optional[Union[int, List[int], torch.Tensor]],
+        batch_size: int,
+    ) -> Optional[List[int]]:
+        if identity_id is None:
+            return None
+
+        if isinstance(identity_id, int):
+            ids = [identity_id] * batch_size
+        elif isinstance(identity_id, torch.Tensor):
+            ids = [int(x) for x in identity_id.detach().cpu().view(-1).tolist()]
+        elif isinstance(identity_id, (list, tuple)):
+            ids = [int(x) for x in identity_id]
+        else:
+            raise TypeError(
+                f"`identity_id` must be int, list[int], torch.Tensor, or None. Got {type(identity_id)}."
+            )
+
+        if len(ids) == 1 and batch_size > 1:
+            ids = ids * batch_size
+        if len(ids) != batch_size:
+            raise ValueError(
+                f"`identity_id` length must be 1 or equal to batch size ({batch_size}), got {len(ids)}."
+            )
+
+        for idx in ids:
+            if idx < 0 or idx >= self.identity_bank_size:
+                raise ValueError(
+                    f"`identity_id` {idx} is out of range [0, {self.identity_bank_size - 1}]."
+                )
+        return ids
+
+    def _append_identity_tokens(
+        self,
+        prompt_embeds: torch.Tensor,
+        prompt_attention_mask: torch.Tensor,
+        negative_prompt_embeds: Optional[torch.Tensor],
+        negative_prompt_attention_mask: Optional[torch.Tensor],
+        identity_id: Optional[Union[int, List[int], torch.Tensor]],
+        identity_strength: float,
+        identity_negative_strength: float,
+        batch_size: int,
+        num_videos_per_prompt: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if not self.identity_bank_enabled:
+            return (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            )
+        if identity_id is None:
+            return (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            )
+        if identity_strength < 0:
+            raise ValueError(f"`identity_strength` must be >= 0, got {identity_strength}.")
+        if identity_negative_strength < 0:
+            raise ValueError(
+                f"`identity_negative_strength` must be >= 0, got {identity_negative_strength}."
+            )
+
+        base_ids = self._normalize_identity_ids(identity_id, batch_size=batch_size)
+        expanded_ids: List[int] = []
+        for idx in base_ids:
+            expanded_ids.extend([idx] * num_videos_per_prompt)
+
+        bank_device = self.identity_embedding.weight.device
+        id_index = torch.tensor(expanded_ids, dtype=torch.long, device=bank_device)
+        id_tokens = self.identity_embedding(id_index).view(
+            len(expanded_ids),
+            self.identity_tokens_per_id,
+            self.identity_token_dim,
+        )
+        id_tokens = id_tokens.to(device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+        id_tokens = id_tokens.unsqueeze(1)  # [B, 1, N_id, D]
+
+        pos_tokens = id_tokens * float(identity_strength)
+        pos_mask = torch.ones(
+            (pos_tokens.shape[0], pos_tokens.shape[2]),
+            dtype=prompt_attention_mask.dtype,
+            device=prompt_attention_mask.device,
+        )
+        prompt_embeds = torch.cat([prompt_embeds, pos_tokens], dim=2)
+        prompt_attention_mask = torch.cat([prompt_attention_mask, pos_mask], dim=1)
+
+        if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
+            neg_tokens = id_tokens.to(
+                device=negative_prompt_embeds.device,
+                dtype=negative_prompt_embeds.dtype,
+            ) * float(identity_negative_strength)
+            if identity_negative_strength > 0:
+                neg_mask = torch.ones(
+                    (neg_tokens.shape[0], neg_tokens.shape[2]),
+                    dtype=negative_prompt_attention_mask.dtype,
+                    device=negative_prompt_attention_mask.device,
+                )
+            else:
+                neg_mask = torch.zeros(
+                    (neg_tokens.shape[0], neg_tokens.shape[2]),
+                    dtype=negative_prompt_attention_mask.dtype,
+                    device=negative_prompt_attention_mask.device,
+                )
+            negative_prompt_embeds = torch.cat([negative_prompt_embeds, neg_tokens], dim=2)
+            negative_prompt_attention_mask = torch.cat([negative_prompt_attention_mask, neg_mask], dim=1)
+
+        self.metrics.record("identity_tokens_appended", int(self.identity_tokens_per_id))
+        self.metrics.record("identity_strength", float(identity_strength))
+        self.metrics.record("identity_negative_strength", float(identity_negative_strength))
+        self.metrics.record("identity_bank_active", 1)
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        )
+
+    @torch.no_grad()
+    def register_identity_from_latents(
+        self,
+        identity_id: Union[int, List[int], torch.Tensor],
+        latents: torch.Tensor,
+        momentum: float = 0.25,
+    ) -> None:
+        if not self.identity_bank_enabled:
+            return
+        if latents.ndim != 5:
+            raise ValueError(f"`latents` must be [B, C, T, H, W], got shape {tuple(latents.shape)}.")
+        if momentum < 0 or momentum > 1:
+            raise ValueError(f"`momentum` must be in [0, 1], got {momentum}.")
+
+        batch_size = latents.shape[0]
+        ids = self._normalize_identity_ids(identity_id, batch_size=batch_size)
+
+        pooled = latents.to(torch.float32).mean(dim=(2, 3, 4))
+        proj_device = next(self.identity_latent_projector.parameters()).device
+        pooled = pooled.to(device=proj_device)
+        projected = self.identity_latent_projector(pooled)  # [B, tokens*dim]
+
+        with torch.no_grad():
+            for b, idx in enumerate(ids):
+                current = self.identity_embedding.weight[idx].detach().to(projected.dtype)
+                observed = projected[b]
+                updated = (1.0 - momentum) * current + momentum * observed
+                cos = F.cosine_similarity(
+                    current.unsqueeze(0),
+                    observed.unsqueeze(0),
+                    dim=-1,
+                ).item()
+                self.identity_embedding.weight[idx].data.copy_(
+                    updated.to(self.identity_embedding.weight.dtype)
+                )
+                self.metrics.record("identity_bank_update_cosine", float(cos))
+                self.metrics.record("identity_bank_updated_id", int(idx))
+
+    @torch.no_grad()
+    def save_identity_bank(self, path: str) -> str:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        payload = {
+            "version": 1,
+            "timestamp": time.time(),
+            "identity_bank_size": int(self.identity_bank_size),
+            "identity_tokens_per_id": int(self.identity_tokens_per_id),
+            "identity_token_dim": int(self.identity_token_dim),
+            "identity_embedding": self.identity_embedding.weight.detach().cpu(),
+            "identity_latent_projector": self.identity_latent_projector.state_dict(),
+        }
+        torch.save(payload, path)
+        return path
+
+    @torch.no_grad()
+    def load_identity_bank(self, path: str, strict: bool = True) -> Dict[str, Any]:
+        payload = torch.load(path, map_location="cpu")
+        required_keys = {
+            "version",
+            "identity_bank_size",
+            "identity_tokens_per_id",
+            "identity_token_dim",
+            "identity_embedding",
+        }
+        missing = required_keys - set(payload.keys())
+        if missing:
+            raise ValueError(f"Identity bank file is missing keys: {sorted(missing)}")
+
+        loaded_bank = payload["identity_embedding"]
+        if not isinstance(loaded_bank, torch.Tensor):
+            raise ValueError("`identity_embedding` must be a torch.Tensor.")
+
+        expected_shape = (
+            self.identity_bank_size,
+            self.identity_tokens_per_id * self.identity_token_dim,
+        )
+        loaded_shape = tuple(loaded_bank.shape)
+        if strict and loaded_shape != expected_shape:
+            raise ValueError(
+                f"Identity bank shape mismatch. Expected {expected_shape}, got {loaded_shape}."
+            )
+
+        rows = min(expected_shape[0], loaded_bank.shape[0])
+        cols = min(expected_shape[1], loaded_bank.shape[1])
+        self.identity_embedding.weight.data[:rows, :cols].copy_(
+            loaded_bank[:rows, :cols].to(self.identity_embedding.weight.dtype)
+        )
+
+        if "identity_latent_projector" in payload:
+            self.identity_latent_projector.load_state_dict(payload["identity_latent_projector"], strict=False)
+
+        self.metrics.record("identity_bank_loaded_rows", int(rows))
+        self.metrics.record("identity_bank_loaded_cols", int(cols))
+        return {
+            "rows_loaded": int(rows),
+            "cols_loaded": int(cols),
+            "strict": bool(strict),
+            "source": path,
+        }
 
     def _compress_kv_pair_temporal(
         self,
@@ -719,24 +1016,419 @@ class LongCatVideoAvatarPipeline:
         return audio_bt.squeeze(0)
 
     @torch.no_grad()
+    def _extract_phoneme_timeline(
+        self,
+        speech_array: np.ndarray,
+        sample_rate: int,
+        target_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.phoneme_enabled or self.phoneme_aligner is None or target_len <= 0:
+            return None
+
+        try:
+            with self.metrics.timeit("phoneme_extract"):
+                phoneme_out = self.phoneme_aligner.extract(
+                    speech_array,
+                    sample_rate=sample_rate,
+                    target_len=target_len,
+                )
+
+            phoneme_probs = phoneme_out["phoneme_probs"].to(device=device, dtype=dtype)
+            phoneme_ids = phoneme_out["phoneme_ids"].to(device=device, dtype=torch.long)
+            confidence = phoneme_out["confidence"].to(device=device, dtype=dtype)
+
+            self.metrics.record("phoneme_voiced_ratio", float(phoneme_out.get("voiced_ratio", 0.0)))
+            self.metrics.record("phoneme_silence_ratio", float(phoneme_out.get("silence_ratio", 0.0)))
+            self.metrics.record("phoneme_fricative_ratio", float(phoneme_out.get("fricative_ratio", 0.0)))
+            self.metrics.record("phoneme_plosive_ratio", float(phoneme_out.get("plosive_ratio", 0.0)))
+            self.metrics.record("phoneme_confidence_mean", float(confidence.mean().item()))
+
+            return {
+                "phoneme_probs": phoneme_probs,
+                "phoneme_ids": phoneme_ids,
+                "confidence": confidence,
+            }
+        except Exception as exc:
+            self.metrics.record("phoneme_fallback_count", 1)
+            if not self.phoneme_fallback_to_wav2vec:
+                raise
+            loguru.logger.warning(
+                "Phoneme extraction failed; using wav2vec fallback only. Error: {}",
+                exc,
+            )
+            return None
+
+    def _inject_phoneme_conditioning(
+        self,
+        audio_emb: torch.Tensor,
+        phoneme_probs: torch.Tensor,
+        confidence: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if audio_emb.dim() not in (2, 3):
+            return audio_emb
+
+        phoneme_proj = self.phoneme_proj.to(device=device, dtype=audio_emb.dtype)
+        phoneme_ctx = phoneme_proj(phoneme_probs.to(device=device, dtype=audio_emb.dtype))
+        conf = confidence.to(device=device, dtype=audio_emb.dtype).clamp(
+            min=float(self.phoneme_confidence_floor), max=1.0
+        )
+        phoneme_ctx = phoneme_ctx * conf.unsqueeze(-1)
+
+        if audio_emb.dim() == 3:
+            phoneme_ctx = phoneme_ctx.unsqueeze(1).expand(-1, audio_emb.shape[1], -1)
+
+        conditioned = audio_emb + float(self.phoneme_stream_scale) * phoneme_ctx
+        return conditioned.contiguous()
+
+    def _compute_phoneme_alignment_metrics(
+        self,
+        audio_emb: torch.Tensor,
+        phoneme_probs: torch.Tensor,
+        phoneme_ids: torch.Tensor,
+        device: torch.device,
+    ) -> Optional[Dict[str, float]]:
+        if audio_emb.dim() == 3:
+            frame_repr = audio_emb.mean(dim=1)
+        elif audio_emb.dim() == 2:
+            frame_repr = audio_emb
+        else:
+            return None
+
+        target_len = phoneme_probs.shape[0]
+        if target_len <= 0:
+            return None
+
+        if frame_repr.shape[0] != target_len:
+            frame_repr = frame_repr.transpose(0, 1).unsqueeze(0)
+            frame_repr = F.interpolate(frame_repr, size=target_len, mode="linear", align_corners=False)
+            frame_repr = frame_repr.squeeze(0).transpose(0, 1).contiguous()
+
+        frame_repr = frame_repr.to(device=device, dtype=torch.float32)
+        probs = phoneme_probs.to(device=device, dtype=torch.float32)
+        ids = phoneme_ids.to(device=device, dtype=torch.long)
+
+        head = self.phoneme_alignment_head.to(device=device, dtype=frame_repr.dtype)
+        logits = head(frame_repr)
+        log_probs = F.log_softmax(logits, dim=-1)
+
+        kl = F.kl_div(log_probs, probs, reduction="batchmean")
+        ce = F.nll_loss(log_probs, ids, reduction="mean")
+        loss = 0.5 * (kl + ce)
+        pred = torch.argmax(log_probs, dim=-1)
+        acc = (pred == ids).float().mean()
+
+        return {
+            "loss": float(loss.item()),
+            "kl": float(kl.item()),
+            "ce": float(ce.item()),
+            "acc": float(acc.item()),
+        }
+
+    def _normalize_emotion_ids(
+        self,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]],
+        batch_size: int,
+    ) -> Optional[List[int]]:
+        if emotion_id is None:
+            return None
+
+        if isinstance(emotion_id, (int, str)):
+            raw_items: List[Union[int, str]] = [emotion_id] * batch_size
+        elif isinstance(emotion_id, torch.Tensor):
+            raw_items = [int(x) for x in emotion_id.detach().cpu().view(-1).tolist()]
+        elif isinstance(emotion_id, (list, tuple)):
+            raw_items = list(emotion_id)
+        else:
+            raise TypeError(
+                f"`emotion_id` must be int, str, list, torch.Tensor, or None. Got {type(emotion_id)}."
+            )
+
+        if len(raw_items) == 1 and batch_size > 1:
+            raw_items = raw_items * batch_size
+        if len(raw_items) != batch_size:
+            raise ValueError(
+                f"`emotion_id` length must be 1 or equal to batch size ({batch_size}), got {len(raw_items)}."
+            )
+
+        resolved: List[int] = []
+        for item in raw_items:
+            if isinstance(item, str):
+                key = item.strip().lower()
+                if key not in self.emotion_label_to_id:
+                    raise ValueError(
+                        f"Unknown emotion label `{item}`. Allowed: {sorted(self.emotion_label_to_id.keys())}."
+                    )
+                resolved.append(int(self.emotion_label_to_id[key]))
+            else:
+                idx = int(item)
+                if idx < 0 or idx >= self.emotion_num_classes:
+                    raise ValueError(
+                        f"`emotion_id` {idx} is out of range [0, {self.emotion_num_classes - 1}]."
+                    )
+                resolved.append(idx)
+        return resolved
+
+    def _apply_emotion_channel(
+        self,
+        audio_emb: torch.Tensor,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]],
+        emotion_intensity: float,
+        batch_size: int,
+        num_videos_per_prompt: int,
+        device: torch.device,
+    ) -> Tuple[torch.Tensor, bool]:
+        if not self.emotion_enabled or emotion_id is None:
+            return audio_emb, False
+        if emotion_intensity <= 0:
+            return audio_emb, False
+        if audio_emb.ndim != 5:
+            return audio_emb, False
+
+        ids = self._normalize_emotion_ids(emotion_id, batch_size=batch_size)
+        expanded_ids: List[int] = []
+        for idx in ids:
+            expanded_ids.extend([idx] * num_videos_per_prompt)
+
+        emb = self.emotion_embedding(
+            torch.tensor(expanded_ids, dtype=torch.long, device=self.emotion_embedding.weight.device)
+        ).to(device=device, dtype=audio_emb.dtype)
+        emb = self.emotion_proj.to(device=device, dtype=audio_emb.dtype)(emb)
+
+        B = audio_emb.shape[0]
+        emotion_ctx = emb.view(B, 1, 1, 1, -1)
+
+        audio_rms = (
+            audio_emb.to(torch.float32).pow(2).mean(dim=(1, 2, 3, 4), keepdim=True).sqrt().clamp_min(1e-6)
+        )
+        emotion_rms = (
+            emotion_ctx.to(torch.float32).pow(2).mean(dim=(1, 2, 3, 4), keepdim=True).sqrt().clamp_min(1e-6)
+        )
+        requested_scale = torch.full_like(audio_rms, float(emotion_intensity))
+        max_scale = (audio_rms * float(self.emotion_lipsync_guard_ratio)) / emotion_rms
+        safe_scale = torch.minimum(requested_scale, max_scale)
+        safe_scale = torch.clamp(safe_scale, min=0.0)
+
+        conditioned = audio_emb + emotion_ctx * safe_scale.to(device=device, dtype=audio_emb.dtype)
+
+        requested = float(emotion_intensity)
+        applied = float(safe_scale.mean().item())
+        clipped = bool(applied + 1e-6 < requested)
+        self.metrics.record("emotion_intensity_requested", requested)
+        self.metrics.record("emotion_intensity_applied", applied)
+        self.metrics.record("emotion_lipsync_guard_triggered", int(clipped))
+        self.metrics.record("emotion_lipsync_guard_ratio", float(self.emotion_lipsync_guard_ratio))
+
+        return conditioned.contiguous(), applied > 0.0
+
+    def _prepare_mouth_zone_mask(
+        self,
+        mouth_zone_masks: Optional[torch.Tensor],
+        batch_size: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        resize_mode: str = "crop",
+    ) -> Optional[torch.Tensor]:
+        if mouth_zone_masks is None:
+            return None
+
+        mask = mouth_zone_masks
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.as_tensor(mask)
+        mask = mask.to(device=device, dtype=torch.float32)
+
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        elif mask.ndim == 3:
+            if mask.shape[0] in (1, 3):
+                mask = mask.mean(dim=0, keepdim=True).unsqueeze(0)  # [1,1,H,W]
+            else:
+                mask = mask.unsqueeze(1)  # [B,1,H,W]
+        elif mask.ndim == 4:
+            if mask.shape[1] in (1, 3):
+                mask = mask.mean(dim=1, keepdim=True)  # [B,1,H,W]
+            else:
+                return None
+        else:
+            return None
+
+        if mask.shape[-2:] != (height, width):
+            if mask.shape[0] == 1:
+                m3 = mask[0].repeat(3, 1, 1)
+                m3 = self._resize_and_centercrop_tensor(m3, height, width, resize_mode)
+                mask = m3.mean(dim=0, keepdim=True).unsqueeze(0)
+            else:
+                resized = []
+                for b in range(mask.shape[0]):
+                    m3 = mask[b].repeat(3, 1, 1)
+                    m3 = self._resize_and_centercrop_tensor(m3, height, width, resize_mode)
+                    resized.append(m3.mean(dim=0, keepdim=True))
+                mask = torch.stack(resized, dim=0)
+
+        if mask.shape[0] == 1 and batch_size > 1:
+            mask = mask.expand(batch_size, -1, -1, -1).contiguous()
+        elif mask.shape[0] != batch_size:
+            return None
+
+        mask = torch.clamp(mask, 0.0, 1.0)
+        for _ in range(max(1, int(self.hybrid_renderer_blur_passes))):
+            mask = F.avg_pool2d(mask, kernel_size=5, stride=1, padding=2)
+        mask = torch.clamp(mask, 0.0, 1.0).to(dtype=dtype)
+        mask = mask.unsqueeze(2).repeat(1, 1, num_frames, 1, 1)  # [B,1,T,H,W]
+        return mask.contiguous()
+
+    def _compute_seam_boundary_mask(self, mouth_mask: torch.Tensor) -> torch.Tensor:
+        # High value on transition ring around mouth mask.
+        b, _, t, h, w = mouth_mask.shape
+        flat = mouth_mask.permute(0, 2, 1, 3, 4).reshape(b * t, 1, h, w)
+        eroded = F.avg_pool2d(flat, kernel_size=5, stride=1, padding=2)
+        ring = torch.clamp(flat - eroded, min=0.0, max=1.0)
+        ring = torch.clamp(ring * 4.0, min=0.0, max=1.0)
+        ring = ring.reshape(b, t, 1, h, w).permute(0, 2, 1, 3, 4).contiguous()
+        return ring
+
+    def _build_mouth_controlled_branch(self, decoded_video: torch.Tensor, strength: float) -> torch.Tensor:
+        # Deterministic high-frequency enhancement branch for the controlled zone.
+        b, c, t, h, w = decoded_video.shape
+        flat = decoded_video.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+        blurred = F.avg_pool2d(flat, kernel_size=3, stride=1, padding=1)
+        detail = flat - blurred
+        branch = flat + float(strength) * detail
+        return branch.reshape(b, t, c, h, w).permute(0, 2, 1, 3, 4).contiguous()
+
+    def _temporal_stabilize_boundary(
+        self,
+        hybrid_video: torch.Tensor,
+        boundary_mask: torch.Tensor,
+        alpha: float,
+    ) -> torch.Tensor:
+        if hybrid_video.shape[2] <= 1:
+            return hybrid_video
+
+        stabilized = hybrid_video.clone()
+        a = float(alpha)
+        for i in range(1, stabilized.shape[2]):
+            prev = stabilized[:, :, i - 1]
+            curr = stabilized[:, :, i]
+            seam = boundary_mask[:, :, i]
+            blended = a * curr + (1.0 - a) * prev
+            stabilized[:, :, i] = curr * (1.0 - seam) + blended * seam
+        return stabilized
+
+    def _validate_hybrid_renderer_budget(
+        self,
+        global_video: torch.Tensor,
+        hybrid_video: torch.Tensor,
+        mouth_mask: torch.Tensor,
+        boundary_mask: torch.Tensor,
+    ) -> None:
+        if hybrid_video.shape[2] <= 1:
+            return
+
+        g = global_video.to(torch.float32)
+        h = hybrid_video.to(torch.float32)
+
+        dt_g = torch.abs(g[:, :, 1:] - g[:, :, :-1])
+        dt_h = torch.abs(h[:, :, 1:] - h[:, :, :-1])
+        seam = boundary_mask[:, :, 1:]
+        seam_den = seam.mean().clamp_min(1e-6)
+        flicker_g = (dt_g * seam).mean() / seam_den
+        flicker_h = (dt_h * seam).mean() / seam_den
+        flicker_ratio = (flicker_h / flicker_g.clamp_min(1e-6)).item()
+
+        artifact_energy = (torch.abs(h - g) * mouth_mask).mean().item()
+        self.metrics.record("hybrid_mouth_flicker_ratio", float(flicker_ratio))
+        self.metrics.record("hybrid_mouth_artifact_energy", float(artifact_energy))
+        self.metrics.record("hybrid_mouth_budget_ok", int(
+            flicker_ratio <= float(self.hybrid_renderer_flicker_budget)
+            and artifact_energy <= float(self.hybrid_renderer_artifact_budget)
+        ))
+
+        if flicker_ratio > float(self.hybrid_renderer_flicker_budget):
+            loguru.logger.warning(
+                "Hybrid mouth renderer flicker budget exceeded: ratio {:.4f} > {:.4f}",
+                flicker_ratio,
+                float(self.hybrid_renderer_flicker_budget),
+            )
+        if artifact_energy > float(self.hybrid_renderer_artifact_budget):
+            loguru.logger.warning(
+                "Hybrid mouth renderer artifact budget exceeded: {:.6f} > {:.6f}",
+                artifact_energy,
+                float(self.hybrid_renderer_artifact_budget),
+            )
+
+    def _apply_hybrid_mouth_renderer(
+        self,
+        decoded_video: torch.Tensor,
+        mouth_zone_masks: Optional[torch.Tensor],
+        resize_mode: str = "crop",
+    ) -> torch.Tensor:
+        if not self.hybrid_renderer_enabled or mouth_zone_masks is None:
+            return decoded_video
+        if decoded_video.ndim != 5:
+            return decoded_video
+
+        b, _, t, h, w = decoded_video.shape
+        mouth_mask = self._prepare_mouth_zone_mask(
+            mouth_zone_masks=mouth_zone_masks,
+            batch_size=b,
+            num_frames=t,
+            height=h,
+            width=w,
+            device=decoded_video.device,
+            dtype=decoded_video.dtype,
+            resize_mode=resize_mode,
+        )
+        if mouth_mask is None:
+            return decoded_video
+
+        boundary_mask = self._compute_seam_boundary_mask(mouth_mask)
+        mouth_branch = self._build_mouth_controlled_branch(
+            decoded_video=decoded_video,
+            strength=float(self.hybrid_renderer_mouth_strength),
+        )
+        hybrid = decoded_video * (1.0 - mouth_mask) + mouth_branch * mouth_mask
+        hybrid = self._temporal_stabilize_boundary(
+            hybrid_video=hybrid,
+            boundary_mask=boundary_mask,
+            alpha=float(self.hybrid_renderer_temporal_alpha),
+        )
+        self._validate_hybrid_renderer_budget(
+            global_video=decoded_video,
+            hybrid_video=hybrid,
+            mouth_mask=mouth_mask,
+            boundary_mask=boundary_mask,
+        )
+        return hybrid.contiguous()
+
+    @torch.no_grad()
     def get_audio_embedding(self, speech_array, fps=32, device='cpu', sample_rate=16000):
             
         # optional disk cache for audio embeddings to accelerate repeated runs
         cache_dir = getattr(self, 'audio_cache_dir', './audio_cache')
         os.makedirs(cache_dir, exist_ok=True)
 
-        key = sha256_of_audio_array(np.ascontiguousarray(speech_array)) + f"_fps{fps}_sr{sample_rate}"
+        phoneme_scale_tag = str(round(float(self.phoneme_stream_scale), 4)).replace(".", "p")
+        key = (
+            sha256_of_audio_array(np.ascontiguousarray(speech_array))
+            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_v2"
+        )
         cache_path = os.path.join(cache_dir, key + '.npz')
 
         if os.path.exists(cache_path):
             try:
                 with self.metrics.timeit('audio_cache_load'):
                     npz = np.load(cache_path)
-                    audio_emb = torch.from_numpy(npz['audio_emb']).to(device=device)
-                    fused_emb = None
-                    if 'fused_emb' in npz:
-                        fused_emb = torch.from_numpy(npz['fused_emb'])
-                    audio_emb = self._apply_multistream_fusion(audio_emb, fused_emb, device=device)
+                    if "audio_emb_final" in npz:
+                        cached = npz["audio_emb_final"]
+                    else:
+                        cached = npz["audio_emb"]
+                    audio_emb = torch.from_numpy(cached).to(device=device)
                     # return shape (T, B, D)
                     return audio_emb
             except Exception as exc:
@@ -787,10 +1479,44 @@ class LongCatVideoAvatarPipeline:
 
             if fused_emb is not None:
                 audio_emb = self._apply_multistream_fusion(audio_emb, fused_emb, device=device)
-                np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy(), fused_emb=fused_emb.cpu().numpy())
-            else:
-                np.savez_compressed(cache_path, audio_emb=audio_emb.cpu().numpy())
+        except Exception as exc:
+            loguru.logger.debug("Multi-stream fusion failed; continuing with wav2vec stream only. Error: {}", exc)
 
+        phoneme_ctx = self._extract_phoneme_timeline(
+            speech_array=speech_array,
+            sample_rate=sample_rate,
+            target_len=audio_emb.shape[0],
+            device=device,
+            dtype=audio_emb.dtype,
+        )
+        if phoneme_ctx is not None:
+            audio_emb = self._inject_phoneme_conditioning(
+                audio_emb=audio_emb,
+                phoneme_probs=phoneme_ctx["phoneme_probs"],
+                confidence=phoneme_ctx["confidence"],
+                device=device,
+            )
+            align_metrics = self._compute_phoneme_alignment_metrics(
+                audio_emb=audio_emb,
+                phoneme_probs=phoneme_ctx["phoneme_probs"],
+                phoneme_ids=phoneme_ctx["phoneme_ids"],
+                device=device,
+            )
+            if align_metrics is not None:
+                self.metrics.record("phoneme_alignment_loss", align_metrics["loss"])
+                self.metrics.record("phoneme_alignment_kl", align_metrics["kl"])
+                self.metrics.record("phoneme_alignment_ce", align_metrics["ce"])
+                self.metrics.record("phoneme_alignment_acc", align_metrics["acc"])
+
+        try:
+            payload = {
+                "audio_emb": audio_emb.cpu().numpy(),
+                "audio_emb_final": audio_emb.cpu().numpy(),
+            }
+            if phoneme_ctx is not None:
+                payload["phoneme_probs"] = phoneme_ctx["phoneme_probs"].cpu().numpy()
+                payload["phoneme_confidence"] = phoneme_ctx["confidence"].cpu().numpy()
+            np.savez_compressed(cache_path, **payload)
             self.metrics.record('audio_cache_saved', 1)
         except Exception as exc:
             loguru.logger.warning("Audio cache save failed; continuing without cache. Error: {}", exc)
@@ -816,7 +1542,15 @@ class LongCatVideoAvatarPipeline:
         attention_kwargs: Optional[Dict[str, Any]] = None,
         max_sequence_length: int = 512,
         # avatar related params
-        audio_emb: torch.Tensor = None
+        audio_emb: torch.Tensor = None,
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
+        resize_mode: Optional[str] = "crop",
     ):
         r"""
         Generates video frames from text prompt using diffusion process.
@@ -854,6 +1588,12 @@ class LongCatVideoAvatarPipeline:
                 Maximum sequence length for text encoding.
             audio_emb (`torch.Tensor`):
                 Audio embedding to driven the lip movements and body motions of character.
+            identity_id (`int` or `List[int]`, *optional*):
+                Identity slot index (or per-sample indices) in the learnable identity token bank.
+            identity_strength (`float`, *optional*, defaults to 1.0):
+                Scale applied to identity tokens for conditioned branch.
+            identity_negative_strength (`float`, *optional*, defaults to 0.0):
+                Scale applied to identity tokens for unconditioned branch.
 
         Returns:
             np.ndarray or torch.Tensor:
@@ -880,8 +1620,15 @@ class LongCatVideoAvatarPipeline:
             num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
         num_frames = max(num_frames, 1)
 
+        if emotion_guidance_scale > 0 and (emotion_id is None or emotion_intensity <= 0):
+            loguru.logger.warning(
+                "Emotion guidance is enabled but emotion control is missing; disabling emotion guidance for this call."
+            )
+            emotion_guidance_scale = 0.0
+
         self._text_guidance_scale = text_guidance_scale
         self._audio_guidance_scale = audio_guidance_scale
+        self._emotion_guidance_scale = float(emotion_guidance_scale)
         self._attention_kwargs = attention_kwargs
         self._current_timestep = None
         self._interrupt = False
@@ -897,6 +1644,11 @@ class LongCatVideoAvatarPipeline:
 
         # 3. Encode inputs
         dit_dtype = self.dit.dtype
+        identity_token_count = (
+            self.identity_tokens_per_id
+            if self.identity_bank_enabled and identity_id is not None
+            else 0
+        )
 
         if context_parallel_util.get_cp_rank() == 0:
             (
@@ -913,6 +1665,22 @@ class LongCatVideoAvatarPipeline:
                 dtype=dit_dtype,
                 device=device,
             )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_identity_tokens(
+                prompt_embeds=prompt_embeds,
+                prompt_attention_mask=prompt_attention_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_attention_mask=negative_prompt_attention_mask,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                batch_size=batch_size,
+                num_videos_per_prompt=num_videos_per_prompt,
+            )
             if context_parallel_util.get_cp_size() > 1:
                 context_parallel_util.cp_broadcast(prompt_embeds)
                 context_parallel_util.cp_broadcast(prompt_attention_mask)
@@ -921,21 +1689,33 @@ class LongCatVideoAvatarPipeline:
                     context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
         elif context_parallel_util.get_cp_size() > 1:
             caption_channels = self.text_encoder.config.d_model
-            prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-            prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+            prompt_seq_len = max_sequence_length + identity_token_count
+            prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+            prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
             context_parallel_util.cp_broadcast(prompt_embeds)
             context_parallel_util.cp_broadcast(prompt_attention_mask)
             if self.do_classifier_free_guidance:
-                negative_prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-                negative_prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+                negative_prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+                negative_prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_cond_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_cond_embs, emotion_active = self._apply_emotion_channel(
+            audio_emb=audio_base_embs,
+            emotion_id=emotion_id,
+            emotion_intensity=emotion_intensity,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
+        audio_guidance_embs = None
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
-            audio_unond_embs = torch.zeros_like(audio_cond_embs)
+            audio_unond_embs = torch.zeros_like(audio_base_embs)
+            if emotion_active and self.emotion_guidance_scale > 0.0:
+                audio_guidance_embs = audio_base_embs
             audio_cond_embs = torch.cat([audio_cond_embs, audio_cond_embs], dim=0)
 
         # 4. Prepare timesteps
@@ -997,7 +1777,26 @@ class LongCatVideoAvatarPipeline:
 
                     noise_pred_uncond_text, noise_pred_cond = noise_pred.chunk(2)
 
-                    noise_pred = noise_pred_uncond + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text) + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+                    if emotion_active and self.emotion_guidance_scale > 0.0 and audio_guidance_embs is not None:
+                        noise_pred_uncond_audio = self.dit(
+                            hidden_states=latents,
+                            timestep=timestep_uncond,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            encoder_attention_mask=negative_prompt_attention_mask,
+                            audio_embs=audio_guidance_embs,
+                        )
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_audio - noise_pred_uncond)
+                            + self.emotion_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond_audio)
+                        )
+                    else:
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+                        )
 
                 # negate for scheduler compatibility
                 noise_pred = -noise_pred
@@ -1027,6 +1826,11 @@ class LongCatVideoAvatarPipeline:
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         output_video = self.vae.decode(latents, return_dict=False)[0]
+        output_video = self._apply_hybrid_mouth_renderer(
+            decoded_video=output_video,
+            mouth_zone_masks=mouth_zone_masks,
+            resize_mode=resize_mode,
+        )
         output_video = self.video_processor.postprocess_video(output_video)
 
         if output_type == 'both':
@@ -1057,6 +1861,15 @@ class LongCatVideoAvatarPipeline:
         audio_emb: torch.Tensor = None,
         ref_target_masks: torch.Tensor = None,
         resize_mode: Optional[str] = "crop", # "default" / "crop"
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        update_identity_bank: bool = False,
+        identity_update_momentum: float = 0.25,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
     ):
         r"""
         Generates video frames from an input image and text prompt using diffusion process.
@@ -1098,6 +1911,16 @@ class LongCatVideoAvatarPipeline:
                 Mask used in dual-speaker audio-driven mode.
             resize_mode(`str`, *optional*):
                 Output format type. "default" for resize, "crop" for shorter-length resize and centercrop.
+            identity_id (`int` or `List[int]`, *optional*):
+                Identity slot index (or per-sample indices) in the learnable identity token bank.
+            identity_strength (`float`, *optional*, defaults to 1.0):
+                Scale applied to identity tokens for conditioned branch.
+            identity_negative_strength (`float`, *optional*, defaults to 0.0):
+                Scale applied to identity tokens for unconditioned branch.
+            update_identity_bank (`bool`, *optional*, defaults to False):
+                Update the selected identity slot(s) from current conditioning latents.
+            identity_update_momentum (`float`, *optional*, defaults to 0.25):
+                EMA update ratio for identity bank writes.
 
         Returns:
             np.ndarray or torch.Tensor:
@@ -1126,9 +1949,16 @@ class LongCatVideoAvatarPipeline:
             num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
         num_frames = max(num_frames, 1)
 
+        if emotion_guidance_scale > 0 and (emotion_id is None or emotion_intensity <= 0):
+            loguru.logger.warning(
+                "Emotion guidance is enabled but emotion control is missing; disabling emotion guidance for this call."
+            )
+            emotion_guidance_scale = 0.0
+
 
         self._text_guidance_scale = text_guidance_scale
         self._audio_guidance_scale = audio_guidance_scale
+        self._emotion_guidance_scale = float(emotion_guidance_scale)
         self._attention_kwargs = attention_kwargs
         self._current_timestep = None
         self._interrupt = False
@@ -1144,6 +1974,11 @@ class LongCatVideoAvatarPipeline:
 
         # 3. Encode inputs
         dit_dtype = self.dit.dtype
+        identity_token_count = (
+            self.identity_tokens_per_id
+            if self.identity_bank_enabled and identity_id is not None
+            else 0
+        )
 
         if context_parallel_util.get_cp_rank() == 0:
             (
@@ -1160,6 +1995,22 @@ class LongCatVideoAvatarPipeline:
                 dtype=dit_dtype,
                 device=device,
             )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_identity_tokens(
+                prompt_embeds=prompt_embeds,
+                prompt_attention_mask=prompt_attention_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_attention_mask=negative_prompt_attention_mask,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                batch_size=batch_size,
+                num_videos_per_prompt=num_videos_per_prompt,
+            )
             if context_parallel_util.get_cp_size() > 1:
                 context_parallel_util.cp_broadcast(prompt_embeds)
                 context_parallel_util.cp_broadcast(prompt_attention_mask)
@@ -1168,21 +2019,33 @@ class LongCatVideoAvatarPipeline:
                     context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
         elif context_parallel_util.get_cp_size() > 1:
             caption_channels = self.text_encoder.config.d_model
-            prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-            prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+            prompt_seq_len = max_sequence_length + identity_token_count
+            prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+            prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
             context_parallel_util.cp_broadcast(prompt_embeds)
             context_parallel_util.cp_broadcast(prompt_attention_mask)
             if self.do_classifier_free_guidance:
-                negative_prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-                negative_prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+                negative_prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+                negative_prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_cond_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_cond_embs, emotion_active = self._apply_emotion_channel(
+            audio_emb=audio_base_embs,
+            emotion_id=emotion_id,
+            emotion_intensity=emotion_intensity,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
+        audio_guidance_embs = None
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
-            audio_unond_embs = torch.zeros_like(audio_cond_embs)
+            audio_unond_embs = torch.zeros_like(audio_base_embs)
+            if emotion_active and self.emotion_guidance_scale > 0.0:
+                audio_guidance_embs = audio_base_embs
             audio_cond_embs = torch.cat([audio_cond_embs, audio_cond_embs], dim=0)
         
         # 4. Prepare timesteps
@@ -1211,6 +2074,41 @@ class LongCatVideoAvatarPipeline:
         )
         if context_parallel_util.get_cp_size() > 1:
             context_parallel_util.cp_broadcast(latents)
+
+        if update_identity_bank and identity_id is not None:
+            try:
+                # Cond image latent sits in the first conditioned temporal slot.
+                self.register_identity_from_latents(
+                    identity_id=identity_id,
+                    latents=latents[:, :, :1],
+                    momentum=identity_update_momentum,
+                )
+                if identity_token_count > 0:
+                    base_ids = self._normalize_identity_ids(identity_id, batch_size=batch_size)
+                    expanded_ids: List[int] = []
+                    for idx in base_ids:
+                        expanded_ids.extend([idx] * num_videos_per_prompt)
+                    id_index = torch.tensor(
+                        expanded_ids,
+                        dtype=torch.long,
+                        device=self.identity_embedding.weight.device,
+                    )
+                    refreshed_tokens = self.identity_embedding(id_index).view(
+                        len(expanded_ids),
+                        self.identity_tokens_per_id,
+                        self.identity_token_dim,
+                    ).to(device=prompt_embeds.device, dtype=prompt_embeds.dtype).unsqueeze(1)
+                    prompt_embeds[:, :, -identity_token_count:, :] = refreshed_tokens * float(identity_strength)
+                    if negative_prompt_embeds is not None:
+                        negative_prompt_embeds[:, :, -identity_token_count:, :] = refreshed_tokens.to(
+                            device=negative_prompt_embeds.device,
+                            dtype=negative_prompt_embeds.dtype,
+                        ) * float(identity_negative_strength)
+            except Exception as exc:
+                loguru.logger.warning(
+                    "Identity bank update (AI2V) failed; continuing without update. Error: {}",
+                    exc,
+                )
 
         # 6. Prepare ref_target_masks to latent size
         if ref_target_masks is not None:
@@ -1282,8 +2180,29 @@ class LongCatVideoAvatarPipeline:
                     )
 
                     noise_pred_uncond_text, noise_pred_cond = noise_pred.chunk(2)
-                    
-                    noise_pred = noise_pred_uncond + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text) + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+
+                    if emotion_active and self.emotion_guidance_scale > 0.0 and audio_guidance_embs is not None:
+                        noise_pred_uncond_audio = self.dit(
+                            hidden_states=latents,
+                            timestep=timestep_uncond,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            encoder_attention_mask=negative_prompt_attention_mask,
+                            num_cond_latents=1,
+                            audio_embs=audio_guidance_embs,
+                            ref_target_masks=ref_target_masks,
+                        )
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_audio - noise_pred_uncond)
+                            + self.emotion_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond_audio)
+                        )
+                    else:
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+                        )
 
                 # negate for scheduler compatibility
                 noise_pred = -noise_pred
@@ -1306,6 +2225,11 @@ class LongCatVideoAvatarPipeline:
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         output_video = self.vae.decode(latents, return_dict=False)[0]
+        output_video = self._apply_hybrid_mouth_renderer(
+            decoded_video=output_video,
+            mouth_zone_masks=mouth_zone_masks,
+            resize_mode=resize_mode,
+        )
         output_video = self.video_processor.postprocess_video(output_video)
 
         if output_type == 'both':
@@ -1345,6 +2269,15 @@ class LongCatVideoAvatarPipeline:
         mask_frame_range: int = None,
         ref_target_masks: torch.Tensor = None,
         resize_mode: Optional[str] = "crop", # "default" / "crop"
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        update_identity_bank: bool = False,
+        identity_update_momentum: float = 0.25,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
     ):
         r"""
         Generates video frames from a source video and text prompt using diffusion process with spatio-temporal conditioning.
@@ -1398,6 +2331,16 @@ class LongCatVideoAvatarPipeline:
                 Mask used in dual-speaker audio-driven mode.
             resize_mode(`str`, *optional*):
                 Output format type. "default" for resize, "crop" for shorter-length resize and centercrop.
+            identity_id (`int` or `List[int]`, *optional*):
+                Identity slot index (or per-sample indices) in the learnable identity token bank.
+            identity_strength (`float`, *optional*, defaults to 1.0):
+                Scale applied to identity tokens for conditioned branch.
+            identity_negative_strength (`float`, *optional*, defaults to 0.0):
+                Scale applied to identity tokens for unconditioned branch.
+            update_identity_bank (`bool`, *optional*, defaults to False):
+                Update the selected identity slot(s) from current conditioning latents.
+            identity_update_momentum (`float`, *optional*, defaults to 0.25):
+                EMA update ratio for identity bank writes.
 
         Returns:
             np.ndarray or torch.Tensor:
@@ -1427,8 +2370,15 @@ class LongCatVideoAvatarPipeline:
             num_frames = num_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
         num_frames = max(num_frames, 1)
 
+        if emotion_guidance_scale > 0 and (emotion_id is None or emotion_intensity <= 0):
+            loguru.logger.warning(
+                "Emotion guidance is enabled but emotion control is missing; disabling emotion guidance for this call."
+            )
+            emotion_guidance_scale = 0.0
+
         self._text_guidance_scale = text_guidance_scale
         self._audio_guidance_scale = audio_guidance_scale
+        self._emotion_guidance_scale = float(emotion_guidance_scale)
         self._attention_kwargs = attention_kwargs
         self._current_timestep = None
         self._interrupt = False
@@ -1443,6 +2393,11 @@ class LongCatVideoAvatarPipeline:
 
         # 3. Encode inputs
         dit_dtype = self.dit.dtype
+        identity_token_count = (
+            self.identity_tokens_per_id
+            if self.identity_bank_enabled and identity_id is not None
+            else 0
+        )
 
         if context_parallel_util.get_cp_rank() == 0:
             (
@@ -1459,6 +2414,22 @@ class LongCatVideoAvatarPipeline:
                 dtype=dit_dtype,
                 device=device,
             )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_identity_tokens(
+                prompt_embeds=prompt_embeds,
+                prompt_attention_mask=prompt_attention_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_attention_mask=negative_prompt_attention_mask,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                batch_size=batch_size,
+                num_videos_per_prompt=num_videos_per_prompt,
+            )
             if context_parallel_util.get_cp_size() > 1:
                 context_parallel_util.cp_broadcast(prompt_embeds)
                 context_parallel_util.cp_broadcast(prompt_attention_mask)
@@ -1467,21 +2438,34 @@ class LongCatVideoAvatarPipeline:
                     context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
         elif context_parallel_util.get_cp_size() > 1:
             caption_channels = self.text_encoder.config.d_model
-            prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-            prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+            prompt_seq_len = max_sequence_length + identity_token_count
+            prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+            prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
             context_parallel_util.cp_broadcast(prompt_embeds)
             context_parallel_util.cp_broadcast(prompt_attention_mask)
             if self.do_classifier_free_guidance:
-                negative_prompt_embeds = torch.zeros([batch_size, 1, max_sequence_length, caption_channels], dtype=dit_dtype, device=device)
-                negative_prompt_attention_mask = torch.zeros([batch_size, max_sequence_length], dtype=torch.int64, device=device)
+                negative_prompt_embeds = torch.zeros([batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
+                negative_prompt_attention_mask = torch.zeros([batch_size, prompt_seq_len], dtype=torch.int64, device=device)
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_cond_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_cond_embs, emotion_active = self._apply_emotion_channel(
+            audio_emb=audio_base_embs,
+            emotion_id=emotion_id,
+            emotion_intensity=emotion_intensity,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
+        audio_cache_embs = audio_cond_embs
+        audio_guidance_embs = None
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             prompt_attention_mask = torch.cat([negative_prompt_attention_mask, prompt_attention_mask], dim=0)
-            audio_unond_embs = torch.zeros_like(audio_cond_embs)
+            audio_unond_embs = torch.zeros_like(audio_base_embs)
+            if emotion_active and self.emotion_guidance_scale > 0.0:
+                audio_guidance_embs = audio_base_embs
             audio_cond_embs = torch.cat([audio_cond_embs, audio_cond_embs], dim=0)
 
         # 4. Prepare timesteps
@@ -1506,6 +2490,39 @@ class LongCatVideoAvatarPipeline:
         cond_videos = video[:, :, -num_cond_frames:]
         cond_videos_latents = retrieve_latents(self.vae.encode(cond_videos), generator, sample_mode="argmax")
         cond_videos_latents = self.normalize_latents(cond_videos_latents)
+        if update_identity_bank and identity_id is not None:
+            try:
+                self.register_identity_from_latents(
+                    identity_id=identity_id,
+                    latents=cond_videos_latents,
+                    momentum=identity_update_momentum,
+                )
+                if identity_token_count > 0:
+                    base_ids = self._normalize_identity_ids(identity_id, batch_size=batch_size)
+                    expanded_ids: List[int] = []
+                    for idx in base_ids:
+                        expanded_ids.extend([idx] * num_videos_per_prompt)
+                    id_index = torch.tensor(
+                        expanded_ids,
+                        dtype=torch.long,
+                        device=self.identity_embedding.weight.device,
+                    )
+                    refreshed_tokens = self.identity_embedding(id_index).view(
+                        len(expanded_ids),
+                        self.identity_tokens_per_id,
+                        self.identity_token_dim,
+                    ).to(device=prompt_embeds.device, dtype=prompt_embeds.dtype).unsqueeze(1)
+                    prompt_embeds[:, :, -identity_token_count:, :] = refreshed_tokens * float(identity_strength)
+                    if negative_prompt_embeds is not None:
+                        negative_prompt_embeds[:, :, -identity_token_count:, :] = refreshed_tokens.to(
+                            device=negative_prompt_embeds.device,
+                            dtype=negative_prompt_embeds.dtype,
+                        ) * float(identity_negative_strength)
+            except Exception as exc:
+                loguru.logger.warning(
+                    "Identity bank update (AVC) failed; continuing without update. Error: {}",
+                    exc,
+                )
 
 
         num_channels_latents = self.dit.config.in_channels
@@ -1534,6 +2551,7 @@ class LongCatVideoAvatarPipeline:
             ref_target_masks = self._resize_and_centercrop_tensor(ref_target_masks, height, width, resize_mode)
 
         # 7. Add reference image
+        num_ref_latents = 0
         if ref_latent is not None:
             cache_num_cond_latents += 1
             num_ref_latents = 1
@@ -1546,7 +2564,7 @@ class LongCatVideoAvatarPipeline:
         if use_kv_cache:
             cond_latents = latents[:, :, :cache_num_cond_latents]
             kv_cache_num_cond_latents = self._cache_clean_latents(cond_latents, max_sequence_length, offload_kv_cache=offload_kv_cache, device=self.device, dtype=dit_dtype, \
-                audio_embs=audio_emb, num_cond_latents=cache_num_cond_latents, num_ref_latents=num_ref_latents, ref_img_index=ref_img_index)
+                audio_embs=audio_cache_embs, num_cond_latents=cache_num_cond_latents, num_ref_latents=num_ref_latents, ref_img_index=ref_img_index)
             kv_cache_dict = self._get_kv_cache_dict()
             latents = latents[:, :, cache_num_cond_latents:]
             active_num_cond_latents = kv_cache_num_cond_latents
@@ -1634,8 +2652,33 @@ class LongCatVideoAvatarPipeline:
                     )
 
                     noise_pred_uncond_text, noise_pred_cond = noise_pred.chunk(2)
-                    
-                    noise_pred = noise_pred_uncond + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text) + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+
+                    if emotion_active and self.emotion_guidance_scale > 0.0 and audio_guidance_embs is not None:
+                        noise_pred_uncond_audio = self.dit(
+                            hidden_states=latents,
+                            timestep=timestep_uncond,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            encoder_attention_mask=negative_prompt_attention_mask,
+                            num_cond_latents=active_num_cond_latents,
+                            kv_cache_dict=kv_cache_dict,
+                            audio_embs=audio_guidance_embs,
+                            num_ref_latents=num_ref_latents,
+                            ref_img_index=ref_img_index,
+                            mask_frame_range=mask_frame_range,
+                            ref_target_masks=ref_target_masks,
+                        )
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_audio - noise_pred_uncond)
+                            + self.emotion_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond_audio)
+                        )
+                    else:
+                        noise_pred = (
+                            noise_pred_uncond
+                            + text_guidance_scale * (noise_pred_cond - noise_pred_uncond_text)
+                            + audio_guidance_scale * (noise_pred_uncond_text - noise_pred_uncond)
+                        )
                 
                 # negate for scheduler compatibility
                 noise_pred = -noise_pred
@@ -1669,6 +2712,11 @@ class LongCatVideoAvatarPipeline:
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         output_video = self.vae.decode(latents, return_dict=False)[0]
+        output_video = self._apply_hybrid_mouth_renderer(
+            decoded_video=output_video,
+            mouth_zone_masks=mouth_zone_masks,
+            resize_mode=resize_mode,
+        )
         output_video = self.video_processor.postprocess_video(output_video)
 
         if output_type == 'both':
@@ -1692,6 +2740,13 @@ class LongCatVideoAvatarPipeline:
         max_sequence_length: int = 512,
         audio_emb: torch.Tensor = None,
         resize_mode: Optional[str] = "crop",
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
     ):
         r"""
         Real-time streaming video generation (Image-to-Video).
@@ -1709,6 +2764,12 @@ class LongCatVideoAvatarPipeline:
             generator: Random seed generator.
             audio_emb: Pre-computed audio embedding (alternative to audio_stream).
             resize_mode: "default" or "crop".
+            identity_id: Identity slot index (or per-sample indices) in identity token bank.
+            identity_strength: Scale applied to identity tokens for conditioned branch.
+            identity_negative_strength: Scale applied to identity tokens for unconditioned branch.
+            emotion_id: Emotion class id or label.
+            emotion_intensity: Emotion intensity multiplier.
+            emotion_guidance_scale: Separate CFG scale for emotion channel.
         
         Yields:
             np.ndarray: Frame as numpy array [H, W, 3] in range [0, 255].
@@ -1769,6 +2830,13 @@ class LongCatVideoAvatarPipeline:
             max_sequence_length=max_sequence_length,
             audio_emb=audio_emb,
             resize_mode=resize_mode,
+            identity_id=identity_id,
+            identity_strength=identity_strength,
+            identity_negative_strength=identity_negative_strength,
+            emotion_id=emotion_id,
+            emotion_intensity=emotion_intensity,
+            emotion_guidance_scale=emotion_guidance_scale,
+            mouth_zone_masks=mouth_zone_masks,
         )
         
         # 5. Stream decode: denormalize, decode frame-by-frame, yield
@@ -1776,9 +2844,55 @@ class LongCatVideoAvatarPipeline:
         latents = self.denormalize_latents(latents)
         vae_decoder = StreamingVAEDecoder(self.vae, chunk_size=1, enable_amp=True)
         frame_times = []
+        stream_mouth_mask = None
+        stream_boundary_mask = None
+        prev_stabilized = None
+        prev_stabilized_for_flicker = None
+        hybrid_artifacts = []
+        hybrid_boundary_diffs = []
+        hybrid_global_diffs = []
         for frame_idx, decoded in enumerate(vae_decoder.decode_streaming(latents)):
             frame_time = time.time()
-            frame_np = (decoded[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+            frame_tensor = decoded
+            if mouth_zone_masks is not None and self.hybrid_renderer_enabled:
+                if stream_mouth_mask is None:
+                    prepared = self._prepare_mouth_zone_mask(
+                        mouth_zone_masks=mouth_zone_masks,
+                        batch_size=decoded.shape[0],
+                        num_frames=1,
+                        height=decoded.shape[-2],
+                        width=decoded.shape[-1],
+                        device=decoded.device,
+                        dtype=decoded.dtype,
+                        resize_mode=resize_mode,
+                    )
+                    if prepared is not None:
+                        stream_mouth_mask = prepared[:, :, 0]
+                        stream_boundary_mask = self._compute_seam_boundary_mask(prepared)[:, :, 0]
+
+                if stream_mouth_mask is not None and stream_boundary_mask is not None:
+                    branch = self._build_mouth_controlled_branch(
+                        decoded.unsqueeze(2),
+                        strength=float(self.hybrid_renderer_mouth_strength),
+                    )[:, :, 0]
+                    blended = decoded * (1.0 - stream_mouth_mask) + branch * stream_mouth_mask
+                    if prev_stabilized is not None:
+                        a = float(self.hybrid_renderer_temporal_alpha)
+                        blended = (
+                            blended * (1.0 - stream_boundary_mask)
+                            + (a * blended + (1.0 - a) * prev_stabilized) * stream_boundary_mask
+                        )
+                    prev_stabilized = blended.detach()
+                    frame_tensor = blended
+
+                    hybrid_artifacts.append(float((torch.abs(frame_tensor - decoded) * stream_mouth_mask).mean().item()))
+                    if prev_stabilized_for_flicker is not None:
+                        diff = torch.abs(frame_tensor - prev_stabilized_for_flicker)
+                        hybrid_boundary_diffs.append(float((diff * stream_boundary_mask).mean().item()))
+                        hybrid_global_diffs.append(float(diff.mean().item()))
+                    prev_stabilized_for_flicker = frame_tensor.detach()
+
+            frame_np = (frame_tensor[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
             frame_times.append(time.time() - frame_time)
             yield frame_np
         
@@ -1790,6 +2904,17 @@ class LongCatVideoAvatarPipeline:
             p95_latency = sorted_times[int(len(sorted_times) * 0.95)] * 1000 if sorted_times else 0
             self.metrics.record('streaming_fps', fps)
             self.metrics.record('streaming_p95_latency_ms', p95_latency)
+            if hybrid_artifacts:
+                artifact_mean = float(sum(hybrid_artifacts) / len(hybrid_artifacts))
+                self.metrics.record("hybrid_stream_artifact_energy", artifact_mean)
+            if hybrid_boundary_diffs and hybrid_global_diffs:
+                boundary_mean = float(sum(hybrid_boundary_diffs) / len(hybrid_boundary_diffs))
+                global_mean = float(sum(hybrid_global_diffs) / len(hybrid_global_diffs))
+                ratio = boundary_mean / max(global_mean, 1e-6)
+                self.metrics.record("hybrid_stream_flicker_ratio", ratio)
+                self.metrics.record("hybrid_stream_budget_ok", int(
+                    ratio <= float(self.hybrid_renderer_flicker_budget)
+                ))
             if context_parallel_util.get_cp_rank() == 0:
                 loguru.logger.info(f"Streaming complete: {fps:.1f} FPS, P95 latency: {p95_latency:.1f}ms")
 
@@ -1816,6 +2941,20 @@ class LongCatVideoAvatarPipeline:
             self.text_encoder = self.text_encoder.to(device, non_blocking=True)
         if self.vae is not None:
             self.vae = self.vae.to(device, non_blocking=True)
+        if self.identity_embedding is not None:
+            self.identity_embedding = self.identity_embedding.to(device, non_blocking=True)
+        if self.identity_latent_projector is not None:
+            self.identity_latent_projector = self.identity_latent_projector.to(device, non_blocking=True)
+        if self.phoneme_proj is not None:
+            self.phoneme_proj = self.phoneme_proj.to(device, non_blocking=True)
+        if self.phoneme_alignment_head is not None:
+            self.phoneme_alignment_head = self.phoneme_alignment_head.to(device, non_blocking=True)
+        if self.emotion_embedding is not None:
+            self.emotion_embedding = self.emotion_embedding.to(device, non_blocking=True)
+        if self.emotion_proj is not None:
+            self.emotion_proj = self.emotion_proj.to(device, non_blocking=True)
         return self
     
+ArachneXVideoAvatarPipeline = LongCatVideoAvatarPipeline
+
 

@@ -4,6 +4,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from PIL import Image
 from torchvision.io import write_video
 from diffusers.utils import load_image, load_video
 
@@ -28,6 +29,13 @@ def _audio_stream_generator(audio_path: str, chunk_duration: float = 0.5, sample
             chunk = np.pad(chunk, (0, chunk_samples - len(chunk)))
         yield chunk
 
+def _load_mask_tensor(mask_path: Optional[str]) -> Optional[torch.Tensor]:
+    if not mask_path:
+        return None
+    img = Image.open(mask_path).convert("L")
+    arr = np.array(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)
+
 
 def main():
     parser = argparse.ArgumentParser(description="ARACHNE-X inference entrypoint")
@@ -47,8 +55,25 @@ def main():
     parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--text_guidance_scale", type=float, default=4.0)
     parser.add_argument("--audio_guidance_scale", type=float, default=4.0)
+    parser.add_argument("--identity_id", type=int, default=None)
+    parser.add_argument("--identity_strength", type=float, default=1.0)
+    parser.add_argument("--identity_negative_strength", type=float, default=0.0)
+    parser.add_argument("--identity_update_bank", action="store_true")
+    parser.add_argument("--identity_update_momentum", type=float, default=0.25)
+    parser.add_argument("--emotion_id", type=str, default=None)
+    parser.add_argument("--emotion_intensity", type=float, default=0.0)
+    parser.add_argument("--emotion_guidance_scale", type=float, default=0.0)
+    parser.add_argument("--mouth_mask", type=str, default=None)
+    parser.add_argument("--disable_phoneme_conditioning", action="store_true")
+    parser.add_argument("--phoneme_stream_scale", type=float, default=None)
     parser.add_argument("--output", type=str, default="output.mp4")
     args = parser.parse_args()
+    emotion_id = args.emotion_id
+    if isinstance(emotion_id, str):
+        s = emotion_id.strip()
+        if s.lstrip("-").isdigit():
+            emotion_id = int(s)
+    mouth_mask_tensor = _load_mask_tensor(args.mouth_mask)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -109,6 +134,10 @@ def main():
         device=device,
         torch_dtype=torch_dtype,
     )
+    if hasattr(pipe, "phoneme_enabled"):
+        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
+    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
+        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
 
     if args.mode in ("ai2v", "streaming_ai2v"):
         if not args.image or not args.audio:
@@ -125,6 +154,15 @@ def main():
                 num_inference_steps=args.num_inference_steps,
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
+                identity_id=args.identity_id,
+                identity_strength=args.identity_strength,
+                identity_negative_strength=args.identity_negative_strength,
+                update_identity_bank=args.identity_update_bank,
+                identity_update_momentum=args.identity_update_momentum,
+                emotion_id=emotion_id,
+                emotion_intensity=args.emotion_intensity,
+                emotion_guidance_scale=args.emotion_guidance_scale,
+                mouth_zone_masks=mouth_mask_tensor,
             )[0]
             save_video_ffmpeg(out, args.output, fps=30)
         else:
@@ -139,6 +177,13 @@ def main():
                 num_inference_steps=args.num_inference_steps,
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
+                identity_id=args.identity_id,
+                identity_strength=args.identity_strength,
+                identity_negative_strength=args.identity_negative_strength,
+                emotion_id=emotion_id,
+                emotion_intensity=args.emotion_intensity,
+                emotion_guidance_scale=args.emotion_guidance_scale,
+                mouth_zone_masks=mouth_mask_tensor,
             ):
                 frames.append(frame)
             save_video_ffmpeg(np.stack(frames, axis=0), args.output, fps=30)
@@ -156,6 +201,13 @@ def main():
             num_inference_steps=args.num_inference_steps,
             text_guidance_scale=args.text_guidance_scale,
             audio_guidance_scale=args.audio_guidance_scale,
+            identity_id=args.identity_id,
+            identity_strength=args.identity_strength,
+            identity_negative_strength=args.identity_negative_strength,
+            emotion_id=emotion_id,
+            emotion_intensity=args.emotion_intensity,
+            emotion_guidance_scale=args.emotion_guidance_scale,
+            mouth_zone_masks=mouth_mask_tensor,
         )[0]
         save_video_ffmpeg(out, args.output, fps=30)
         return
@@ -175,6 +227,15 @@ def main():
             num_inference_steps=args.num_inference_steps,
             text_guidance_scale=args.text_guidance_scale,
             audio_guidance_scale=args.audio_guidance_scale,
+            identity_id=args.identity_id,
+            identity_strength=args.identity_strength,
+            identity_negative_strength=args.identity_negative_strength,
+            update_identity_bank=args.identity_update_bank,
+            identity_update_momentum=args.identity_update_momentum,
+            emotion_id=emotion_id,
+            emotion_intensity=args.emotion_intensity,
+            emotion_guidance_scale=args.emotion_guidance_scale,
+            mouth_zone_masks=mouth_mask_tensor,
         )[0]
         save_video_ffmpeg(out, args.output, fps=30)
         return

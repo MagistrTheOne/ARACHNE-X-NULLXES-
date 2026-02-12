@@ -11,26 +11,25 @@ Updated: 2026-02-12
 - [x] Added metrics for before/after cache latent count.
 
 ## Step 2. Identity Token Bank
-- [ ] Define identity token schema and persistence format.
-- [ ] Inject identity tokens into avatar DiT conditioning path.
-- [ ] Add training/inference controls for identity strength.
-- [ ] Add regression metrics for identity consistency.
+- [x] Define identity token schema and persistence format.
+- [x] Inject identity tokens into avatar DiT conditioning path.
+- [x] Add training/inference controls for identity strength.
+- [x] Add regression metrics for identity consistency.
 
 ## Step 3. Phoneme-Conditioned Head
-- [ ] Add phoneme timeline extraction/alignment pipeline.
-- [ ] Integrate phoneme stream into audio conditioning path.
-- [ ] Add phoneme alignment losses and monitoring.
-- [ ] Keep wav2vec fallback path for robustness.
+- [x] Add phoneme timeline extraction/alignment pipeline.
+- [x] Integrate phoneme stream into audio conditioning path.
+- [x] Add phoneme alignment losses and monitoring.
+- [x] Keep wav2vec fallback path for robustness.
 
 ## Step 4. Emotion Control Channel
-- [ ] Add explicit affective conditioning channel.
-- [ ] Add API knobs for emotion class and intensity.
-- [ ] Integrate emotion guidance into denoising path.
-- [ ] Add quality checks to avoid lip-sync regression.
+- [x] Add explicit affective conditioning channel.
+- [x] Add API knobs for emotion class and intensity.
+- [x] Integrate emotion guidance into denoising path.
+- [x] Add quality checks to avoid lip-sync regression.
 
 ## Step 5. Hybrid Renderer (Controlled Mouth Zone)
-- [ ] Add mouth-zone controlled rendering branch.
-- [ ] Add seam-safe blending with global renderer.
-- [ ] Add temporal stabilization for mouth boundary.
-- [ ] Validate artifact/flicker budget under long sequences.
-
+- [x] Add mouth-zone controlled rendering branch.
+- [x] Add seam-safe blending with global renderer.
+- [x] Add temporal stabilization for mouth boundary.
+- [x] Validate artifact/flicker budget under long sequences.

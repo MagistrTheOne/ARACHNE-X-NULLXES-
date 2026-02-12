@@ -277,7 +277,7 @@ ARACHNE-X/
 │   │   └── torch_utils.py (existing)
 │   │
 │   ├── inference_streaming.py         ← NEW: Realtime engine
-│   └── pipeline_longcat_video_avatar.py (existing)
+│   └── pipeline_arachne_x_video_avatar.py (existing)
 │
 ├── training_config_h200.py            ← NEW: H200 configs + LoRA
 └── ... (existing files)
@@ -292,7 +292,7 @@ ARACHNE-X/
 - [x] Avatar-specific losses (5-component stack)
 - [x] Streaming inference engine (KV-cache + optical flow)
 - [x] H200 training config (8x GPU pod ready)
-- [ ] Update `pipeline_longcat_video_avatar.py` to use new modules
+- [ ] Update `pipeline_arachne_x_video_avatar.py` to use new modules
 - [ ] Test on single H200 first
 - [ ] Scale to 8x H200 pod
 - [ ] Benchmark against baselines

@@ -1360,3 +1360,4 @@ class LongCatVideoPipeline:
             self.vae = self.vae.to(device, non_blocking=True)
         return self
     
+ArachneXVideoPipeline = LongCatVideoPipeline
