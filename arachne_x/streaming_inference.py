@@ -158,6 +158,14 @@ class RealtimeAudioEncoder:
         self.stride = stride
         self.buffer = np.zeros(window_size, dtype=np.float32)
         self.position = 0
+
+    def _model_device(self):
+        if hasattr(self.wav2vec, "parameters"):
+            try:
+                return next(self.wav2vec.parameters()).device
+            except (StopIteration, TypeError):
+                pass
+        return torch.device("cpu")
     
     def encode_chunk(self, audio_chunk: np.ndarray) -> Optional[torch.Tensor]:
         """
@@ -173,10 +181,14 @@ class RealtimeAudioEncoder:
         else:
             # Fill buffer, encode, slide
             self.buffer[self.position:] = audio_chunk[:remaining]
-            
-            audio_tensor = torch.from_numpy(self.buffer).float().unsqueeze(0)
+
+            audio_tensor = torch.from_numpy(self.buffer).float().unsqueeze(0).to(self._model_device())
             with torch.no_grad():
-                embeddings = self.wav2vec(audio_tensor, output_hidden_states=True)
+                embeddings = self.wav2vec(
+                    audio_tensor,
+                    seq_len=int(self.window_size),
+                    output_hidden_states=True,
+                )
             
             emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
             emb = emb.transpose(0, 1).contiguous()  # [T, D]
@@ -321,11 +333,16 @@ class RealtimeInferencePipeline:
                 device=self.device,
                 generator=generator,
             )
-        
+
         # Denoising loop with streaming
-        timesteps = self.pipeline.scheduler.timesteps[:self.distill_steps]
-        
-        for frame_idx, t in enumerate(timesteps):
+        self.pipeline.scheduler.set_timesteps(self.distill_steps, device=self.device)
+        timesteps = self.pipeline.scheduler.timesteps
+        if timesteps is None or len(timesteps) == 0:
+            raise RuntimeError("Scheduler timesteps are empty; call set_timesteps before streaming.")
+
+        num_latent_frames = int(latents.shape[2])
+        for frame_idx in range(num_latent_frames):
+            t = timesteps[min(frame_idx, len(timesteps) - 1)]
             frame_start = time.time()
             
             # Prefetch next audio chunk
@@ -356,7 +373,7 @@ class RealtimeInferencePipeline:
                 )[0]
             
             # Stream decode frame
-            frame_latents = latents[:, :, frame_idx:frame_idx+1]
+            frame_latents = latents[:, :, frame_idx:frame_idx + 1]
             for decoded_frame in self.vae_decoder.decode_streaming(frame_latents):
                 # Convert to numpy [0, 255]
                 frame_np = (decoded_frame[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)

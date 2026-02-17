@@ -5,6 +5,7 @@ import math
 import random
 import argparse
 import datetime
+import shutil
 import PIL.Image
 import numpy as np
 from pathlib import Path
@@ -41,8 +42,7 @@ def extract_vocal_from_speech(source_path, target_path, vocal_separator, audio_o
         
     default_vocal_path = audio_output_dir_temp / "vocals" / outputs[0]
     default_vocal_path = default_vocal_path.resolve().as_posix()
-    cmd = f"mv '{default_vocal_path}' '{target_path}'"
-    os.system(cmd)    
+    shutil.move(default_vocal_path, target_path)
     return target_path
 
 def generate(args):

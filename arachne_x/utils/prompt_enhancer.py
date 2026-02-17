@@ -175,7 +175,7 @@ def enhance_prompt_t2v(prompt: str, retry_times: int = 3):
                     {"role": "system", "content": f"{sys_prompt}"},
                     {
                         "role": "user",
-                        "content": f'{text}"',
+                        "content": f"{text}",
                     },
                 ],
                 model="gpt-4.1",

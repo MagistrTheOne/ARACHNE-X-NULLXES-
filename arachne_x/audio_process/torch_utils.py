@@ -162,7 +162,7 @@ def get_audio_duration(audio_path):
     return float(info["format"]["duration"])
 
 
-def save_video_ffmpeg(gen_video_samples, save_path, audio_path, fps=25, quality=5, high_quality_save=False):
+def save_video_ffmpeg(gen_video_samples, save_path, audio_path=None, fps=25, quality=5, high_quality_save=False):
 
     def save_video(frames, save_path, fps, quality=9, ffmpeg_params=None):
         writer = imageio.get_writer(
@@ -170,77 +170,97 @@ def save_video_ffmpeg(gen_video_samples, save_path, audio_path, fps=25, quality=
         )
         for frame in tqdm(frames, desc="Saving video"):
             frame = np.array(frame)
+            if frame.dtype != np.uint8:
+                frame = np.clip(frame, 0.0, 1.0) if frame.max() <= 1.0 else np.clip(frame, 0.0, 255.0)
+                if frame.max() <= 1.0:
+                    frame = (frame * 255.0).astype(np.uint8)
+                else:
+                    frame = frame.astype(np.uint8)
             writer.append_data(frame)
         writer.close()
-    save_path_tmp = save_path + "-temp.mp4"
-    
-    os.makedirs(os.path.dirname(save_path_tmp), exist_ok=True)
-    video_audio =  gen_video_samples.cpu().numpy()
-    video_audio = np.clip(video_audio, 0, 255).astype(np.uint8)
+
+    output_base, output_ext = os.path.splitext(save_path)
+    output_base = output_base if output_ext.lower() == ".mp4" else save_path
+    final_output_path = output_base + ".mp4"
+    save_path_tmp = output_base + "-temp.mp4"
+
+    output_dir = os.path.dirname(os.path.abspath(final_output_path))
+    os.makedirs(output_dir, exist_ok=True)
+
+    if isinstance(gen_video_samples, torch.Tensor):
+        video_audio = gen_video_samples.detach().cpu().numpy()
+    else:
+        video_audio = np.asarray(gen_video_samples)
     save_video(video_audio, save_path_tmp, fps=fps, quality=quality)
 
+    if audio_path is None:
+        os.replace(save_path_tmp, final_output_path)
+        return
+    if not os.path.isfile(audio_path):
+        raise FileNotFoundError(f"audio_path not found: {audio_path}")
+
     # crop audio according to video length
-    T, _, _, _ = gen_video_samples.shape
+    T = int(video_audio.shape[0])
     duration = T / fps
-    save_path_crop_audio = save_path + "-cropaudio.wav"
-    final_command = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        audio_path,
-        "-t",
-        f'{duration}',
-        save_path_crop_audio,
-    ]
-    subprocess.run(final_command, check=True)
+    save_path_crop_audio = output_base + "-cropaudio.wav"
+    save_path_crop_tmp = output_base + "-cropvideo.mp4"
 
-    # crop video according to audio length
-    crop_audio_duration = get_audio_duration(save_path_crop_audio)
-    save_path_crop_tmp = save_path + "-cropvideo.mp4"
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", save_path_tmp,
-        "-t", f"{crop_audio_duration}",
-        "-c:v", "copy",
-        "-c:a", "copy",
-        save_path_crop_tmp,
-    ]
-    subprocess.run(cmd, check=True)
-
-    # generate video with audio
-    save_path = save_path + ".mp4"
-    if high_quality_save:
-        final_command = [
-            "ffmpeg",
-            "-y",
-            "-i", save_path_crop_tmp,
-            "-i", save_path_crop_audio,
-            "-c:v", "libx264",
-            "-crf", "0",
-            "-preset", "veryslow", 
-            "-c:a", "aac",
-            "-shortest",
-            save_path,
-        ]
-        subprocess.run(final_command, check=True)
-    else:
+    try:
         final_command = [
             "ffmpeg",
             "-y",
             "-i",
-            save_path_crop_tmp,
-            "-i",
+            audio_path,
+            "-t",
+            f"{duration}",
             save_path_crop_audio,
-            "-c:v",
-            "libx264",
-            "-c:a",
-            "aac",
-            "-shortest",
-            save_path,
         ]
         subprocess.run(final_command, check=True)
-        
-    os.remove(save_path_tmp)
-    os.remove(save_path_crop_tmp)
-    os.remove(save_path_crop_audio)
+
+        # crop video according to audio length
+        crop_audio_duration = get_audio_duration(save_path_crop_audio)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", save_path_tmp,
+            "-t", f"{crop_audio_duration}",
+            "-c:v", "copy",
+            "-c:a", "copy",
+            save_path_crop_tmp,
+        ]
+        subprocess.run(cmd, check=True)
+
+        # generate video with audio
+        if high_quality_save:
+            final_command = [
+                "ffmpeg",
+                "-y",
+                "-i", save_path_crop_tmp,
+                "-i", save_path_crop_audio,
+                "-c:v", "libx264",
+                "-crf", "0",
+                "-preset", "veryslow",
+                "-c:a", "aac",
+                "-shortest",
+                final_output_path,
+            ]
+        else:
+            final_command = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                save_path_crop_tmp,
+                "-i",
+                save_path_crop_audio,
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-shortest",
+                final_output_path,
+            ]
+        subprocess.run(final_command, check=True)
+    finally:
+        for tmp_path in (save_path_tmp, save_path_crop_tmp, save_path_crop_audio):
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)

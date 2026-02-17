@@ -55,17 +55,25 @@ def main():
     # Setup device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    torch.cuda.set_device(local_rank)
+    if device == "cuda":
+        torch.cuda.set_device(local_rank)
+        load_device = local_rank
+        pipe_device = "cuda"
+        pipe_dtype = torch.bfloat16
+    else:
+        load_device = "cpu"
+        pipe_device = "cpu"
+        pipe_dtype = torch.float32
     
     # Load models
     print("[*] Loading models...")
     pipe = load_avatar_pipeline(
         args.checkpoint_dir,
         variant="single",
-        device=local_rank,
-        torch_dtype=torch.bfloat16,
+        device=load_device,
+        torch_dtype=pipe_dtype,
     )
-    pipe.to(device)
+    pipe.to(pipe_device)
     
     # Load image
     image = load_image(args.image)

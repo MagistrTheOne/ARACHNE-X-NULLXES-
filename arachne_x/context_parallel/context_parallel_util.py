@@ -152,7 +152,7 @@ class GatherFunction2D(torch.autograd.Function):
         T, H, W = shape
         dim_h, dim_w = seq_dim_hw
         split_h, split_w = split_hw
-        assert H % split_h == 0, W % split_w == 0
+        assert H % split_h == 0 and W % split_w == 0
         assert T * (H // split_h) * (W // split_w) == input.shape[1]
         input = rearrange(input, "B (T H W) C -> B T H W C", T=T, H=H // split_h, W=W // split_w)
 
