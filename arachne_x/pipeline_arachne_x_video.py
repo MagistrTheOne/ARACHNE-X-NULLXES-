@@ -115,6 +115,8 @@ class LongCatVideoPipeline:
         prompt_embeds = self.text_encoder(text_input_ids.to(device), mask.to(device)).last_hidden_state
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
         mask = mask.to(device=device)
+        if num_videos_per_prompt > 1:
+            mask = mask.repeat_interleave(num_videos_per_prompt, dim=0)
 
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         _, seq_len, _ = prompt_embeds.shape

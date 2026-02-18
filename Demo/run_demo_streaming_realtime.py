@@ -57,7 +57,7 @@ def main():
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     if device == "cuda":
         torch.cuda.set_device(local_rank)
-        load_device = local_rank
+        load_device = f"cuda:{local_rank}"
         pipe_device = "cuda"
         pipe_dtype = torch.bfloat16
     else:

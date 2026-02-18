@@ -258,7 +258,8 @@ class LongCatVideoAvatarPipeline:
         prompt_embeds = self.text_encoder(text_input_ids.to(device), mask.to(device)).last_hidden_state
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
         mask = mask.to(device=device)
-        mask = torch.cat([mask]*num_videos_per_prompt, dim=0)
+        if num_videos_per_prompt > 1:
+            mask = mask.repeat_interleave(num_videos_per_prompt, dim=0)
 
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         _, seq_len, _ = prompt_embeds.shape
@@ -1523,6 +1524,86 @@ class LongCatVideoAvatarPipeline:
 
         return audio_emb
 
+    def _build_windowed_audio_embedding(
+        self,
+        full_audio_emb: torch.Tensor,
+        num_frames: int,
+        device: Union[str, torch.device],
+    ) -> torch.Tensor:
+        if full_audio_emb.dim() == 2:
+            full_audio_emb = full_audio_emb.unsqueeze(1)
+        if full_audio_emb.dim() != 3:
+            raise ValueError(
+                f"Expected full audio embedding with shape [T, S, C], got {tuple(full_audio_emb.shape)}."
+            )
+        if full_audio_emb.shape[0] <= 0:
+            raise ValueError("Audio embedding has no timesteps.")
+
+        audio_window = int(getattr(self.dit, "audio_window", 5))
+        audio_window = max(1, 2 * (audio_window // 2) + 1)
+        audio_stride = max(int(self.vae_scale_factor_temporal), 1)
+
+        offsets = torch.arange(audio_window, device=full_audio_emb.device) - (audio_window // 2)
+        center_indices = torch.arange(
+            0,
+            audio_stride * int(num_frames),
+            audio_stride,
+            device=full_audio_emb.device,
+        ).unsqueeze(1) + offsets.unsqueeze(0)
+        center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
+
+        windowed = full_audio_emb[center_indices][None, ...]  # [1, T, W, S, C]
+        return windowed.to(device=device, dtype=self.dit.dtype)
+
+    def _prepare_audio_emb_for_dit(
+        self,
+        audio_emb: torch.Tensor,
+        *,
+        num_frames: int,
+        batch_size: int,
+        num_videos_per_prompt: int,
+        device: Union[str, torch.device],
+    ) -> torch.Tensor:
+        if audio_emb is None:
+            raise ValueError("`audio_emb` is required for audio-driven generation.")
+
+        if not torch.is_tensor(audio_emb):
+            audio_emb = torch.as_tensor(audio_emb)
+
+        if audio_emb.dim() == 3:
+            audio_emb = self._build_windowed_audio_embedding(audio_emb, num_frames=num_frames, device=device)
+        elif audio_emb.dim() == 4:
+            audio_emb = audio_emb.unsqueeze(0)
+        elif audio_emb.dim() != 5:
+            raise ValueError(
+                f"`audio_emb` must be 3D [T,S,C], 4D [T,W,S,C], or 5D [B,T,W,S,C], got {tuple(audio_emb.shape)}."
+            )
+
+        expected_time = int(num_frames)
+        if audio_emb.shape[1] != expected_time:
+            raise ValueError(
+                f"`audio_emb` time dimension mismatch: expected {expected_time}, got {audio_emb.shape[1]}."
+            )
+
+        expected_window = max(1, 2 * (int(getattr(self.dit, "audio_window", 5)) // 2) + 1)
+        if audio_emb.shape[2] != expected_window:
+            raise ValueError(
+                f"`audio_emb` window dimension mismatch: expected {expected_window}, got {audio_emb.shape[2]}."
+            )
+
+        target_batch = int(batch_size) * int(num_videos_per_prompt)
+        source_batch = int(audio_emb.shape[0])
+        if source_batch == 1 and target_batch > 1:
+            audio_emb = audio_emb.expand(target_batch, -1, -1, -1, -1).contiguous()
+        elif source_batch == int(batch_size) and int(num_videos_per_prompt) > 1:
+            audio_emb = audio_emb.repeat_interleave(int(num_videos_per_prompt), dim=0)
+        elif source_batch != target_batch:
+            raise ValueError(
+                f"`audio_emb` batch dimension mismatch: expected 1, {batch_size}, or {target_batch}, got {source_batch}."
+            )
+
+        return audio_emb.to(device=device, dtype=self.dit.dtype, non_blocking=True)
+
     @torch.no_grad()
     def generate_at2v(
         self,
@@ -1700,7 +1781,13 @@ class LongCatVideoAvatarPipeline:
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = self._prepare_audio_emb_for_dit(
+            audio_emb,
+            num_frames=num_frames,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
         audio_cond_embs, emotion_active = self._apply_emotion_channel(
             audio_emb=audio_base_embs,
             emotion_id=emotion_id,
@@ -2030,7 +2117,13 @@ class LongCatVideoAvatarPipeline:
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = self._prepare_audio_emb_for_dit(
+            audio_emb,
+            num_frames=num_frames,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
         audio_cond_embs, emotion_active = self._apply_emotion_channel(
             audio_emb=audio_base_embs,
             emotion_id=emotion_id,
@@ -2449,7 +2542,13 @@ class LongCatVideoAvatarPipeline:
                 context_parallel_util.cp_broadcast(negative_prompt_embeds)
                 context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
-        audio_base_embs = torch.cat([audio_emb] * num_videos_per_prompt, dim=0)
+        audio_base_embs = self._prepare_audio_emb_for_dit(
+            audio_emb,
+            num_frames=num_frames,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            device=device,
+        )
         audio_cond_embs, emotion_active = self._apply_emotion_channel(
             audio_emb=audio_base_embs,
             emotion_id=emotion_id,
@@ -2749,13 +2848,13 @@ class LongCatVideoAvatarPipeline:
         mouth_zone_masks: Optional[torch.Tensor] = None,
     ):
         r"""
-        Real-time streaming video generation (Image-to-Video).
-        Yields video frames as they are decoded, enabling true streaming inference.
+        Streaming-like video generation (Image-to-Video).
+        Yields video frames progressively after latent denoising is complete.
         
         Args:
             image: Input image for video generation.
             prompt: Text prompt(s) for video content generation.
-            audio_stream: Generator yielding audio chunks [sample_rate=16000].
+            audio_stream: Optional generator yielding audio chunks [sample_rate=16000].
             resolution: "480p" or "720p".
             num_frames: Number of frames to generate.
             num_inference_steps: Denoising steps (8 = distilled fast mode).
@@ -2788,33 +2887,44 @@ class LongCatVideoAvatarPipeline:
         
         device = self.device
         
-        # 1. Collect full audio from stream (required for correct audio_emb format)
-        audio_chunks = []
-        sample_rate = 16000
-        for chunk in audio_stream:
-            audio_chunks.append(chunk)
-        if not audio_chunks:
-            raise ValueError("audio_stream yielded no chunks")
-        full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32)
-        
-        # 2. Get audio embedding (full pipeline: wav2vec + seq_len)
-        # fps=16*stride so video_length matches latent frame count
-        audio_stride = self.vae_scale_factor_temporal
-        full_audio_emb = self.get_audio_embedding(
-            full_audio, fps=16 * audio_stride, device=device, sample_rate=sample_rate
-        )
-        
-        # 3. Build audio_emb in DiT format [B, T, W, S, C] via center_indices
-        audio_window = getattr(self.dit, 'audio_window', 5)
-        indices = torch.arange(2 * (audio_window // 2) + 1, device=full_audio_emb.device) - (audio_window // 2)
-        audio_start_idx = 0
-        audio_end_idx = audio_start_idx + audio_stride * num_frames
-        center_indices = torch.arange(audio_start_idx, audio_end_idx, audio_stride, device=full_audio_emb.device)
-        center_indices = center_indices.unsqueeze(1) + indices.unsqueeze(0)
-        center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
-        audio_emb = full_audio_emb[center_indices][None, ...].to(device)
-        
-        # 4. Run full generate_ai2v with output_type='latent' (image + audio conditioning)
+        # 1. Resolve audio embedding.
+        if audio_emb is None:
+            if audio_stream is None:
+                raise ValueError("Either `audio_stream` or `audio_emb` must be provided.")
+
+            audio_chunks = []
+            sample_rate = 16000
+            for chunk in audio_stream:
+                if chunk is None:
+                    continue
+                audio_chunks.append(np.asarray(chunk, dtype=np.float32))
+
+            if not audio_chunks:
+                raise ValueError("`audio_stream` yielded no chunks.")
+
+            full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
+            audio_stride = max(int(self.vae_scale_factor_temporal), 1)
+            full_audio_emb = self.get_audio_embedding(
+                full_audio,
+                fps=16 * audio_stride,
+                device=device,
+                sample_rate=sample_rate,
+            )
+            audio_emb = self._build_windowed_audio_embedding(
+                full_audio_emb,
+                num_frames=num_frames,
+                device=device,
+            )
+        else:
+            audio_emb = self._prepare_audio_emb_for_dit(
+                audio_emb,
+                num_frames=num_frames,
+                batch_size=1,
+                num_videos_per_prompt=1,
+                device=device,
+            )
+
+        # 2. Run full generate_ai2v with output_type='latent' (image + audio conditioning)
         latents = self.generate_ai2v(
             image=image,
             prompt=prompt,
@@ -2839,7 +2949,7 @@ class LongCatVideoAvatarPipeline:
             mouth_zone_masks=mouth_zone_masks,
         )
         
-        # 5. Stream decode: denormalize, decode frame-by-frame, yield
+        # 3. Stream decode: denormalize, decode frame-by-frame, yield
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         vae_decoder = StreamingVAEDecoder(self.vae, chunk_size=1, enable_amp=True)
@@ -2896,7 +3006,7 @@ class LongCatVideoAvatarPipeline:
             frame_times.append(time.time() - frame_time)
             yield frame_np
         
-        # 6. Log performance
+        # 4. Log performance
         if frame_times:
             avg_frame_time = sum(frame_times) / len(frame_times)
             fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0

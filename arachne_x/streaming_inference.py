@@ -262,6 +262,10 @@ class RealtimeInferencePipeline:
     
     def __init__(self, base_pipeline, enable_cuda_opt: bool = True, 
                  distill_steps: int = 8, enable_kv_cache: bool = True):
+        if not hasattr(base_pipeline, "get_audio_embedding"):
+            raise TypeError(
+                "RealtimeInferencePipeline requires an avatar pipeline with audio conditioning support."
+            )
         self.pipeline = base_pipeline
         self.distill_steps = distill_steps
         self.enable_kv_cache = enable_kv_cache
@@ -272,11 +276,7 @@ class RealtimeInferencePipeline:
             chunk_size=1, 
             enable_amp=True
         )
-        self.audio_encoder = RealtimeAudioEncoder(
-            base_pipeline.audio_encoder,
-            window_size=2048,
-            stride=1024
-        )
+        self.audio_encoder = None
         self.kv_cache = PersistentKVCache(max_cache_frames=13) if enable_kv_cache else None
         self.audio_buffer = StreamingAudioBuffer(buffer_size=5)
         
@@ -292,29 +292,31 @@ class RealtimeInferencePipeline:
     def generate_streaming(
         self,
         prompt: str,
-        audio_stream: Generator,
+        audio_stream: Optional[Generator] = None,
         num_frames: int = 93,
         height: int = 480,
         width: int = 832,
         text_guidance_scale: float = 4.0,
         audio_guidance_scale: float = 4.0,
         generator: Optional[torch.Generator] = None,
+        audio_emb: Optional[torch.Tensor] = None,
     ) -> Generator[np.ndarray, None, None]:
         """
         Real-time streaming generation.
         Yields: Decoded frame as numpy array [H, W, 3] in range [0, 255].
         """
-        
-        # Start audio prefetch
-        self.audio_buffer.start_prefetch(audio_stream, sample_rate=16000)
-        
+
+        if num_frames <= 0:
+            raise ValueError("`num_frames` must be positive.")
+
         # Encode prompt
+        do_cfg = text_guidance_scale > 1.0
         with torch.inference_mode():
             prompt_embeds, prompt_attention_mask, neg_embeds, neg_mask = \
                 self.pipeline.encode_prompt(
                     prompt=prompt,
                     negative_prompt="",
-                    do_classifier_free_guidance=True,
+                    do_classifier_free_guidance=do_cfg,
                     num_videos_per_prompt=1,
                     max_sequence_length=512,
                     device=self.device,
@@ -325,7 +327,7 @@ class RealtimeInferencePipeline:
         with torch.inference_mode():
             latents = self.pipeline.prepare_latents(
                 batch_size=1,
-                num_channels_latents=16,
+                num_channels_latents=int(getattr(self.pipeline.dit.config, "in_channels", 16)),
                 height=height,
                 width=width,
                 num_frames=num_frames,
@@ -334,53 +336,104 @@ class RealtimeInferencePipeline:
                 generator=generator,
             )
 
-        # Denoising loop with streaming
-        self.pipeline.scheduler.set_timesteps(self.distill_steps, device=self.device)
+        # Resolve audio conditioning in Avatar-DiT format [B, T, W, S, C].
+        if audio_emb is None:
+            if audio_stream is None:
+                raise ValueError("Either `audio_stream` or `audio_emb` must be provided.")
+            audio_chunks = []
+            for chunk in audio_stream:
+                if chunk is None:
+                    continue
+                audio_chunks.append(np.asarray(chunk, dtype=np.float32))
+            if not audio_chunks:
+                raise ValueError("`audio_stream` yielded no audio chunks.")
+            full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
+            audio_stride = max(int(getattr(self.pipeline, "vae_scale_factor_temporal", 4)), 1)
+            full_audio_emb = self.pipeline.get_audio_embedding(
+                full_audio,
+                fps=16 * audio_stride,
+                device=self.device,
+                sample_rate=16000,
+            )
+            audio_emb = self.pipeline._build_windowed_audio_embedding(
+                full_audio_emb,
+                num_frames=num_frames,
+                device=self.device,
+            )
+        else:
+            audio_emb = self.pipeline._prepare_audio_emb_for_dit(
+                audio_emb,
+                num_frames=num_frames,
+                batch_size=1,
+                num_videos_per_prompt=1,
+                device=self.device,
+            )
+
+        # Denoising loop.
+        if hasattr(self.pipeline, "get_timesteps_sigmas"):
+            sigmas = self.pipeline.get_timesteps_sigmas(self.distill_steps, use_distill=(self.distill_steps <= 16))
+            self.pipeline.scheduler.set_timesteps(self.distill_steps, sigmas=sigmas, device=self.device)
+        else:
+            self.pipeline.scheduler.set_timesteps(self.distill_steps, device=self.device)
         timesteps = self.pipeline.scheduler.timesteps
         if timesteps is None or len(timesteps) == 0:
             raise RuntimeError("Scheduler timesteps are empty; call set_timesteps before streaming.")
 
-        num_latent_frames = int(latents.shape[2])
-        for frame_idx in range(num_latent_frames):
-            t = timesteps[min(frame_idx, len(timesteps) - 1)]
-            frame_start = time.time()
-            
-            # Prefetch next audio chunk
-            audio_chunk = self.audio_buffer.get_chunk(timeout=0.1)
-            
-            # Encode audio on-the-fly
-            if audio_chunk is not None:
-                audio_emb = self.audio_encoder.encode_chunk(audio_chunk)
-            else:
-                audio_emb = torch.zeros(1, 1, 768, device=self.device, dtype=torch.float16)
-            
-            # Single denoise step
+        audio_null = torch.zeros_like(audio_emb)
+        for t in timesteps:
             with torch.inference_mode():
                 timestep = t.expand(latents.shape[0]).to(self.pipeline.dit.dtype)
-                
-                # Forward pass
-                noise_pred = self.pipeline.dit(
+                timestep = timestep.unsqueeze(-1).repeat(1, latents.shape[2])
+
+                noise_cond = self.pipeline.dit(
                     hidden_states=latents,
                     timestep=timestep,
                     encoder_hidden_states=prompt_embeds,
                     encoder_attention_mask=prompt_attention_mask,
-                    audio_embs=audio_emb if audio_emb is not None else None
+                    audio_embs=audio_emb,
                 )
-                
-                # Scheduler step
+
+                if do_cfg:
+                    noise_uncond = self.pipeline.dit(
+                        hidden_states=latents,
+                        timestep=timestep,
+                        encoder_hidden_states=neg_embeds,
+                        encoder_attention_mask=neg_mask,
+                        audio_embs=audio_null,
+                    )
+                    if audio_guidance_scale > 0:
+                        noise_text = self.pipeline.dit(
+                            hidden_states=latents,
+                            timestep=timestep,
+                            encoder_hidden_states=prompt_embeds,
+                            encoder_attention_mask=prompt_attention_mask,
+                            audio_embs=audio_null,
+                        )
+                        noise_pred = (
+                            noise_uncond
+                            + text_guidance_scale * (noise_text - noise_uncond)
+                            + audio_guidance_scale * (noise_cond - noise_text)
+                        )
+                    else:
+                        noise_pred = noise_uncond + text_guidance_scale * (noise_cond - noise_uncond)
+                else:
+                    noise_pred = noise_cond
+
+                # Negate for scheduler compatibility.
+                noise_pred = -noise_pred
                 latents = self.pipeline.scheduler.step(
                     noise_pred, t, latents, return_dict=False
                 )[0]
-            
-            # Stream decode frame
+
+        # Stream decode final latents frame-by-frame.
+        num_latent_frames = int(latents.shape[2])
+        for frame_idx in range(num_latent_frames):
+            frame_start = time.time()
             frame_latents = latents[:, :, frame_idx:frame_idx + 1]
             for decoded_frame in self.vae_decoder.decode_streaming(frame_latents):
-                # Convert to numpy [0, 255]
                 frame_np = (decoded_frame[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                
                 frame_time = time.time() - frame_start
                 self.frame_times.append(frame_time)
-                
                 yield frame_np
     
     def get_fps(self) -> float:
