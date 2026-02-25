@@ -154,7 +154,7 @@ class LongCatVideoTransformer3DModel(
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.cp_split_hw = cp_split_hw
+        self.cp_split_hw = tuple(cp_split_hw) if cp_split_hw is not None else (1, 1)
 
         self.x_embedder = PatchEmbed3D(patch_size, in_channels, hidden_size)
         self.t_embedder = TimestepEmbedder(t_embed_dim=adaln_tembed_dim, frequency_embedding_size=frequency_embedding_size)

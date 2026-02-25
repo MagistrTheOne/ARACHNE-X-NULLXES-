@@ -54,7 +54,7 @@ class RotaryPositionalEmbedding(nn.Module):
         super().__init__()
         self.head_dim = head_dim
         assert self.head_dim % 8 == 0, 'Dim must be a multiply of 8 for 3D RoPE.'
-        self.cp_split_hw = cp_split_hw
+        self.cp_split_hw = tuple(cp_split_hw) if cp_split_hw is not None else (1, 1)
         # We take the assumption that the longest side of grid will not larger than 512, i.e, 512 * 8 = 4098 input pixels
         self.base = 10000
         self.freqs_dict = {}

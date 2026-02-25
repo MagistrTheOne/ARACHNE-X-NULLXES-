@@ -39,14 +39,31 @@ def load_base_pipeline(
     cp_split_hw: Optional[Tuple[int, int]] = None,
     layout: WeightsLayout = WeightsLayout(),
 ) -> ArachneXVideoPipeline:
-    tokenizer = AutoTokenizer.from_pretrained(_p(checkpoint_dir, layout.tokenizer), torch_dtype=torch_dtype)
-    text_encoder = UMT5EncoderModel.from_pretrained(_p(checkpoint_dir, layout.text_encoder), torch_dtype=torch_dtype)
-    vae = AutoencoderKLWan.from_pretrained(_p(checkpoint_dir, layout.vae), torch_dtype=torch_dtype)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(_p(checkpoint_dir, layout.scheduler), torch_dtype=torch_dtype)
+    tokenizer = AutoTokenizer.from_pretrained(
+        _p(checkpoint_dir, layout.tokenizer),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    text_encoder = UMT5EncoderModel.from_pretrained(
+        _p(checkpoint_dir, layout.text_encoder),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    vae = AutoencoderKLWan.from_pretrained(
+        _p(checkpoint_dir, layout.vae),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        _p(checkpoint_dir, layout.scheduler),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
     dit = LongCatVideoTransformer3DModel.from_pretrained(
         _p(checkpoint_dir, layout.dit),
         cp_split_hw=cp_split_hw,
         torch_dtype=torch_dtype,
+        local_files_only=True,
     )
 
     pipe = ArachneXVideoPipeline(
@@ -68,10 +85,26 @@ def load_avatar_pipeline(
     cp_split_hw: Optional[Tuple[int, int]] = None,
     layout: WeightsLayout = WeightsLayout(),
 ) -> ArachneXVideoAvatarPipeline:
-    tokenizer = AutoTokenizer.from_pretrained(_p(checkpoint_dir, layout.tokenizer), torch_dtype=torch_dtype)
-    text_encoder = UMT5EncoderModel.from_pretrained(_p(checkpoint_dir, layout.text_encoder), torch_dtype=torch_dtype)
-    vae = AutoencoderKLWan.from_pretrained(_p(checkpoint_dir, layout.vae), torch_dtype=torch_dtype)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(_p(checkpoint_dir, layout.scheduler), torch_dtype=torch_dtype)
+    tokenizer = AutoTokenizer.from_pretrained(
+        _p(checkpoint_dir, layout.tokenizer),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    text_encoder = UMT5EncoderModel.from_pretrained(
+        _p(checkpoint_dir, layout.text_encoder),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    vae = AutoencoderKLWan.from_pretrained(
+        _p(checkpoint_dir, layout.vae),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        _p(checkpoint_dir, layout.scheduler),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
 
     if variant not in ("single", "multi"):
         raise ValueError(f"Unknown avatar variant: {variant}")
@@ -80,6 +113,7 @@ def load_avatar_pipeline(
         _p(checkpoint_dir, avatar_subdir),
         cp_split_hw=cp_split_hw,
         torch_dtype=torch_dtype,
+        local_files_only=True,
     )
 
     wav2vec_path = _p(checkpoint_dir, layout.wav2vec2)

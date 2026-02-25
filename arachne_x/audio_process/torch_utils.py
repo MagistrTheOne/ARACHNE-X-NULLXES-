@@ -71,11 +71,12 @@ def get_attn_map_with_target(noise_q, key, shape, ref_target_masks=None, split_n
     
     N_t, N_h, N_w = shape
     x_seqlens = N_h * N_w
+    cp_split_hw = (1, 1) if cp_split_hw is None else tuple(cp_split_hw)
     if cp_split_hw[0] * cp_split_hw[1] > 1:
         cp_size = context_parallel_util.get_cp_size()
-        (split_h, split_w) = (cp_size, 1) if cp_split_hw is None else cp_split_hw
+        (split_h, split_w) = cp_split_hw
 
-        assert N_h % split_h == 0, N_w % split_w == 0
+        assert N_h % split_h == 0 and N_w % split_w == 0
 
         N_h_ = N_h // split_h
         N_w_ = N_w // split_w

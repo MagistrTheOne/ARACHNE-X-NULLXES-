@@ -160,9 +160,10 @@ class KalmanFilter2D:
 
 class LandmarkDetectorV2(nn.Module):
     """Robust landmark detector with MediaPipe primary and optional DLIB fallback. Returns coords and per-landmark confidence."""
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", allow_zero_fallback: bool = False):
         super().__init__()
         self.device = device
+        self.allow_zero_fallback = allow_zero_fallback
         self.use_mediapipe = False
         self.use_dlib = False
         self._warned_no_detector = False
@@ -197,10 +198,14 @@ class LandmarkDetectorV2(nn.Module):
                 self.use_dlib = False
 
         if not self.use_mediapipe and not self.use_dlib:
-            logger.warning(
-                "LandmarkDetectorV2 is running without MediaPipe or DLIB. "
-                "Facial anchors will be zeros; install mediapipe or provide dlib predictor."
+            msg = (
+                "LandmarkDetectorV2 has no available backend (MediaPipe/DLIB). "
+                "Install `mediapipe` or provide `shape_predictor_68_face_landmarks.dat` for dlib."
             )
+            if self.allow_zero_fallback:
+                logger.warning("%s Falling back to zero landmarks.", msg)
+            else:
+                raise RuntimeError(msg)
 
     def forward(self, frame_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -237,9 +242,9 @@ class LandmarkDetectorV2(nn.Module):
             else:
                 return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
 
-        # Fallback: no detector available
+        # Explicit fallback path only when allow_zero_fallback=True.
         if not self._warned_no_detector:
-            logger.debug("LandmarkDetectorV2 fallback returning zero landmarks (no detector available).")
+            logger.warning("LandmarkDetectorV2 fallback returning zero landmarks (no detector available).")
             self._warned_no_detector = True
         return np.zeros((68, 2), dtype=np.float32), np.zeros(68, dtype=np.float32)
 

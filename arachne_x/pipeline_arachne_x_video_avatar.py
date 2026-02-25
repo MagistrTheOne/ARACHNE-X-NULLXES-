@@ -155,7 +155,7 @@ class LongCatVideoAvatarPipeline:
         self.phoneme_num_classes = 10
         self.phoneme_stream_scale = 0.20
         self.phoneme_confidence_floor = 0.10
-        self.phoneme_fallback_to_wav2vec = True
+        self.phoneme_fallback_to_wav2vec = False
         self.phoneme_aligner = PhonemeTemporalAligner(num_phonemes=self.phoneme_num_classes)
         audio_embed_dim = 768
         self.phoneme_proj = nn.Sequential(

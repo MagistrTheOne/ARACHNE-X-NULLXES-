@@ -69,7 +69,7 @@ class Attention(nn.Module):
         if self.enable_bsa and shape[0] > 1: # bsa will not be used in image training / sampling
             assert self.bsa_params is not None
             _, H, W = shape
-            assert H % self.cp_split_hw[0] == 0, W % self.cp_split_hw[1] == 0
+            assert H % self.cp_split_hw[0] == 0 and W % self.cp_split_hw[1] == 0
             H, W = H // self.cp_split_hw[0], W // self.cp_split_hw[1]
             Tq = SQ // (H * W)
             Tk = SKV // (H * W)
@@ -416,6 +416,8 @@ class SingleStreamAttention(nn.Module):
             encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
             x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
             x = rearrange(x, "B M H K -> B H M K") 
+        else:
+            raise RuntimeError("Unsupported cross-attention backend. Enable flash-attn or xformers.")
 
         # linear transform
         x_output_shape = (B, N, C)

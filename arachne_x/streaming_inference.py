@@ -6,6 +6,7 @@ Production-grade streaming decoder, KV-cache, async audio, CUDA optimizations
 import torch
 import torch.nn.functional as F
 import logging
+import warnings
 from torch.cuda.amp import autocast
 import collections
 import threading
@@ -469,8 +470,9 @@ class QuantizationUtils:
     
     @staticmethod
     def quantize_to_fp8(model: torch.nn.Module) -> torch.nn.Module:
-        """FP8 quantization (requires FP8 support on GPU)."""
-        raise NotImplementedError(
-            "FP8 quantization is not implemented. Integrate an FP8 backend "
-            "before enabling this path in production."
+        """FP8 quantization placeholder with explicit no-op behavior."""
+        warnings.warn(
+            "FP8 quantization backend is not configured; returning the original model unchanged.",
+            RuntimeWarning,
         )
+        return model

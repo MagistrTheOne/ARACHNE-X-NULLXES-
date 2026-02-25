@@ -1,6 +1,7 @@
 import logging
 import time
 import hashlib
+import os
 import numpy as np
 from typing import List, Optional, Callable
 
@@ -96,7 +97,18 @@ def compute_lpips_vgg(imgs1: List[np.ndarray], imgs2: List[np.ndarray]) -> float
     if torch is None:
         raise RuntimeError('torch and torchvision required for LPIPS proxy')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    vgg = models.vgg16(pretrained=True).features[:16].to(device).eval()
+    def _make_vgg16_no_pretrained():
+        try:
+            return models.vgg16(weights=None)
+        except TypeError:
+            return models.vgg16(pretrained=False)
+
+    local_vgg_path = os.environ.get("ARACHNE_VGG16_WEIGHTS", "").strip()
+    vgg_full = _make_vgg16_no_pretrained()
+    if local_vgg_path:
+        state_dict = torch.load(local_vgg_path, map_location=device)
+        vgg_full.load_state_dict(state_dict, strict=True)
+    vgg = vgg_full.features[:16].to(device).eval()
     preproc = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
