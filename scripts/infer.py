@@ -84,7 +84,7 @@ def main():
     parser = argparse.ArgumentParser(description="ARACHNE-X inference entrypoint")
     parser.add_argument("--checkpoint_dir", type=str, required=True)
     parser.add_argument("--mode", type=str, required=True,
-                        choices=["t2v", "i2v", "vc", "ai2v", "at2v", "avc", "streaming_ai2v"])
+                        choices=["t2v", "i2v", "vc", "ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"])
     parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--negative_prompt", type=str, default="")
     parser.add_argument("--image", type=str, default=None)
@@ -103,6 +103,9 @@ def main():
     parser.add_argument("--identity_negative_strength", type=float, default=0.0)
     parser.add_argument("--identity_update_bank", action="store_true")
     parser.add_argument("--identity_update_momentum", type=float, default=0.25)
+    parser.add_argument("--identity_bank_path", type=str, default=None)
+    parser.add_argument("--identity_bank_save_path", type=str, default=None)
+    parser.add_argument("--identity_bank_load_strict", action="store_true")
     parser.add_argument("--emotion_id", type=str, default=None)
     parser.add_argument("--emotion_intensity", type=float, default=0.0)
     parser.add_argument("--emotion_guidance_scale", type=float, default=0.0)
@@ -183,6 +186,42 @@ def main():
     if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
         pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
 
+    if args.identity_bank_path and os.path.exists(args.identity_bank_path):
+        loaded = pipe.load_identity_bank(
+            args.identity_bank_path,
+            strict=args.identity_bank_load_strict,
+        )
+        print(f"[identity-bank] loaded from {loaded['source']} (rows={loaded['rows_loaded']}, cols={loaded['cols_loaded']})")
+    elif args.identity_bank_path and args.mode != "enroll_identity":
+        print(f"[identity-bank] warning: file not found at {args.identity_bank_path}; continuing with in-memory bank")
+
+    if args.mode == "enroll_identity":
+        if not args.image:
+            raise ValueError("--image is required for enroll_identity")
+        if args.identity_id is None:
+            raise ValueError("--identity_id is required for enroll_identity")
+        save_path = args.identity_bank_save_path or args.identity_bank_path
+        if not save_path:
+            raise ValueError("For enroll_identity, provide --identity_bank_save_path or --identity_bank_path.")
+
+        image = load_image(args.image)
+        enroll_info = pipe.enroll_identity_from_image(
+            image=image,
+            identity_id=args.identity_id,
+            resolution=args.resolution,
+            resize_mode="crop",
+            momentum=args.identity_update_momentum,
+        )
+        pipe.save_identity_bank(save_path)
+        print(
+            "[identity-bank] enrolled identity_id(s)={} batch_size={} saved={}".format(
+                enroll_info["identity_ids"],
+                enroll_info["batch_size"],
+                save_path,
+            )
+        )
+        return
+
     if args.mode in ("ai2v", "streaming_ai2v"):
         if not args.image or not args.audio:
             raise ValueError("--image and --audio are required for ai2v")
@@ -215,6 +254,11 @@ def main():
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
             save_video_ffmpeg(out, args.output, args.audio, fps=30)
+            if args.identity_update_bank:
+                save_path = args.identity_bank_save_path or args.identity_bank_path
+                if save_path:
+                    pipe.save_identity_bank(save_path)
+                    print(f"[identity-bank] updated and saved to {save_path}")
         else:
             audio_gen = _audio_stream_generator(args.audio)
             frames = []
@@ -237,6 +281,9 @@ def main():
             ):
                 frames.append(frame)
             save_video_ffmpeg(np.stack(frames, axis=0), args.output, args.audio, fps=30)
+            if args.identity_bank_save_path:
+                pipe.save_identity_bank(args.identity_bank_save_path)
+                print(f"[identity-bank] saved to {args.identity_bank_save_path}")
         return
 
     if args.mode == "at2v":
@@ -311,6 +358,11 @@ def main():
             mouth_zone_masks=mouth_mask_tensor,
         )[0]
         save_video_ffmpeg(out, args.output, args.audio, fps=30)
+        if args.identity_update_bank:
+            save_path = args.identity_bank_save_path or args.identity_bank_path
+            if save_path:
+                pipe.save_identity_bank(save_path)
+                print(f"[identity-bank] updated and saved to {save_path}")
         return
 
 

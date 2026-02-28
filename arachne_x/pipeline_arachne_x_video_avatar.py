@@ -710,6 +710,73 @@ class LongCatVideoAvatarPipeline:
             "source": path,
         }
 
+    @torch.no_grad()
+    def enroll_identity_from_image(
+        self,
+        image: PipelineImageInput,
+        identity_id: Union[int, List[int], torch.Tensor],
+        resolution: Literal["480p", "720p"] = "480p",
+        resize_mode: str = "crop",
+        momentum: float = 1.0,
+    ) -> Dict[str, Any]:
+        """
+        Register (or update) one-shot identity slot(s) directly from reference image(s)
+        without running a full diffusion sampling loop.
+        """
+        if resize_mode not in ("default", "crop"):
+            raise ValueError(f"Unsupported resize_mode {resize_mode}, and you can only choose from [default, crop]")
+        if identity_id is None:
+            raise ValueError("`identity_id` is required for identity enrollment.")
+
+        scale_factor_spatial = self.vae_scale_factor_spatial * 2
+        if self.dit.cp_split_hw is not None:
+            scale_factor_spatial *= max(self.dit.cp_split_hw)
+
+        height, width = self.get_condition_shape(
+            image,
+            resolution,
+            scale_factor_spatial=scale_factor_spatial,
+        )
+        image_tensor = self.video_processor.preprocess(
+            image,
+            height=height,
+            width=width,
+            resize_mode=resize_mode,
+        ).to(device=self.device, dtype=self.dit.dtype)
+        if image_tensor.ndim == 3:
+            image_tensor = image_tensor.unsqueeze(0)
+
+        batch_size = image_tensor.shape[0]
+        latents = self.prepare_latents(
+            image=image_tensor,
+            batch_size=batch_size,
+            num_channels_latents=self.dit.config.in_channels,
+            height=height,
+            width=width,
+            num_frames=1,
+            num_cond_frames=1,
+            dtype=torch.float32,
+            device=self.device,
+            generator=None,
+            latents=None,
+        )
+        cond_latents = latents[:, :, :1]
+        self.register_identity_from_latents(
+            identity_id=identity_id,
+            latents=cond_latents,
+            momentum=momentum,
+        )
+        normalized_ids = self._normalize_identity_ids(identity_id, batch_size=batch_size)
+        self.metrics.record("identity_enroll_batch_size", int(batch_size))
+        self.metrics.record("identity_enroll_momentum", float(momentum))
+        return {
+            "identity_ids": normalized_ids,
+            "batch_size": int(batch_size),
+            "height": int(height),
+            "width": int(width),
+            "momentum": float(momentum),
+        }
+
     def _compress_kv_pair_temporal(
         self,
         k: torch.Tensor,
