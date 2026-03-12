@@ -46,11 +46,14 @@ class StreamingVAEDecoder:
             else:
                 decoded = self.decode_fn(chunk, return_dict=False)[0]
             
-            # Denormalize [0, 1] -> [0, 255]
             decoded = decoded.clamp(-1, 1)
             decoded = (decoded + 1) / 2  # [-1, 1] -> [0, 1]
-            
-            yield decoded
+
+            if decoded.ndim != 5:
+                raise ValueError(f"Expected decoded video chunk [B, C, T, H, W], got {tuple(decoded.shape)}.")
+
+            for t_idx in range(decoded.shape[2]):
+                yield decoded[:, :, t_idx]
 
 
 class PersistentKVCache:
@@ -426,16 +429,13 @@ class RealtimeInferencePipeline:
                     noise_pred, t, latents, return_dict=False
                 )[0]
 
-        # Stream decode final latents frame-by-frame.
-        num_latent_frames = int(latents.shape[2])
-        for frame_idx in range(num_latent_frames):
+        # Stream decode final latents into actual video frames.
+        for decoded_frame in self.vae_decoder.decode_streaming(latents):
             frame_start = time.time()
-            frame_latents = latents[:, :, frame_idx:frame_idx + 1]
-            for decoded_frame in self.vae_decoder.decode_streaming(frame_latents):
-                frame_np = (decoded_frame[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                frame_time = time.time() - frame_start
-                self.frame_times.append(frame_time)
-                yield frame_np
+            frame_np = (decoded_frame[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+            frame_time = time.time() - frame_start
+            self.frame_times.append(frame_time)
+            yield frame_np
     
     def get_fps(self) -> float:
         """Return average FPS over last 30 frames."""
