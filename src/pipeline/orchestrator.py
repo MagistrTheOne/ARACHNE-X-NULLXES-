@@ -12,6 +12,7 @@ from src.llm.openai_adapter import StreamingLLM
 from src.pipeline.audio_buffer import AudioRingBuffer
 from src.pipeline.vad import SileroVAD, SpeechState, VADResult
 from src.tts.cosyvoice_stream import CosyVoiceStream
+from src.tts.qwen_tts_stream import QwenTTSStream
 
 
 class SessionState(str, Enum):
@@ -40,7 +41,7 @@ class RealtimePipeline:
         self.vad = SileroVAD(**config["vad"])
         self.asr = WhisperStreamASR(**config["asr"])
         self.llm = StreamingLLM(**config["llm"])
-        self.tts = CosyVoiceStream(**config["tts"])
+        self.tts = self._build_tts(config["tts"])
         self.session = ArachneSession(**config["avatar"])
         self.session_state = SessionState.IDLE
         self._utterance_lock = asyncio.Lock()
@@ -98,3 +99,14 @@ class RealtimePipeline:
         else:
             pcm = np.asarray(pcm_16k, dtype=np.float32).reshape(-1)
         return np.ascontiguousarray(pcm)
+
+    @staticmethod
+    def _build_tts(tts_config: Dict[str, Any]):
+        backend = str(tts_config.get("backend", "qwen")).strip().lower()
+        cfg = dict(tts_config)
+        cfg.pop("backend", None)
+        if backend == "qwen":
+            return QwenTTSStream(**cfg)
+        if backend == "cosyvoice":
+            return CosyVoiceStream(**cfg)
+        raise ValueError(f"Unsupported TTS backend: {backend}")
