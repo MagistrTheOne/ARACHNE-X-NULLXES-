@@ -53,7 +53,8 @@ class ArachneSession:
     async def start(self) -> None:
         if self._running:
             return
-        self._load_pipeline()
+        # Model/pipeline loading is heavy; do it off the event loop.
+        await asyncio.to_thread(self._load_pipeline)
         self._running = True
         self._render_task = asyncio.create_task(self._render_loop())
 
@@ -142,7 +143,12 @@ class ArachneSession:
                 try:
                     metrics.record("avatar_render_window_latency_ms", float(latency_ms))
                 except Exception:
-                    pass
+                    # Metrics must never break realtime generation.
+                    # Keeping this at debug-level to avoid noise in production.
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        "metrics.record() failed for avatar_render_window_latency_ms", exc_info=True
+                    )
 
     def _generate_frames_sync(self, pcm: np.ndarray) -> list[np.ndarray]:
         kwargs = dict(self.generation_cfg)
@@ -158,11 +164,19 @@ class ArachneSession:
             device=self._pipeline.device,
             sample_rate=self.sample_rate,
         )
-        output = self._pipeline.generate_ai2v(
-            image=self._avatar_image,
-            output_type="np",
-            **kwargs,
-        )
+        try:
+            output = self._pipeline.generate_ai2v(
+                image=self._avatar_image,
+                output_type="np",
+                **kwargs,
+            )
+        except Exception as exc:
+            # During realtime interruptions we abort diffusion denoising early.
+            # The caller will discard the generation anyway, but returning [] avoids
+            # decoding partial frames.
+            if type(exc).__name__ == "GenerationInterrupted":
+                return []
+            raise
         if isinstance(output, torch.Tensor):
             array = output.detach().cpu().numpy()
         else:

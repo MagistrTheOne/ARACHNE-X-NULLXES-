@@ -44,6 +44,15 @@ def torch_gc():
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
+
+class GenerationInterrupted(Exception):
+    """
+    Raised to abort diffusion denoising loops during realtime interruptions.
+
+    This avoids silent partial updates and reduces wasted compute.
+    """
+
+
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
 def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
@@ -1622,7 +1631,11 @@ class LongCatVideoAvatarPipeline:
                 processor_in = wav2vec_feats.cpu()
                 proc_out = self.audio_processor(processor_in)
                 fused_emb = proc_out.get('fused_embeddings', None)
-            except Exception:
+            except Exception as exc:
+                loguru.logger.debug(
+                    "Audio multi-stream processor step failed; fused embeddings disabled. Error: {}",
+                    exc,
+                )
                 fused_emb = None
 
             if fused_emb is not None:
@@ -1983,7 +1996,7 @@ class LongCatVideoAvatarPipeline:
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
-                    continue
+                    raise GenerationInterrupted()
 
                 self._current_timestep = t
 
@@ -2359,7 +2372,7 @@ class LongCatVideoAvatarPipeline:
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
-                    continue
+                    raise GenerationInterrupted()
 
                 self._current_timestep = t
 
@@ -2796,7 +2809,7 @@ class LongCatVideoAvatarPipeline:
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
-                    continue
+                    raise GenerationInterrupted()
 
                 self._current_timestep = t
 

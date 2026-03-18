@@ -470,9 +470,12 @@ class QuantizationUtils:
     
     @staticmethod
     def quantize_to_fp8(model: torch.nn.Module) -> torch.nn.Module:
-        """FP8 quantization placeholder with explicit no-op behavior."""
-        warnings.warn(
-            "FP8 quantization backend is not configured; returning the original model unchanged.",
-            RuntimeWarning,
+        """
+        FP8 quantization is not implemented in this repository.
+
+        Keeping this as a hard failure avoids silent "no-op" behavior in production.
+        """
+        raise NotImplementedError(
+            "FP8 quantization backend is not implemented. "
+            "Remove the call to quantize_to_fp8() or provide a supported backend."
         )
-        return model

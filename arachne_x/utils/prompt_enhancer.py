@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import base64
+import os
 
 from PIL import Image
 from openai import OpenAI
@@ -31,7 +32,7 @@ def encode_image(image_bytes):
 
 ### Settings
 
-APPKEY = 'YOUR_APPKEY'
+PROMPT_ENHANCER_ENABLED = os.environ.get("ARACHNE_PROMPT_ENHANCER_ENABLED", "0").strip() == "1"
 
 LM_ZH_SYS_PROMPT = \
     '''用户会输入视频内容描述或者视频任务的描述，你需要基于用户的输入生成优质的视频内容描述，使其更完整、更具表现力，同时不改变原意。\n''' \
@@ -109,12 +110,14 @@ def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3):
     """
     Enhance a prompt used for text-2-video
     """
-    if not APPKEY or APPKEY == "YOUR_APPKEY":
-        logger.warning("Prompt enhancer disabled: APPKEY not configured.")
+    if not PROMPT_ENHANCER_ENABLED:
+        logger.info("Prompt enhancer disabled: ARACHNE_PROMPT_ENHANCER_ENABLED=0.")
         return prompt
-    client = OpenAI(
-        api_key=f"{APPKEY}",
-    )
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("Prompt enhancer disabled: OPENAI_API_KEY not configured.")
+        return prompt
+    client = OpenAI(api_key=api_key)
 
     compressed_image = compress_image(image_path)
     base64_image = encode_image(compressed_image)
@@ -147,12 +150,12 @@ def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3):
             if response.choices:
                 return response.choices[0].message.content
         except Exception as e:
-            print(f'Failed with exception: {e}...')
-            print(f'sleep 1s and try again...')
+            logger.warning("Prompt enhancement attempt failed: %s", e)
+            logger.info("Sleeping 1s and retrying.")
             time.sleep(1)
             continue
 
-    print(f'Failed after retries; return the input prompt...')
+    logger.warning("Prompt enhancement failed after retries; returning the input prompt unchanged.")
 
     return prompt
 
@@ -160,12 +163,14 @@ def enhance_prompt_t2v(prompt: str, retry_times: int = 3):
     """
     Enhance a prompt used for text-2-video
     """
-    if not APPKEY or APPKEY == "YOUR_APPKEY":
-        logger.warning("Prompt enhancer disabled: APPKEY not configured.")
+    if not PROMPT_ENHANCER_ENABLED:
+        logger.info("Prompt enhancer disabled: ARACHNE_PROMPT_ENHANCER_ENABLED=0.")
         return prompt
-    client = OpenAI(
-        api_key=f"{APPKEY}",
-    )
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("Prompt enhancer disabled: OPENAI_API_KEY not configured.")
+        return prompt
+    client = OpenAI(api_key=api_key)
     text = prompt.strip()
     sys_prompt = LM_ZH_SYS_PROMPT if is_chinese_prompt(text) else LM_EN_SYS_PROMPT
     for i in range(retry_times):
@@ -187,12 +192,12 @@ def enhance_prompt_t2v(prompt: str, retry_times: int = 3):
             if response.choices:
                 return response.choices[0].message.content
         except Exception as e:
-            print(f'Failed with exception: {e}...')
-            print(f'sleep 1s and try again...')
+            logger.warning("Prompt enhancement attempt failed: %s", e)
+            logger.info("Sleeping 1s and retrying.")
             time.sleep(1)
             continue
 
-    print(f'Failed after retries; return the input prompt...')
+    logger.warning("Prompt enhancement failed after retries; returning the input prompt unchanged.")
 
     return prompt
 
