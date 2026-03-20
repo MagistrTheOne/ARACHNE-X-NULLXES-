@@ -574,7 +574,17 @@ class LongCatVideoAvatarPipeline:
             kwargs["mask_frame_range"] = mask_frame_range
         if ref_target_masks is not None:
             kwargs["ref_target_masks"] = ref_target_masks
-        return self.dit(**kwargs)
+        # torch.compile + CUDAGraphs can reuse internal output buffers across
+        # sequential CFG passes (uncond/text/audio), so we mark a fresh step and
+        # detach the returned tensor from any reusable graph-managed storage.
+        compiler_ns = getattr(torch, "compiler", None)
+        if compiler_ns is not None and hasattr(compiler_ns, "cudagraph_mark_step_begin"):
+            compiler_ns.cudagraph_mark_step_begin()
+
+        noise_pred = self.dit(**kwargs)
+        if isinstance(noise_pred, torch.Tensor):
+            return noise_pred.clone()
+        return noise_pred
 
     def _normalize_identity_ids(
         self,
