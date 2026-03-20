@@ -1,0 +1,8 @@
+{
+    "prompt": "A realistic close-up of a young man speaking directly to camera in a clean studio setup, natural facial expression, precise lip movements synchronized with speech, subtle head motion, stable identity, soft cinematic lighting, high facial detail",
+    "cond_image": "assets/avatar/single/MaximOnyushko/image.png",
+    "cond_audio": {
+      "person1": "assets/avatar/single/MaximOnyushko/voice.wav"
+    }
+  }
+  
