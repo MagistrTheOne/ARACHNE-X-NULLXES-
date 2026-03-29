@@ -23,8 +23,20 @@ class Wav2Vec2ModelWrapper(nn.Module):
                 local_files_only=True,
             )
 
-        model_path = os.path.join(config_path, 'pytorch_model.bin')
-        state_dict = torch.load(model_path, map_location=device)
+        model_path_bin = os.path.join(config_path, "pytorch_model.bin")
+        model_path_st = os.path.join(config_path, "model.safetensors")
+        if os.path.isfile(model_path_bin):
+            state_dict = torch.load(model_path_bin, map_location="cpu")
+            loaded_from = model_path_bin
+        elif os.path.isfile(model_path_st):
+            from safetensors.torch import load_file
+
+            state_dict = load_file(model_path_st, device="cpu")
+            loaded_from = model_path_st
+        else:
+            raise FileNotFoundError(
+                f"Expected pytorch_model.bin or model.safetensors under {config_path}"
+            )
 
         config.name_or_path = config_path
         config = copy.deepcopy(config)  # We do not want to modify the config inplace in from_pretrained.
@@ -42,7 +54,7 @@ class Wav2Vec2ModelWrapper(nn.Module):
             model = Wav2Vec2Mode(config)
 
         # load checkpoint
-        logging.info(f'loading {model_path}')
+        logging.info("loading %s", loaded_from)
         if prefix is not None:
             state_dict = {i.replace(prefix, ''):state_dict[i] for i in state_dict}
         
