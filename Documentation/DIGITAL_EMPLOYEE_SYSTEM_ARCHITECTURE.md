@@ -16,7 +16,7 @@
 | Latency | Interactive | **\<500 ms** first audio where possible |
 | Interrupt | Optional | **Full-duplex barge-in** required |
 
- is **low-latency A/V**; the **employer value** is **LLM that executes** (tickets, CRM, calendars, internal APIs) under guardrails.
+Consumer avatar SaaS optimizes **low-latency A/V**; a digital employee optimizes **LLM that executes** (tickets, CRM, calendars, internal APIs) under guardrails.
 
 ---
 
@@ -187,3 +187,85 @@ Alert on **Pool B SM occupancy** and **LLM span flood** (Orchestrator over-produ
 - **Digital employee** = same realtime stack **plus** **tooling, policy, audit, and silent ops channel** — that is what differentiates product from generic avatar SaaS.
 
 *This document describes integration architecture; ARACHNE-X repo paths for inference remain `arachne_x.loader.load_avatar_pipeline` and `generate_streaming_ai2v` as in project docs.*
+
+---
+
+## 12. Spec gaps: what a *real* digital employee still needs (after LLM ∥ Avatar split)
+
+Splitting **LLM pool** and **H200 realtime lane** solves **throughput and contention**. It does **not** complete the product spec. Below is what enterprise buyers and production SREs will still ask for — capture these as **explicit requirements**, not implied.
+
+**See also:** [ENTERPRISE_RAG_AND_DIGITAL_EMPLOYEE_2026.md](ENTERPRISE_RAG_AND_DIGITAL_EMPLOYEE_2026.md) — enterprise RAG stack choice, **Retrieval Policy Layer**, **Tool–RAG coupling**, PII pipeline by stage, and decision matrix (Atlas vs pgvector vs specialized vector DB vs managed RAG).
+
+### 12.1 Tenant & identity (multi-employee, not one demo)
+
+| Missing in many specs | Why it matters |
+|----------------------|----------------|
+| **Tenant model** (org → workspace → “digital employee” profiles) | Isolation of prompts, voices, avatars, quotas, API keys |
+| **RBAC** who can edit behavior vs. only view analytics | Prevents prompt injection via admin UI |
+| **Per-employee asset versioning** (face ref, voice id, style pack) | Reproducible sessions; rollback when a bad deploy breaks lip-sync |
+| **Secret / connector vault** per tenant | Tools use OAuth — no secrets in LLM context |
+
+### 12.2 “Brain” contract: tools, not vibes
+
+| Missing | Specify in project |
+|---------|-------------------|
+| **Tool catalog** (ID, schema, side-effects class: read / write / money / PII) | Same as internal API catalog; versioned |
+| **Idempotency & retries** | Tool calls MUST be safe under LLM + network retries |
+| **Timeouts & circuit breakers** per integration | Or LLM will hallucinate “done” while CRM is down |
+| **Human approval gates** for irreversible actions | Refund, delete, legal commit |
+| **Dry-run / confirm-to-speak** pattern | Silent tool → policy → then templated spoken confirmation |
+
+### 12.3 Knowledge (RAG) as operations, not a checkbox
+
+| Missing | Specify |
+|---------|---------|
+| **Ingestion pipeline** (formats, OCR, access control inherited from source) | Who may see which doc slice |
+| **Refresh / TTL / “I don’t know”** policy | Stale KB is a liability; define escalation |
+| **Citation & attribution in audit log** | Not always read aloud — but must exist for disputes |
+| **Evaluation set** per tenant (golden questions + expected tool + expected doc IDs) | Not MOS-only |
+
+### 12.4 Safety, compliance, consent
+
+| Missing | Specify |
+|---------|---------|
+| **Jurisdiction**: recording consent, retention, **biometric** (voice/face) where applicable | Product + legal sign-off |
+| **PII redaction** on ingest, in logs, and **before** TTS where needed | Classifiers + blocklists |
+| **Abuse & jailbreak** handling for **voice** (not just text) | Different attack surface |
+| **Disclosure** (“you are speaking with an AI employee”) | Region-dependent |
+| **Data residency** path (EU RuStore, etc.) | If claimed in sales |
+
+### 12.5 Session semantics (what “one conversation” means)
+
+| Missing | Specify |
+|---------|---------|
+| **Long tasks** spanning VAD gaps (“call me back in this flow”) | **Task state machine** persisted |
+| **Handoff** to human (warm transfer, context package: summary + tool log + no raw PAN) | SLA |
+| **Resume** across devices / next day (contact id, not only `session_id`) | CRM link |
+| **Degraded modes**: LLM slow, Avatar saturated, tools down — **graceful voice copy** | Static image + TTS-only v.s. queue estimate |
+
+### 12.6 Client & UX (not in backend doc alone)
+
+| Missing | Specify |
+|---------|---------|
+| **AEC + noise** requirements; minimum browser / native shell | Full-duplex fails without this |
+| **Accessibility** (captions, keyboard, screen reader for UI chrome) | Enterprise procurement |
+| **Interrupt UX** (visual “I’m listening”, partial ASR latency) | Reduces user rage & repeat barges |
+
+### 12.7 SRE / scale (beyond “we have GPUs”)
+
+| Missing | Specify |
+|---------|---------|
+| **Global limits**: concurrent Avatar jobs, LLM tokens/s, cost caps per tenant | Fair scheduling |
+| **Chaos / failover**: single AZ loss, model weight mount failure | Read-only fallback |
+| **Runbooks**: cancel storm, WebRTC glare, GPU OOM on Pool B | On-call reality |
+| **Synthetic probes**: TTFA, TTFF, tool happy-path every N minutes | Not manual demo |
+
+### 12.8 What to do next after the split (ordering)
+
+1. **Freeze Orchestrator contract** (messages, `generation_id`, span envelope, cancel priority channel).  
+2. **Implement tool plane** with one **read-only** + one **write** integration and full audit.  
+3. **Ship RAG** with tenant ACL + eval set before marketing “grounded”.  
+4. **Load-test** barge-in + tool latency + Avatar queue (not average FPS).  
+5. **Legal / security review** on recording, retention, handoff payloads.
+
+Until **12.1–12.4** exist as written requirements, the system remains a **real-time avatar with an LLM attached**, not a **digital employee** product.
