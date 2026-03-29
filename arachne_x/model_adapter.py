@@ -37,7 +37,7 @@ class ARACHNEXModelAdapter(nn.Module):
         device: str = 'cpu'
     ) -> Dict[str, torch.Tensor]:
         """
-        Load LongCat-Video checkpoint and convert keys to ARACHNE-X format.
+        Load  checkpoint and convert keys to ARACHNE-X format.
         
         Args:
             checkpoint_path: Path to LongCat .safetensors, .pth, or .ckpt

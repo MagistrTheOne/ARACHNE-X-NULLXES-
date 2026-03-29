@@ -146,3 +146,86 @@ cd ARACHNE-X
 
 conda create -n arachne-x python=3.10
 conda activate arachne-x
+
+---
+
+## 🔌 Frontend-Backend Contract (Avatar Session API)
+
+To keep the frontend simple and secure, all provider-specific logic (RunPod endpoint IDs, API keys, retries, polling rules) must stay on the backend.
+
+### Target realtime stack
+
+- ASR/STT: [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
+- LLM: [Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
+- TTS: [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
+- Video renderer: ARACHNE-X pipeline
+
+Recommended flow:
+
+`STT/ASR -> LLM -> TTS -> ARACHNE output (stream/video)`
+
+### Request from frontend
+
+`POST /api/avatar/session`
+
+```json
+{
+  "employeeId": "66",
+  "avatarKey": "ksera_digital_twin",
+  "voiceName": "Kore",
+  "text": "Привет, чем помочь?",
+  "locale": "ru-RU",
+  "clientRequestId": "uuid-optional"
+}
+```
+
+Minimum required fields:
+
+- `employeeId` or `avatarKey` (one unique avatar reference is enough)
+- `text` (for TTS/generation)
+- `voiceName` (if voice selection is enabled)
+
+### Response from backend (instant/session mode)
+
+```json
+{
+  "provider": "runpod",
+  "sessionId": "sess_123",
+  "streamUrl": "https://.../stream.m3u8",
+  "expiresAt": "2026-03-20T18:30:00Z",
+  "status": "ready"
+}
+```
+
+### Response from backend (job/poll mode)
+
+```json
+{
+  "provider": "runpod",
+  "jobId": "rp_job_123",
+  "status": "processing",
+  "pollUrl": "/api/avatar/jobs/rp_job_123"
+}
+```
+
+### Data backend team must provide to frontend team
+
+- RunPod `endpoint_id`
+- Exact endpoint input schema (`text`, `voice`, `avatar_id`, etc.)
+- Exact endpoint output schema (where to read stream/video URL)
+- SLA/timeout policy (wait time before fallback)
+- Session/URL TTL
+- Throughput limits (RPS/concurrency)
+- Auth requirements on backend API (JWT/cookie/session)
+
+### Never send from frontend
+
+- `RUNPOD_API_KEY`
+- Any provider secret/token
+- Internal private endpoint URLs
+
+### Recommended backend endpoints
+
+- `POST /api/avatar/session` - create session or generation request
+- `GET /api/avatar/jobs/:jobId` - poll async job status
+- `POST /api/avatar/stop` - optional interrupt/cleanup

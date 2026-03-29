@@ -1,1 +1,0 @@
-"""Talking avatar runtime package."""
