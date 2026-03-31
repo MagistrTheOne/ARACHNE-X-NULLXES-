@@ -3,8 +3,10 @@ ARACHNE-X Distilled Scheduler Configuration
 Optimized for real-time inference (8 steps vs 50)
 """
 
-import torch
+import warnings
+
 import numpy as np
+import torch
 
 
 class DistilledSchedulerConfig:
@@ -65,15 +67,27 @@ class TorchCompileConfig:
 
 class QuantizationConfig:
     """Quantization settings for extreme optimization."""
-    
-    # INT8 quantization
+
+    # INT8 quantization (dynamic quant in streaming_inference.QuantizationUtils.quantize_to_int8).
     USE_INT8 = False
-    
-    # FP8 quantization (H200 native support)
+
+    # FP8: not implemented for DiT in this repo; quantize_to_fp8() raises NotImplementedError.
+    # Setting USE_FP8 True only marks intent for external tooling — it does not enable FP8 inference here.
     USE_FP8 = False
-    
+
     # KV-cache compression dtype
-    KV_CACHE_DTYPE = torch.float16  # float16 by default, can be torch.float8
+    KV_CACHE_DTYPE = torch.float16  # float16 by default; torch.float8_e4m3fn etc. are experimental/off-repo
+
+    @staticmethod
+    def warn_if_fp8_requested(use_fp8: bool) -> None:
+        if use_fp8:
+            warnings.warn(
+                "QuantizationConfig requested USE_FP8=True, but FP8 DiT quantization is not "
+                "implemented in ARACHNE-X (see streaming_inference.QuantizationUtils.quantize_to_fp8). "
+                "Use INT8 or full precision.",
+                UserWarning,
+                stacklevel=2,
+            )
 
 
 class MemoryOptimizationConfig:
@@ -143,6 +157,8 @@ def get_realtime_config(target_fps: int = 30, hardware: str = "H200") -> dict:
         quant = QuantizationConfig()
         quant.USE_INT8 = True
     
+    QuantizationConfig.warn_if_fp8_requested(quant.USE_FP8)
+
     config = {
         "num_inference_steps": num_inference_steps,
         "torch_compile": {

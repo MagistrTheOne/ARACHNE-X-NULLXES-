@@ -138,7 +138,7 @@
 3. **Данные:** предаугментированные латенты в `dataset_dir` (`.pt`/`.npz`: latents, prompt_embeds, prompt_mask, timesteps, noise, для avatar — audio_embs).
 4. **Конфиг:** `Demo/training_config_h200.py` (H200TrainingConfig; какие поля реально читают `train.py` / `train_lora_avatar.py`, см. docstring класса в файле).
 5. **Регрессия LoRA без полного импорта:** `python -m unittest tests.test_lora_init_roundtrip -v`.
-6. **Экспорт латентов из сырья** — не реализован; черновик требований: `Documentation/LATENT_TRAINING_EXPORT.md`.
+6. **Экспорт латентов:** один сэмпл — `scripts/export_latent_training_sample.py`; детали и ограничения — `Documentation/LATENT_TRAINING_EXPORT.md`.
 
 ---
 

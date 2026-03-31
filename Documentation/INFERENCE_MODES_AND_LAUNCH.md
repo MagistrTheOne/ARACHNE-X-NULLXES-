@@ -29,6 +29,12 @@
 - steps: `8`
 - inputs: one reference image + one speech audio
 
+## Weights path and Hugging Face Hub
+
+`--checkpoint_dir` is normally a **local directory** that contains `tokenizer/`, `vae/`, etc. (`WeightsLayout`).
+
+Optional: pass a Hub repo id (`org/model`) **and** `--allow_hub_download` on `scripts/infer.py`, `scripts/train.py`, `scripts/train_lora_avatar.py`, or `scripts/export_latent_training_sample.py`. Resolution is handled by [`arachne_x/weights_resolve.py`](../arachne_x/weights_resolve.py) (`snapshot_download`). Private repos need `HF_TOKEN` in the environment. Air-gapped runs: omit `--allow_hub_download` and use a pre-synced folder.
+
 ## Recommended Pod Environment
 
 ```bash

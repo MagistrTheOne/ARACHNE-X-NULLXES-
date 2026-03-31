@@ -1,19 +1,34 @@
-# Latent export for training (design backlog)
+# Latent export for training
 
-Training scripts [`scripts/train.py`](../scripts/train.py) and [`scripts/train_lora_avatar.py`](../scripts/train_lora_avatar.py) expect **pre-baked** tensors per sample (`.pt`/`.npz`): `latents`, `prompt_embeds`, `prompt_mask`, `timesteps`, `noise`, and for avatar runs `audio_embs`. There is **no** first-party exporter in this repository yet.
+Training scripts [`scripts/train.py`](../scripts/train.py) and [`scripts/train_lora_avatar.py`](../scripts/train_lora_avatar.py) expect pre-baked tensors per sample (`.pt`/`.npz`): `latents`, `prompt_embeds`, `prompt_mask`, `timesteps`, `noise`, and for avatar runs `audio_embs`.
 
-## Target contract
+## Implemented exporter (single sample)
 
-Align with `LatentDataset` in `scripts/train.py`: shapes must match what `LongCatVideoAvatarTransformer3DModel` expects in the training forward (see docstrings on `LatentDataset`).
+[`scripts/export_latent_training_sample.py`](../scripts/export_latent_training_sample.py) builds **one** `.pt` aligned with [`LatentDataset`](../scripts/train.py):
 
-## Building blocks already in-tree
+- Text: `encode_prompt(..., do_classifier_free_guidance=False)` — single branch (no CFG doubling, no identity bank).
+- Latents: `prepare_latents` from the reference image, then **flow-matching noise** via `scheduler.scale_noise(z0, t, eps)` so `latents` in the file is the noisy input at `t` and `noise` is `eps` (MSE target in the current train loop).
+- Audio: same windowing as [`scripts/infer.py`](../scripts/infer.py) via [`arachne_x/inference_audio.py`](../arachne_x/inference_audio.py) and `pipe._prepare_audio_emb_for_dit`.
 
-- **VAE + text:** avatar pipeline encodes images/video and runs the text encoder inside `generate_*` paths; reuse the same `UMT5` + `AutoencoderKLWan` calls rather than reimplementing.
-- **Audio embeddings:** `ArachneXVideoAvatarPipeline.get_audio_embedding` and related helpers in [`arachne_x/pipeline_arachne_x_video_avatar.py`](../arachne_x/pipeline_arachne_x_video_avatar.py).
-- **Noise and timestep:** must follow the same schedule / distribution as the training loss (MSE on noise prediction): typically sample `timesteps` from the flow-match scheduler used at train time and sample Gaussian `noise` matching `latents` shape.
+CLI (weights resolution matches other scripts; optional Hub):
 
-## Suggested future script
+```bash
+python scripts/export_latent_training_sample.py \
+  --checkpoint_dir /path/to/weights \
+  --image ref.png \
+  --audio speech.wav \
+  --prompt "..." \
+  --output sample.pt
+```
 
-A minimal `scripts/export_latent_training_sample.py` could: load `load_avatar_pipeline`, take `--image`, `--audio`, `--prompt`, `--output sample.pt`, encode once, pack tensors, and save. Multi-sample batching and disk layout are product decisions.
+Use `--allow_hub_download` for an `org/model` id when weights are not local.
 
-This document tracks scope only; implementation is a separate epic.
+## Limitations
+
+- One sample per run; no batch dataset builder.
+- Identity tokens and emotion/CFG-doubled layouts are out of scope for this exporter.
+
+## Building blocks (reference)
+
+- VAE + text: avatar pipeline components (`UMT5`, `AutoencoderKLWan`).
+- Audio: `ArachneXVideoAvatarPipeline.get_audio_embedding` in [`arachne_x/pipeline_arachne_x_video_avatar.py`](../arachne_x/pipeline_arachne_x_video_avatar.py).

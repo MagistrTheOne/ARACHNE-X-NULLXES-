@@ -12,7 +12,9 @@ from diffusers.utils import load_image, load_video
 
 from arachne_x.loader import load_base_pipeline, load_avatar_pipeline
 from arachne_x.audio_process.torch_utils import save_video_ffmpeg
+from arachne_x.inference_audio import build_avatar_windowed_audio_emb
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
+from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 
 
 def _save_video(frames: np.ndarray, path: str, fps: int = 30) -> None:
@@ -46,26 +48,7 @@ def _get_hw_for_resolution(resolution: str, height: int, width: int) -> tuple[in
 
 
 def _build_audio_emb(pipe, audio_path: str, num_frames: int, device: str, sample_rate: int = 16000) -> torch.Tensor:
-    speech_array, sr = librosa.load(audio_path, sr=sample_rate)
-    audio_stride = int(getattr(pipe, "vae_scale_factor_temporal", 4))
-    audio_stride = max(audio_stride, 1)
-    full_audio_emb = pipe.get_audio_embedding(
-        speech_array,
-        fps=16 * audio_stride,
-        device=device,
-        sample_rate=sr,
-    )
-    audio_window = int(getattr(pipe.dit, "audio_window", 5))
-    audio_window = max(1, 2 * (audio_window // 2) + 1)
-    indices = torch.arange(audio_window, device=full_audio_emb.device) - (audio_window // 2)
-    center_indices = torch.arange(
-        0,
-        audio_stride * num_frames,
-        audio_stride,
-        device=full_audio_emb.device,
-    ).unsqueeze(1) + indices.unsqueeze(0)
-    center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
-    return full_audio_emb[center_indices][None, ...].to(device)
+    return build_avatar_windowed_audio_emb(pipe, audio_path, num_frames, device, sample_rate)
 
 
 def _resolve_lora_rank_alpha(
@@ -184,6 +167,7 @@ def main():
         default=None,
         help="Optional path to lora_train_meta.json (overrides auto-discovery next to --lora_path).",
     )
+    add_resolve_args(parser)
     args = parser.parse_args()
     emotion_id = args.emotion_id
     if isinstance(emotion_id, str):
@@ -196,8 +180,14 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
+    checkpoint_dir = resolve_weights_root(
+        args.checkpoint_dir,
+        allow_hub=args.allow_hub_download,
+        cache_dir=args.weights_cache_dir,
+    )
+
     if args.mode in ("t2v", "i2v", "vc"):
-        pipe = load_base_pipeline(args.checkpoint_dir, device=device, torch_dtype=torch_dtype)
+        pipe = load_base_pipeline(checkpoint_dir, device=device, torch_dtype=torch_dtype)
 
         if args.mode == "t2v":
             out = pipe.generate_t2v(
@@ -247,7 +237,7 @@ def main():
         return
 
     pipe = load_avatar_pipeline(
-        args.checkpoint_dir,
+        checkpoint_dir,
         variant="multi" if args.mode == "avc" else "single",
         device=device,
         torch_dtype=torch_dtype,

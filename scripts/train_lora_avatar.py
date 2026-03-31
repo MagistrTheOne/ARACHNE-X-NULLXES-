@@ -32,6 +32,7 @@ from arachne_x.modules.lora_utils import (
     create_lora_network,
     default_avatar_train_lora_filter,
 )
+from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
 
 
@@ -110,6 +111,7 @@ def main():
         default=None,
         help="AdamW weight decay; if omitted, use H200TrainingConfig.weight_decay.",
     )
+    add_resolve_args(parser)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -137,11 +139,17 @@ def main():
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     fw_dtype = torch.float32 if device == "cpu" else dtype
 
+    checkpoint_dir = resolve_weights_root(
+        args.checkpoint_dir,
+        allow_hub=args.allow_hub_download,
+        cache_dir=args.weights_cache_dir,
+    )
+
     dataset = LatentDataset(args.dataset_dir)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
 
     dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-        args.checkpoint_dir,
+        checkpoint_dir,
         subfolder="avatar_single",
         torch_dtype=dtype,
     )
@@ -189,7 +197,7 @@ def main():
         "lora_key": args.lora_key,
         "lora_prefixes": list(prefixes) if prefixes else "default_avatar_train_lora_filter",
         "layer_count": len(lora_network.loras),
-        "checkpoint_dir": args.checkpoint_dir,
+        "checkpoint_dir": checkpoint_dir,
     }
     with open(os.path.join(args.output_dir, "lora_train_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)

@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from arachne_x.modules.longcat_video_dit import LongCatVideoTransformer3DModel
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
 
 
@@ -81,6 +82,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--save_every", type=int, default=500)
+    add_resolve_args(parser)
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -90,19 +92,25 @@ def main():
 
     config = H200TrainingConfig() if args.config is None else _load_config(args.config)
 
+    checkpoint_dir = resolve_weights_root(
+        args.checkpoint_dir,
+        allow_hub=args.allow_hub_download,
+        cache_dir=args.weights_cache_dir,
+    )
+
     dataset = LatentDataset(args.dataset_dir)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
 
     if args.mode == "base":
         model = LongCatVideoTransformer3DModel.from_pretrained(
-            args.checkpoint_dir,
+            checkpoint_dir,
             subfolder="dit",
             torch_dtype=dtype,
         )
         use_audio = False
     else:
         model = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-            args.checkpoint_dir,
+            checkpoint_dir,
             subfolder="avatar_single",
             torch_dtype=dtype,
         )
