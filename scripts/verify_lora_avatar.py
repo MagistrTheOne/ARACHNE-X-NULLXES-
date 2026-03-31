@@ -21,13 +21,20 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import importlib.util
+
 from safetensors.torch import load_file, save_file
 
-from arachne_x.modules.lora_utils import (
-    build_initial_lora_state_dict,
-    create_lora_network,
-    default_avatar_train_lora_filter,
+# Load lora_utils without importing arachne_x package (avoids loader/triton on smoke machines).
+_lora_spec = importlib.util.spec_from_file_location(
+    "_arachne_lora_utils", ROOT / "arachne_x" / "modules" / "lora_utils.py"
 )
+_lora_mod = importlib.util.module_from_spec(_lora_spec)
+assert _lora_spec.loader is not None
+_lora_spec.loader.exec_module(_lora_mod)
+build_initial_lora_state_dict = _lora_mod.build_initial_lora_state_dict
+create_lora_network = _lora_mod.create_lora_network
+default_avatar_train_lora_filter = _lora_mod.default_avatar_train_lora_filter
 
 
 class _Block(nn.Module):
