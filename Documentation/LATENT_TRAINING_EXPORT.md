@@ -23,6 +23,26 @@ python scripts/export_latent_training_sample.py \
 
 Use `--allow_hub_download` for an `org/model` id when weights are not local.
 
+## Batch from URLs (вставить только ссылки)
+
+1. Скопируйте [`examples/avatar_latent_url_manifest.example.json`](../examples/avatar_latent_url_manifest.example.json) в свой файл (массив объектов или `{ "samples": [ ... ] }`).
+2. Подставьте рабочие `image_url` и `audio_url` (https к jpg/png и wav и т.д.; с Hugging Face удобны [постоянные ссылки на raw-файлы](https://huggingface.co/docs/hub/main/storage-backends#raw-github-style-urls) или ваш CDN).
+3. Один запуск (пайплайн грузится **один раз**):
+
+```bash
+python scripts/export_latent_batch_from_urls.py \
+  --checkpoint_dir /path/to/weights \
+  --manifest my_manifest.json \
+  --output_dir /path/to/latent_dataset \
+  --resolution 480p
+```
+
+На выходе: `output_dir/{id}.pt` для `LatentDataset` / `--mode avatar`.
+
+## Pod launcher (`arachne_x_train`)
+
+Для одного запуска на поде с переменными окружения: [`scripts/arachne_x_train.py`](../scripts/arachne_x_train.py) (обёртка над `train.py`). См. docstring в файле: `ARACHNE_CHECKPOINT_DIR`, `ARACHNE_DATASET_DIR`, `ARACHNE_TRAIN_MODE`, `ARACHNE_MERGE_INTO`, и т.д.
+
 ## Limitations
 
 - One sample per run; no batch dataset builder.

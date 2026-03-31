@@ -1,0 +1,20 @@
+[
+  {
+    "id": "clip_001",
+    "image_url": "https://YOUR_CDN_OR_HF_OR_RAWGITHUB/example_face.jpg",
+    "audio_url": "https://YOUR_CDN_OR_HF_OR_RAWGITHUB/example_speech.wav",
+    "prompt": "A person speaking clearly to camera, natural expression, cinematic light, high facial detail, lip sync to speech.",
+    "negative_prompt": "low quality, blurry, deformed face, flicker",
+    "num_frames": 93,
+    "seed": 42
+  },
+  {
+    "id": "clip_002",
+    "image_url": "https://YOUR_CDN_OR_HF_OR_RAWGITHUB/another_ref.png",
+    "audio_url": "https://YOUR_CDN_OR_HF_OR_RAWGITHUB/another_voice.wav",
+    "prompt": "Close-up talking head, neutral background, realistic skin texture.",
+    "negative_prompt": "",
+    "num_frames": 93,
+    "seed": null
+  }
+]
