@@ -1,0 +1,6 @@
+# Optional: text-to-speech for avatar CLI (--speak_text / --tts_provider qwen).
+# Install on top of requirements.txt when using Qwen3-TTS.
+#
+# Docs: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+qwen-tts
+soundfile

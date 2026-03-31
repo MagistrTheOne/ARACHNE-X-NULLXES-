@@ -10,10 +10,10 @@
 | `t2v` | `prompt` | video | Text-to-video smoke tests |
 | `i2v` | `image`, `prompt` | video | Animate from image |
 | `vc` | `video`, `prompt` | video | Video continuation |
-| `ai2v` | `image`, `audio`, `prompt` | video+audio | Main single-avatar talking-head mode |
-| `at2v` | `audio`, `prompt` | video+audio | Avatar audio-driven without image anchor |
-| `avc` | `video`, `audio`, `prompt` | video+audio | Avatar continuation from video context |
-| `streaming_ai2v` | `image`, `audio`, `prompt` | video+audio | Streaming-oriented avatar path |
+| `ai2v` | `image`, `audio` **or** `--speak_text`, `prompt` | video+audio | Main single-avatar talking-head mode |
+| `at2v` | `audio` **or** `--speak_text`, `prompt` | video+audio | Avatar audio-driven without image anchor |
+| `avc` | `video`, `audio` **or** `--speak_text`, `prompt` | video+audio | Avatar continuation from video context |
+| `streaming_ai2v` | `image`, `audio` **or** `--speak_text`, `prompt` | video+audio | Streaming-oriented avatar path |
 | `enroll_identity` | `image`, `identity_id` | saved bank | Identity token enrollment |
 
 ## Fastest Practical Modes
@@ -34,6 +34,18 @@
 `--checkpoint_dir` is normally a **local directory** that contains `tokenizer/`, `vae/`, etc. (`WeightsLayout`).
 
 Optional: pass a Hub repo id (`org/model`) **and** `--allow_hub_download` on `scripts/infer.py`, `scripts/train.py`, `scripts/train_lora_avatar.py`, or `scripts/export_latent_training_sample.py`. Resolution is handled by [`arachne_x/weights_resolve.py`](../arachne_x/weights_resolve.py) (`snapshot_download`). Private repos need `HF_TOKEN` in the environment. Air-gapped runs: omit `--allow_hub_download` and use a pre-synced folder.
+
+## TTS: text → wav → avatar (mp4 with audio)
+
+For `ai2v`, `at2v`, `avc`, and `streaming_ai2v`, you may omit `--audio` and pass **`--speak_text`** instead. The CLI synthesizes a temporary WAV via a pluggable backend (**`--tts_provider`**, default `qwen`), then runs the same avatar pipeline and **muxes** with [`save_video_ffmpeg`](../arachne_x/audio_process/torch_utils.py). If both `--audio` and `--speak_text` are set, **`--audio` wins**.
+
+Install optional deps (see [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)):
+
+```bash
+pip install -r requirements-tts.txt
+```
+
+Useful flags: `--tts_model` (HF id or local dir), `--tts_language`, `--tts_speaker`, `--tts_instruct`, `--tts_device_map`, `--tts_attn`. For **`streaming_ai2v`**, **`--audio_chunk_sec`** sets fixed-duration chunks (micro-turns; default `0.5`). Runtime contract: [`arachne_x/tts/realtime.py`](../arachne_x/tts/realtime.py), chunk helper [`arachne_x/tts/chunking.py`](../arachne_x/tts/chunking.py).
 
 ## Recommended Pod Environment
 
@@ -75,6 +87,24 @@ python scripts/infer.py \
   --text_guidance_scale 4.0 \
   --audio_guidance_scale 4.0 \
   --output /workspace/out_maxim_ai2v.mp4
+```
+
+### 2b. AI2V from text only (TTS + mux)
+
+```bash
+python scripts/infer.py \
+  --checkpoint_dir /workspace/weights/ARACHNE-X-Avatar \
+  --mode ai2v \
+  --image /workspace/ARACHNE-X/assets/avatar/single/anna/anna.jpg \
+  --speak_text "Hello, this line is synthesized with Qwen3-TTS, then lip-synced by the avatar DiT." \
+  --tts_provider qwen \
+  --tts_language English \
+  --tts_speaker Ryan \
+  --prompt "A realistic close-up speaking to camera, natural expression, lip synced to speech" \
+  --resolution 480p \
+  --num_frames 93 \
+  --num_inference_steps 8 \
+  --output /workspace/out_anna_speak.mp4
 ```
 
 ## Optional: custom avatar LoRA at inference

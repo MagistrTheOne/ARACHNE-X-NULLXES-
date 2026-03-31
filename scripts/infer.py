@@ -1,9 +1,9 @@
 import argparse
 import json
 import os
+import tempfile
 from typing import Optional, Tuple
 
-import librosa
 import numpy as np
 import torch
 from PIL import Image
@@ -14,6 +14,9 @@ from arachne_x.loader import load_base_pipeline, load_avatar_pipeline
 from arachne_x.audio_process.torch_utils import save_video_ffmpeg
 from arachne_x.inference_audio import build_avatar_windowed_audio_emb
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
+from arachne_x.tts import create_speech_synthesizer
+from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
+from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 
 
@@ -21,16 +24,6 @@ def _save_video(frames: np.ndarray, path: str, fps: int = 30) -> None:
     if frames.dtype != np.uint8:
         frames = (frames * 255).clip(0, 255).astype(np.uint8)
     write_video(path, torch.from_numpy(frames), fps=fps, video_codec="libx264", options={"crf": "18"})
-
-
-def _audio_stream_generator(audio_path: str, chunk_duration: float = 0.5, sample_rate: int = 16000):
-    audio, _ = librosa.load(audio_path, sr=sample_rate)
-    chunk_samples = int(chunk_duration * sample_rate)
-    for i in range(0, len(audio), chunk_samples):
-        chunk = audio[i:i + chunk_samples]
-        if len(chunk) < chunk_samples:
-            chunk = np.pad(chunk, (0, chunk_samples - len(chunk)))
-        yield chunk
 
 
 def _load_mask_tensor(mask_path: Optional[str]) -> Optional[torch.Tensor]:
@@ -49,6 +42,40 @@ def _get_hw_for_resolution(resolution: str, height: int, width: int) -> tuple[in
 
 def _build_audio_emb(pipe, audio_path: str, num_frames: int, device: str, sample_rate: int = 16000) -> torch.Tensor:
     return build_avatar_windowed_audio_emb(pipe, audio_path, num_frames, device, sample_rate)
+
+
+def _resolve_avatar_wav_path(args) -> Tuple[str, bool]:
+    """
+    Returns (path_to_wav, is_temp). Prefer explicit --audio over --speak_text.
+    """
+    if getattr(args, "audio", None):
+        p = os.path.abspath(args.audio)
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"--audio not found: {p}")
+        return p, False
+    speak = (getattr(args, "speak_text", None) or "").strip()
+    if not speak:
+        raise ValueError("Provide --audio or non-empty --speak_text for this mode.")
+    synth = create_speech_synthesizer(
+        args.tts_provider,
+        model_id=args.tts_model,
+        device_map=args.tts_device_map,
+        language=args.tts_language,
+        speaker=args.tts_speaker,
+        instruct=args.tts_instruct or None,
+        attn_implementation=args.tts_attn,
+    )
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="arachne_tts_")
+    os.close(fd)
+    synth.synthesize_to_path(speak, tmp_path)
+    return tmp_path, True
+
+
+def _maybe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _resolve_lora_rank_alpha(
@@ -119,6 +146,45 @@ def main():
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--video", type=str, default=None)
     parser.add_argument("--audio", type=str, default=None)
+    parser.add_argument(
+        "--speak_text",
+        type=str,
+        default=None,
+        help="Synthesize speech via --tts_provider and use the WAV as avatar audio conditioning (with --audio takes precedence).",
+    )
+    parser.add_argument(
+        "--tts_provider",
+        type=str,
+        default="qwen",
+        help="TTS backend when using --speak_text (supported: qwen). Install: pip install -r requirements-tts.txt",
+    )
+    parser.add_argument(
+        "--tts_model",
+        type=str,
+        default=None,
+        help='Hugging Face model id or local path (default: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice for provider qwen).',
+    )
+    parser.add_argument(
+        "--tts_device_map",
+        type=str,
+        default=None,
+        help='Qwen device_map, e.g. "cuda:0" or "cpu" (default: cuda:0 if CUDA else cpu).',
+    )
+    parser.add_argument("--tts_language", type=str, default="English")
+    parser.add_argument("--tts_speaker", type=str, default="Ryan")
+    parser.add_argument("--tts_instruct", type=str, default=None, help="Optional style instruct (Qwen 1.7B CustomVoice).")
+    parser.add_argument(
+        "--tts_attn",
+        type=str,
+        default=None,
+        help='Attention impl for Qwen3TTSModel (e.g. flash_attention_2, sdpa). Default: auto.',
+    )
+    parser.add_argument(
+        "--audio_chunk_sec",
+        type=float,
+        default=DEFAULT_MICRO_TURN_SECONDS,
+        help=f"Streaming avatar: fixed chunk duration for audio micro-turns (default {DEFAULT_MICRO_TURN_SECONDS}s).",
+    )
     parser.add_argument("--resolution", type=str, default="480p", choices=["480p", "720p"])
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=832)
@@ -285,26 +351,144 @@ def main():
         return
 
     if args.mode in ("ai2v", "streaming_ai2v"):
-        if not args.image or not args.audio:
-            raise ValueError("--image and --audio are required for ai2v")
+        if not args.image:
+            raise ValueError("--image is required for ai2v / streaming_ai2v")
+        wav_path, wav_is_temp = _resolve_avatar_wav_path(args)
         image = load_image(args.image)
-        if args.mode == "ai2v":
+        try:
+            if args.mode == "ai2v":
+                audio_emb = _build_audio_emb(
+                    pipe,
+                    audio_path=wav_path,
+                    num_frames=args.num_frames,
+                    device=device,
+                )
+                out = pipe.generate_ai2v(
+                    image=image,
+                    prompt=args.prompt,
+                    negative_prompt=args.negative_prompt,
+                    resolution=args.resolution,
+                    num_frames=args.num_frames,
+                    num_inference_steps=args.num_inference_steps,
+                    text_guidance_scale=args.text_guidance_scale,
+                    audio_guidance_scale=args.audio_guidance_scale,
+                    audio_emb=audio_emb,
+                    identity_id=args.identity_id,
+                    identity_strength=args.identity_strength,
+                    identity_negative_strength=args.identity_negative_strength,
+                    update_identity_bank=args.identity_update_bank,
+                    identity_update_momentum=args.identity_update_momentum,
+                    emotion_id=emotion_id,
+                    emotion_intensity=args.emotion_intensity,
+                    emotion_guidance_scale=args.emotion_guidance_scale,
+                    mouth_zone_masks=mouth_mask_tensor,
+                )[0]
+                save_video_ffmpeg(out, args.output, wav_path, fps=30)
+                if args.identity_update_bank:
+                    save_path = args.identity_bank_save_path or args.identity_bank_path
+                    if save_path:
+                        pipe.save_identity_bank(save_path)
+                        print(f"[identity-bank] updated and saved to {save_path}")
+            else:
+                audio_gen = iter_audio_micro_turns_from_file(
+                    wav_path,
+                    chunk_duration_sec=args.audio_chunk_sec,
+                    sample_rate=16000,
+                )
+                frames = []
+                for frame in pipe.generate_streaming_ai2v(
+                    image=image,
+                    prompt=args.prompt,
+                    audio_stream=audio_gen,
+                    resolution=args.resolution,
+                    num_frames=args.num_frames,
+                    num_inference_steps=args.num_inference_steps,
+                    text_guidance_scale=args.text_guidance_scale,
+                    audio_guidance_scale=args.audio_guidance_scale,
+                    identity_id=args.identity_id,
+                    identity_strength=args.identity_strength,
+                    identity_negative_strength=args.identity_negative_strength,
+                    emotion_id=emotion_id,
+                    emotion_intensity=args.emotion_intensity,
+                    emotion_guidance_scale=args.emotion_guidance_scale,
+                    mouth_zone_masks=mouth_mask_tensor,
+                ):
+                    frames.append(frame)
+                save_video_ffmpeg(np.stack(frames, axis=0), args.output, wav_path, fps=30)
+                if args.identity_bank_save_path:
+                    pipe.save_identity_bank(args.identity_bank_save_path)
+                    print(f"[identity-bank] saved to {args.identity_bank_save_path}")
+        finally:
+            if wav_is_temp:
+                _maybe_unlink(wav_path)
+        return
+
+    if args.mode == "at2v":
+        wav_path, wav_is_temp = _resolve_avatar_wav_path(args)
+        try:
             audio_emb = _build_audio_emb(
                 pipe,
-                audio_path=args.audio,
+                audio_path=wav_path,
                 num_frames=args.num_frames,
                 device=device,
             )
-            out = pipe.generate_ai2v(
-                image=image,
+            out = pipe.generate_at2v(
                 prompt=args.prompt,
                 negative_prompt=args.negative_prompt,
-                resolution=args.resolution,
+                height=args.height,
+                width=args.width,
                 num_frames=args.num_frames,
                 num_inference_steps=args.num_inference_steps,
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
                 audio_emb=audio_emb,
+                identity_id=args.identity_id,
+                identity_strength=args.identity_strength,
+                identity_negative_strength=args.identity_negative_strength,
+                emotion_id=emotion_id,
+                emotion_intensity=args.emotion_intensity,
+                emotion_guidance_scale=args.emotion_guidance_scale,
+                mouth_zone_masks=mouth_mask_tensor,
+            )[0]
+            save_video_ffmpeg(out, args.output, wav_path, fps=30)
+        finally:
+            if wav_is_temp:
+                _maybe_unlink(wav_path)
+        return
+
+    if args.mode == "avc":
+        if not args.video:
+            raise ValueError("--video is required for avc")
+        wav_path, wav_is_temp = _resolve_avatar_wav_path(args)
+        try:
+            video = load_video(args.video)
+            audio_emb = _build_audio_emb(
+                pipe,
+                audio_path=wav_path,
+                num_frames=args.num_frames,
+                device=device,
+            )
+            video_latent = _build_video_latent(
+                pipe,
+                video=video,
+                num_cond_frames=args.num_cond_frames,
+                height=args.height,
+                width=args.width,
+                device=device,
+            )
+            out = pipe.generate_avc(
+                video=video,
+                video_latent=video_latent,
+                prompt=args.prompt,
+                negative_prompt=args.negative_prompt,
+                audio_emb=audio_emb,
+                height=args.height,
+                width=args.width,
+                num_frames=args.num_frames,
+                num_cond_frames=args.num_cond_frames,
+                num_inference_steps=args.num_inference_steps,
+                text_guidance_scale=args.text_guidance_scale,
+                audio_guidance_scale=args.audio_guidance_scale,
                 identity_id=args.identity_id,
                 identity_strength=args.identity_strength,
                 identity_negative_strength=args.identity_negative_strength,
@@ -315,116 +499,15 @@ def main():
                 emotion_guidance_scale=args.emotion_guidance_scale,
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
-            save_video_ffmpeg(out, args.output, args.audio, fps=30)
+            save_video_ffmpeg(out, args.output, wav_path, fps=30)
             if args.identity_update_bank:
                 save_path = args.identity_bank_save_path or args.identity_bank_path
                 if save_path:
                     pipe.save_identity_bank(save_path)
                     print(f"[identity-bank] updated and saved to {save_path}")
-        else:
-            audio_gen = _audio_stream_generator(args.audio)
-            frames = []
-            for frame in pipe.generate_streaming_ai2v(
-                image=image,
-                prompt=args.prompt,
-                audio_stream=audio_gen,
-                resolution=args.resolution,
-                num_frames=args.num_frames,
-                num_inference_steps=args.num_inference_steps,
-                text_guidance_scale=args.text_guidance_scale,
-                audio_guidance_scale=args.audio_guidance_scale,
-                identity_id=args.identity_id,
-                identity_strength=args.identity_strength,
-                identity_negative_strength=args.identity_negative_strength,
-                emotion_id=emotion_id,
-                emotion_intensity=args.emotion_intensity,
-                emotion_guidance_scale=args.emotion_guidance_scale,
-                mouth_zone_masks=mouth_mask_tensor,
-            ):
-                frames.append(frame)
-            save_video_ffmpeg(np.stack(frames, axis=0), args.output, args.audio, fps=30)
-            if args.identity_bank_save_path:
-                pipe.save_identity_bank(args.identity_bank_save_path)
-                print(f"[identity-bank] saved to {args.identity_bank_save_path}")
-        return
-
-    if args.mode == "at2v":
-        if not args.audio:
-            raise ValueError("--audio is required for at2v")
-        audio_emb = _build_audio_emb(
-            pipe,
-            audio_path=args.audio,
-            num_frames=args.num_frames,
-            device=device,
-        )
-        out = pipe.generate_at2v(
-            prompt=args.prompt,
-            negative_prompt=args.negative_prompt,
-            height=args.height,
-            width=args.width,
-            num_frames=args.num_frames,
-            num_inference_steps=args.num_inference_steps,
-            text_guidance_scale=args.text_guidance_scale,
-            audio_guidance_scale=args.audio_guidance_scale,
-            audio_emb=audio_emb,
-            identity_id=args.identity_id,
-            identity_strength=args.identity_strength,
-            identity_negative_strength=args.identity_negative_strength,
-            emotion_id=emotion_id,
-            emotion_intensity=args.emotion_intensity,
-            emotion_guidance_scale=args.emotion_guidance_scale,
-            mouth_zone_masks=mouth_mask_tensor,
-        )[0]
-        save_video_ffmpeg(out, args.output, args.audio, fps=30)
-        return
-
-    if args.mode == "avc":
-        if not args.video or not args.audio:
-            raise ValueError("--video and --audio are required for avc")
-        video = load_video(args.video)
-        audio_emb = _build_audio_emb(
-            pipe,
-            audio_path=args.audio,
-            num_frames=args.num_frames,
-            device=device,
-        )
-        video_latent = _build_video_latent(
-            pipe,
-            video=video,
-            num_cond_frames=args.num_cond_frames,
-            height=args.height,
-            width=args.width,
-            device=device,
-        )
-        out = pipe.generate_avc(
-            video=video,
-            video_latent=video_latent,
-            prompt=args.prompt,
-            negative_prompt=args.negative_prompt,
-            audio_emb=audio_emb,
-            height=args.height,
-            width=args.width,
-            num_frames=args.num_frames,
-            num_cond_frames=args.num_cond_frames,
-            num_inference_steps=args.num_inference_steps,
-            text_guidance_scale=args.text_guidance_scale,
-            audio_guidance_scale=args.audio_guidance_scale,
-            identity_id=args.identity_id,
-            identity_strength=args.identity_strength,
-            identity_negative_strength=args.identity_negative_strength,
-            update_identity_bank=args.identity_update_bank,
-            identity_update_momentum=args.identity_update_momentum,
-            emotion_id=emotion_id,
-            emotion_intensity=args.emotion_intensity,
-            emotion_guidance_scale=args.emotion_guidance_scale,
-            mouth_zone_masks=mouth_mask_tensor,
-        )[0]
-        save_video_ffmpeg(out, args.output, args.audio, fps=30)
-        if args.identity_update_bank:
-            save_path = args.identity_bank_save_path or args.identity_bank_path
-            if save_path:
-                pipe.save_identity_bank(save_path)
-                print(f"[identity-bank] updated and saved to {save_path}")
+        finally:
+            if wav_is_temp:
+                _maybe_unlink(wav_path)
         return
 
 
