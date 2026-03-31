@@ -1,6 +1,7 @@
 import argparse
+import json
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import librosa
 import numpy as np
@@ -67,6 +68,51 @@ def _build_audio_emb(pipe, audio_path: str, num_frames: int, device: str, sample
     return full_audio_emb[center_indices][None, ...].to(device)
 
 
+def _resolve_lora_rank_alpha(
+    lora_path: str,
+    lora_rank: Optional[int],
+    lora_alpha: Optional[float],
+    lora_meta_json: Optional[str],
+) -> Tuple[int, float]:
+    """CLI > explicit meta JSON > lora_train_meta.json next to weights > defaults."""
+    meta_path = lora_meta_json
+    if meta_path is None and lora_path:
+        candidate = os.path.join(os.path.dirname(os.path.abspath(lora_path)), "lora_train_meta.json")
+        if os.path.isfile(candidate):
+            meta_path = candidate
+    rank, alpha = lora_rank, lora_alpha
+    if meta_path and os.path.isfile(meta_path):
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+        if rank is None:
+            rank = int(meta.get("lora_rank", 128))
+        if alpha is None:
+            alpha = float(meta.get("lora_alpha", 64.0))
+    if rank is None:
+        rank = 128
+    if alpha is None:
+        alpha = 64.0
+    return rank, alpha
+
+
+def _maybe_load_avatar_lora(pipe, args) -> None:
+    if not getattr(args, "lora_path", None):
+        return
+    path = args.lora_path
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"--lora_path not found: {path}")
+    rank, alpha = _resolve_lora_rank_alpha(
+        path,
+        getattr(args, "lora_rank", None),
+        getattr(args, "lora_alpha", None),
+        getattr(args, "lora_meta_json", None),
+    )
+    key = getattr(args, "lora_key", "train")
+    pipe.dit.load_lora(path, key, multiplier=1.0, lora_network_dim=rank, lora_network_alpha=alpha)
+    pipe.dit.enable_loras([key])
+    print(f"[lora] loaded {path} key={key} rank={rank} alpha={alpha}")
+
+
 def _build_video_latent(pipe, video, num_cond_frames: int, height: int, width: int, device: str) -> torch.Tensor:
     video_tensor = pipe.video_processor.preprocess_video(
         pipe.video_processor,
@@ -113,6 +159,31 @@ def main():
     parser.add_argument("--disable_phoneme_conditioning", action="store_true")
     parser.add_argument("--phoneme_stream_scale", type=float, default=None)
     parser.add_argument("--output", type=str, default="output.mp4")
+    parser.add_argument(
+        "--lora_path",
+        type=str,
+        default=None,
+        help="Optional .safetensors LoRA for avatar DiT (after train_lora_avatar.py).",
+    )
+    parser.add_argument("--lora_key", type=str, default="train", help="LoRA slot name for load_lora/enable_loras")
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=None,
+        help="LoRA rank (must match training). If omitted, try lora_train_meta.json beside --lora_path, else 128.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=float,
+        default=None,
+        help="LoRA alpha (must match training). If omitted, try meta JSON, else 64.",
+    )
+    parser.add_argument(
+        "--lora_meta_json",
+        type=str,
+        default=None,
+        help="Optional path to lora_train_meta.json (overrides auto-discovery next to --lora_path).",
+    )
     args = parser.parse_args()
     emotion_id = args.emotion_id
     if isinstance(emotion_id, str):
@@ -181,6 +252,7 @@ def main():
         device=device,
         torch_dtype=torch_dtype,
     )
+    _maybe_load_avatar_lora(pipe, args)
     if hasattr(pipe, "phoneme_enabled"):
         pipe.phoneme_enabled = not args.disable_phoneme_conditioning
     if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):

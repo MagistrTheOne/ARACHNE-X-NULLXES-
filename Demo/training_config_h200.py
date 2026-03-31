@@ -11,8 +11,16 @@ from typing import Optional, List
 
 @dataclass
 class H200TrainingConfig:
-    """H200-optimized training configuration for ARACHNE-X."""
-    
+    """H200-optimized training configuration for ARACHNE-X.
+
+    Wired into training scripts today (see scripts/train.py, scripts/train_lora_avatar.py):
+    ``max_grad_norm``, ``weight_decay``, and (for LoRA script only, when ``--config`` is passed)
+    ``lora_rank`` / ``lora_alpha`` if CLI does not override.
+
+    Most other fields (fp8, distributed, composite losses, augmentation, lr schedule) are
+    aspirational or for external tooling — not read by the minimal train loops in-repo.
+    """
+
     # Model Architecture
     model_name: str = "ARACHNE-X-Avatar"
     hidden_size: int = 3072  # Increased from 1536 for H200

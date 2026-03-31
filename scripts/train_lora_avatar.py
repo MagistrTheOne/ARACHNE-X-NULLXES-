@@ -81,8 +81,18 @@ def main():
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./outputs_train_lora_avatar")
     parser.add_argument("--lora_key", type=str, default="train", help="Key in dit.lora_dict and enable_loras")
-    parser.add_argument("--lora_rank", type=int, default=128)
-    parser.add_argument("--lora_alpha", type=float, default=64.0)
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=None,
+        help="LoRA rank; if omitted: from --config JSON (lora_rank), else 128.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=float,
+        default=None,
+        help="LoRA alpha; if omitted: from --config JSON (lora_alpha), else 64.",
+    )
     parser.add_argument(
         "--lora_prefixes",
         type=str,
@@ -94,17 +104,34 @@ def main():
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--save_every", type=int, default=500)
     parser.add_argument("--config", type=str, default=None, help="Optional H200TrainingConfig JSON")
-    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=None,
+        help="AdamW weight decay; if omitted, use H200TrainingConfig.weight_decay.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.config is not None:
-        cfg = H200TrainingConfig.from_json(args.config)
+    config_path = args.config
+    if config_path is not None:
+        cfg = H200TrainingConfig.from_json(config_path)
     else:
         cfg = H200TrainingConfig()
 
     weight_decay = args.weight_decay if args.weight_decay is not None else cfg.weight_decay
+
+    lora_rank = (
+        args.lora_rank
+        if args.lora_rank is not None
+        else (cfg.lora_rank if config_path is not None else 128)
+    )
+    lora_alpha = (
+        args.lora_alpha
+        if args.lora_alpha is not None
+        else (float(cfg.lora_alpha) if config_path is not None else 64.0)
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
@@ -157,8 +184,8 @@ def main():
     )
 
     meta = {
-        "lora_rank": args.lora_rank,
-        "lora_alpha": args.lora_alpha,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
         "lora_key": args.lora_key,
         "lora_prefixes": list(prefixes) if prefixes else "default_avatar_train_lora_filter",
         "layer_count": len(lora_network.loras),

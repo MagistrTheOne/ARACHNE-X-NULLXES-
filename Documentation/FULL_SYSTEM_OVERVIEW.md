@@ -136,7 +136,9 @@
 1. **Полное дообучение DiT:** **`scripts/train.py`** — `--mode base|avatar`, `from_pretrained(..., subfolder="dit"|"avatar_single")`.
 2. **LoRA только на аватарном DiT:** **`scripts/train_lora_avatar.py`** — базовые веса заморожены, учатся адаптеры в формате `arachne_x/modules/lora_utils.py` (ключи `lora___lorahyphen___...`), выход — `lora_final.safetensors` и `lora_train_meta.json`. Данные те же, что для `--mode avatar` (латенты + `audio_embs`). Смоки: `python scripts/verify_lora_avatar.py` (игрушечная модель; опционально `--checkpoint_dir` с `avatar_single/`).
 3. **Данные:** предаугментированные латенты в `dataset_dir` (`.pt`/`.npz`: latents, prompt_embeds, prompt_mask, timesteps, noise, для avatar — audio_embs).
-4. **Конфиг:** `Demo/training_config_h200.py` (H200TrainingConfig, профили; для LoRA-скрипта используются в основном `max_grad_norm` и опционально JSON `--config`).
+4. **Конфиг:** `Demo/training_config_h200.py` (H200TrainingConfig; какие поля реально читают `train.py` / `train_lora_avatar.py`, см. docstring класса в файле).
+5. **Регрессия LoRA без полного импорта:** `python -m unittest tests.test_lora_init_roundtrip -v`.
+6. **Экспорт латентов из сырья** — не реализован; черновик требований: `Documentation/LATENT_TRAINING_EXPORT.md`.
 
 ---
 

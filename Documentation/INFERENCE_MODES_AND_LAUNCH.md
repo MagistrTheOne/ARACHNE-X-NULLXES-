@@ -73,7 +73,25 @@ python scripts/infer.py \
 
 ## Optional: custom avatar LoRA at inference
 
-After training with `scripts/train_lora_avatar.py`, load the adapter on the avatar DiT (same `lora_rank` / `lora_alpha` as in training), then enable before generation — same pattern as `Demo/run_streamlit.py` (`pipe.dit.load_lora(path, key, lora_network_dim=..., lora_network_alpha=...)` → `pipe.dit.enable_loras([key])`). A minimal round-trip check: `python scripts/verify_lora_avatar.py [--checkpoint_dir /path/to/weights]`.
+After `scripts/train_lora_avatar.py`, use **`lora_final.safetensors`** (and **`lora_train_meta.json`** next to it for rank/alpha) with `scripts/infer.py`:
+
+```bash
+python scripts/infer.py \
+  --checkpoint_dir /path/to/weights \
+  --mode ai2v \
+  --image /path/ref.png \
+  --audio /path/speech.wav \
+  --prompt "..." \
+  --lora_path /path/to/lora_final.safetensors \
+  --lora_key train \
+  --output out.mp4
+```
+
+If `lora_train_meta.json` sits in the **same directory** as `--lora_path`, rank/alpha are read automatically. Otherwise pass `--lora_rank` and `--lora_alpha` explicitly (must match training). Optional: `--lora_meta_json /path/to/lora_train_meta.json`.
+
+The same flags apply to `at2v`, `avc`, `streaming_ai2v` (any avatar pipeline mode). Programmatic equivalent: `pipe.dit.load_lora(...)` then `pipe.dit.enable_loras([key])` as in `Demo/run_streamlit.py`.
+
+Smoke (toy model, no full GPU stack): `python scripts/verify_lora_avatar.py`. With real weights: add `--checkpoint_dir` containing `avatar_single/`.
 
 ## Notes
 
