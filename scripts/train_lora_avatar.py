@@ -1,0 +1,223 @@
+"""
+Fine-tune avatar DiT with LoRA only (frozen base weights).
+
+Expects the same precomputed tensors as scripts/train.py (LatentDataset):
+latents, prompt_embeds, prompt_mask, timesteps, noise, audio_embs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from glob import glob
+from pathlib import Path
+from typing import Dict
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from safetensors.torch import save_file
+
+from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.modules.lora_utils import (
+    build_initial_lora_state_dict,
+    create_lora_network,
+    default_avatar_train_lora_filter,
+)
+from Demo.training_config_h200 import H200TrainingConfig
+
+
+class LatentDataset(Dataset):
+    """Same contract as scripts/train.LatentDataset."""
+
+    def __init__(self, dataset_dir: str):
+        self.files = sorted(
+            glob(os.path.join(dataset_dir, "*.pt")) + glob(os.path.join(dataset_dir, "*.npz"))
+        )
+        if not self.files:
+            raise FileNotFoundError(f"No .pt or .npz files found in {dataset_dir}")
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        path = self.files[idx]
+        if path.endswith(".pt"):
+            sample = torch.load(path, map_location="cpu")
+        else:
+            data = np.load(path)
+            sample = {k: torch.from_numpy(data[k]) for k in data.files}
+
+        required = {"latents", "prompt_embeds", "prompt_mask", "timesteps", "noise"}
+        missing = required - set(sample.keys())
+        if missing:
+            raise KeyError(f"{path} missing keys: {sorted(missing)}")
+        if "audio_embs" not in sample:
+            raise KeyError(f"{path}: avatar LoRA training requires audio_embs")
+        return sample
+
+
+def _to_device(batch: Dict[str, torch.Tensor], device: str, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
+    out = {}
+    for k, v in batch.items():
+        if k in {"prompt_mask", "timesteps"}:
+            out[k] = v.to(device)
+        else:
+            out[k] = v.to(device=device, dtype=dtype)
+    return out
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ARACHNE-X avatar DiT LoRA training")
+    parser.add_argument("--checkpoint_dir", type=str, required=True, help="Root with avatar_single/")
+    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default="./outputs_train_lora_avatar")
+    parser.add_argument("--lora_key", type=str, default="train", help="Key in dit.lora_dict and enable_loras")
+    parser.add_argument("--lora_rank", type=int, default=128)
+    parser.add_argument("--lora_alpha", type=float, default=64.0)
+    parser.add_argument(
+        "--lora_prefixes",
+        type=str,
+        default="",
+        help="Comma-separated name prefixes for Linear modules (e.g. blocks.,audio_proj.). Empty = default filter.",
+    )
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--max_steps", type=int, default=1000)
+    parser.add_argument("--save_every", type=int, default=500)
+    parser.add_argument("--config", type=str, default=None, help="Optional H200TrainingConfig JSON")
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.config is not None:
+        cfg = H200TrainingConfig.from_json(args.config)
+    else:
+        cfg = H200TrainingConfig()
+
+    weight_decay = args.weight_decay if args.weight_decay is not None else cfg.weight_decay
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    fw_dtype = torch.float32 if device == "cpu" else dtype
+
+    dataset = LatentDataset(args.dataset_dir)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+
+    dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
+        args.checkpoint_dir,
+        subfolder="avatar_single",
+        torch_dtype=dtype,
+    )
+    dit.to(device)
+    dit.requires_grad_(False)
+    dit.train()
+
+    prefixes = None
+    if args.lora_prefixes.strip():
+        prefixes = tuple(p.strip() for p in args.lora_prefixes.split(",") if p.strip())
+
+    def name_filter(name: str, mod: torch.nn.Linear) -> bool:
+        return default_avatar_train_lora_filter(name, mod, include_prefixes=prefixes)
+
+    init_state = build_initial_lora_state_dict(
+        dit,
+        rank=args.lora_rank,
+        alpha=args.lora_alpha,
+        name_filter=name_filter,
+        dtype=torch.float32,
+    )
+
+    lora_network = create_lora_network(
+        dit,
+        init_state,
+        multiplier=1.0,
+        network_dim=args.lora_rank,
+        network_alpha=args.lora_alpha,
+    )
+    incon = lora_network.load_state_dict(init_state, strict=True)
+    assert not incon.missing_keys and not incon.unexpected_keys, (incon.missing_keys, incon.unexpected_keys)
+
+    lora_network.to(device=device, dtype=dtype)
+    lora_network.train()
+    dit.lora_dict[args.lora_key] = lora_network
+    dit.enable_loras([args.lora_key])
+
+    optimizer = torch.optim.AdamW(
+        lora_network.prepare_optimizer_params(args.lr), weight_decay=weight_decay
+    )
+
+    meta = {
+        "lora_rank": args.lora_rank,
+        "lora_alpha": args.lora_alpha,
+        "lora_key": args.lora_key,
+        "lora_prefixes": list(prefixes) if prefixes else "default_avatar_train_lora_filter",
+        "layer_count": len(lora_network.loras),
+        "checkpoint_dir": args.checkpoint_dir,
+    }
+    with open(os.path.join(args.output_dir, "lora_train_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    step = 0
+    for batch in loader:
+        batch = _to_device(batch, device, fw_dtype)
+        latents = batch["latents"]
+        if latents.ndim == 4:
+            latents = latents.unsqueeze(0)
+        noise = batch["noise"]
+        if noise.ndim == 4:
+            noise = noise.unsqueeze(0)
+        prompt_embeds = batch["prompt_embeds"]
+        if prompt_embeds.ndim == 3:
+            prompt_embeds = prompt_embeds.unsqueeze(0)
+        prompt_mask = batch["prompt_mask"]
+        if prompt_mask.ndim == 1:
+            prompt_mask = prompt_mask.unsqueeze(0)
+        timesteps = batch["timesteps"].view(-1)
+        audio_embs = batch["audio_embs"]
+        if audio_embs.ndim == 4:
+            audio_embs = audio_embs.unsqueeze(0)
+
+        noise_pred = dit(
+            hidden_states=latents,
+            timestep=timesteps.to(dtype=fw_dtype),
+            encoder_hidden_states=prompt_embeds,
+            encoder_attention_mask=prompt_mask,
+            audio_embs=audio_embs,
+        )
+
+        loss = F.mse_loss(noise_pred, noise)
+
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(lora_network.parameters(), cfg.max_grad_norm)
+        optimizer.step()
+
+        if step % 50 == 0:
+            print(f"[step {step}] loss={loss.item():.6f}")
+
+        if step > 0 and step % args.save_every == 0:
+            sub = os.path.join(args.output_dir, f"lora_step_{step}.safetensors")
+            save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, sub)
+            print(f"saved {sub}")
+
+        step += 1
+        if step >= args.max_steps:
+            break
+
+    final_path = os.path.join(args.output_dir, "lora_final.safetensors")
+    save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, final_path)
+    print(f"Training complete. LoRA saved to {final_path}")
+
+
+if __name__ == "__main__":
+    main()

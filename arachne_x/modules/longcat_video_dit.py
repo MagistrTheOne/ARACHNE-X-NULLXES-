@@ -204,8 +204,17 @@ class LongCatVideoTransformer3DModel(
             network_alpha=lora_network_alpha,
         )
         
-        lora_network.load_state_dict(lora_network_state_dict_loaded, strict=True)
-        
+        incompatible = lora_network.load_state_dict(
+            lora_network_state_dict_loaded, strict=False
+        )
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            import warnings
+
+            warnings.warn(
+                f"LoRA load_state_dict non-strict: missing={incompatible.missing_keys}, "
+                f"unexpected={incompatible.unexpected_keys}"
+            )
+
         self.lora_dict[lora_key] = lora_network
 
     def enable_loras(self, lora_key_list=[]):

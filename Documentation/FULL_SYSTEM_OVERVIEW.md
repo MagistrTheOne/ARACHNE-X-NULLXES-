@@ -133,9 +133,10 @@
 
 ### Обучение
 
-1. **Загрузка модели:** только DiT в **`scripts/train.py`** (`from_pretrained(..., subfolder="dit"|"avatar_single")`).
-2. **Данные:** предаугментированные латенты в `dataset_dir` (`.pt`/`.npz`: latents, prompt_embeds, prompt_mask, timesteps, noise, для avatar — audio_embs).
-3. **Конфиг:** `Demo/training_config_h200.py` (H200TrainingConfig, профили).
+1. **Полное дообучение DiT:** **`scripts/train.py`** — `--mode base|avatar`, `from_pretrained(..., subfolder="dit"|"avatar_single")`.
+2. **LoRA только на аватарном DiT:** **`scripts/train_lora_avatar.py`** — базовые веса заморожены, учатся адаптеры в формате `arachne_x/modules/lora_utils.py` (ключи `lora___lorahyphen___...`), выход — `lora_final.safetensors` и `lora_train_meta.json`. Данные те же, что для `--mode avatar` (латенты + `audio_embs`). Смоки: `python scripts/verify_lora_avatar.py` (игрушечная модель; опционально `--checkpoint_dir` с `avatar_single/`).
+3. **Данные:** предаугментированные латенты в `dataset_dir` (`.pt`/`.npz`: latents, prompt_embeds, prompt_mask, timesteps, noise, для avatar — audio_embs).
+4. **Конфиг:** `Demo/training_config_h200.py` (H200TrainingConfig, профили; для LoRA-скрипта используются в основном `max_grad_norm` и опционально JSON `--config`).
 
 ---
 
@@ -144,13 +145,13 @@
 | Категория | Что есть |
 |-----------|----------|
 | **Загрузка весов (инференс)** | `arachne_x/loader.py` — единственная точка. |
-| **Загрузка весов (обучение)** | `scripts/train.py` — только DiT из checkpoint_dir. |
+| **Загрузка весов (обучение)** | `scripts/train.py` — полный DiT; `scripts/train_lora_avatar.py` — LoRA поверх `avatar_single`. |
 | **Базовое видео** | T2V, I2V, VC: пайплайн в `pipeline_arachne_x_video.py`, вызов из `infer.py` и Streamlit. |
 | **Аватары** | Single/Multi, ai2v/at2v/avc, стриминг: `pipeline_arachne_x_video_avatar.py`, демо в `Demo/`. |
 | **Real-time стриминг** | `generate_streaming_ai2v` + движок в `streaming_inference.py`, конфиг в `config_realtime.py`. |
 | **Аудио** | Multi-stream (lip/prosody/head), Wav2Vec2, фонемы — в `audio_process/` и пайплайне. |
 | **Лицо и идентичность** | Facial anchors, identity bank, emotion, hybrid mouth — в пайплайне и `modules/`. |
-| **Обучение** | Цикл в `scripts/train.py`, конфиг H200 в `Demo/training_config_h200.py`, датасет — предаугментированные латенты (вне репо). |
+| **Обучение** | `scripts/train.py` (full), `scripts/train_lora_avatar.py` (LoRA), конфиг H200 в `Demo/training_config_h200.py`, датасет — предаугментированные латенты (вне репо). |
 | **Деплой** | API описан в `ARACHNE_X_API_DOCUMENTATION.md`; готового HTTP-сервера в репо нет — только примеры. |
 | **Документация** | README, Implementation Summary, чеклисты ULTRA/AVATAR, смета партнёра. |
 

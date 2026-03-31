@@ -71,6 +71,10 @@ python scripts/infer.py \
   --output /workspace/out_maxim_ai2v.mp4
 ```
 
+## Optional: custom avatar LoRA at inference
+
+After training with `scripts/train_lora_avatar.py`, load the adapter on the avatar DiT (same `lora_rank` / `lora_alpha` as in training), then enable before generation — same pattern as `Demo/run_streamlit.py` (`pipe.dit.load_lora(path, key, lora_network_dim=..., lora_network_alpha=...)` → `pipe.dit.enable_loras([key])`). A minimal round-trip check: `python scripts/verify_lora_avatar.py [--checkpoint_dir /path/to/weights]`.
+
 ## Notes
 
 - `Demo/run_demo_text_to_video.py` is not a flexible CLI. It contains hardcoded prompts and outputs.

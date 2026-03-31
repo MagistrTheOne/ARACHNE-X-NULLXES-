@@ -7,9 +7,10 @@ import math
 import functools
 from collections import defaultdict
 
-from typing import Optional
+from typing import Callable, Dict, List, Optional, Sequence, Set, Union
 
 import torch
+import torch.nn as nn
 
 
 class LoRAUPParallel(torch.nn.Module):
@@ -194,4 +195,64 @@ def create_lora_network(
         alpha=network_alpha,
     )
     return network
+
+
+def module_path_to_lora_prefix(module_name: str) -> str:
+    """Mirror of LoRANetwork reverse mapping: dotted path -> lora___lorahyphen___... key prefix."""
+    return "lora___lorahyphen___" + module_name.replace(".", "___lorahyphen___")
+
+
+def build_initial_lora_state_dict(
+    model: nn.Module,
+    *,
+    rank: int,
+    alpha: float,
+    name_filter: Callable[[str, nn.Linear], bool],
+    dtype: torch.dtype = torch.float32,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build a state dict that LoRANetwork.load_state_dict(strict=True) can consume after
+    create_lora_network(...): for each matched nn.Linear, lora_down / lora_up / alpha_scale.
+    """
+    state: Dict[str, torch.Tensor] = {}
+    scale = float(alpha) / float(rank) if rank else 1.0
+    for name, mod in model.named_modules():
+        if type(mod) is not nn.Linear:
+            continue
+        if not name_filter(name, mod):
+            continue
+        prefix = module_path_to_lora_prefix(name)
+        in_f = mod.in_features
+        out_f = mod.out_features
+        down = torch.empty(rank, in_f, dtype=dtype)
+        torch.nn.init.kaiming_uniform_(down, a=math.sqrt(5))
+        up = torch.zeros(out_f, rank, dtype=dtype)
+        state[f"{prefix}.lora_down.weight"] = down.contiguous()
+        state[f"{prefix}.lora_up.weight"] = up.contiguous()
+        state[f"{prefix}.alpha_scale"] = torch.tensor(scale, dtype=dtype)
+    if not state:
+        raise ValueError("build_initial_lora_state_dict: no Linear layers matched name_filter")
+    return state
+
+
+def default_avatar_train_lora_filter(
+    name: str,
+    mod: nn.Linear,
+    include_prefixes: Optional[Union[Sequence[str], Set[str]]] = None,
+) -> bool:
+    """
+    Default scope for avatar DiT LoRA training: transformer blocks, audio projection head,
+    and final layer. Skips x_embedder (Conv3d patch stem) and text/timestep embedders unless
+    include_prefixes overrides.
+    """
+    del mod
+    if name.startswith("x_embedder"):
+        return False
+    if include_prefixes is not None:
+        return any(name.startswith(p) for p in include_prefixes)
+    return (
+        name.startswith("blocks.")
+        or name.startswith("audio_proj.")
+        or name.startswith("final_layer.")
+    )
 
