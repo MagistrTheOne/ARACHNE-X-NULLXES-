@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import itertools
 import json
 import os
@@ -218,28 +219,36 @@ def main():
             prompt_mask = prompt_mask.squeeze(1)
         timesteps = batch["timesteps"].view(-1)
 
-        if use_audio:
-            if "audio_embs" not in batch:
-                raise KeyError("avatar training requires audio_embs in dataset")
-            audio_embs = squeeze_collated_singleton_batch_dim(batch["audio_embs"])
-            if audio_embs.ndim == 4:
-                audio_embs = audio_embs.unsqueeze(0)
-            noise_pred = model(
-                hidden_states=latents,
-                timestep=timesteps.to(dtype=dtype),
-                encoder_hidden_states=prompt_embeds,
-                encoder_attention_mask=prompt_mask,
-                audio_embs=audio_embs,
-            )
-        else:
-            noise_pred = model(
-                hidden_states=latents,
-                timestep=timesteps.to(dtype=dtype),
-                encoder_hidden_states=prompt_embeds,
-                encoder_attention_mask=prompt_mask,
-            )
+        # Gradient checkpointing + bf16: backward recomputation must see the same autocast as forward
+        # or PyTorch can raise "Found dtype BFloat16 but expected Float" during loss.backward().
+        amp_cm = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if device == "cuda" and dtype == torch.bfloat16
+            else contextlib.nullcontext()
+        )
+        with amp_cm:
+            if use_audio:
+                if "audio_embs" not in batch:
+                    raise KeyError("avatar training requires audio_embs in dataset")
+                audio_embs = squeeze_collated_singleton_batch_dim(batch["audio_embs"])
+                if audio_embs.ndim == 4:
+                    audio_embs = audio_embs.unsqueeze(0)
+                noise_pred = model(
+                    hidden_states=latents,
+                    timestep=timesteps.to(dtype=dtype),
+                    encoder_hidden_states=prompt_embeds,
+                    encoder_attention_mask=prompt_mask,
+                    audio_embs=audio_embs,
+                )
+            else:
+                noise_pred = model(
+                    hidden_states=latents,
+                    timestep=timesteps.to(dtype=dtype),
+                    encoder_hidden_states=prompt_embeds,
+                    encoder_attention_mask=prompt_mask,
+                )
 
-        loss = F.mse_loss(noise_pred, noise)
+        loss = F.mse_loss(noise_pred.float(), noise.float())
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
