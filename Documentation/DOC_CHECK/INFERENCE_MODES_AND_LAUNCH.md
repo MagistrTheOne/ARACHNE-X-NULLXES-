@@ -47,6 +47,20 @@ pip install -r requirements-tts.txt
 
 Useful flags: `--tts_model` (HF id or local dir), `--tts_language`, `--tts_speaker`, `--tts_instruct`, `--tts_device_map`, `--tts_attn`. For **`streaming_ai2v`**, **`--audio_chunk_sec`** sets fixed-duration chunks (micro-turns; default `0.5`). Runtime contract: [`arachne_x/tts/realtime.py`](../arachne_x/tts/realtime.py), chunk helper [`arachne_x/tts/chunking.py`](../arachne_x/tts/chunking.py).
 
+### LongCat-AudioDiT as TTS (`--tts_provider longcat_audiodit`)
+
+[LongCat-AudioDiT](https://huggingface.co/meituan-longcat/LongCat-AudioDiT-1B) generates speech in waveform latent space; the synthesizer **resamples to 16 kHz** before writing WAV so existing **`get_audio_embedding`** / Wav2Vec conditioning stays unchanged.
+
+```bash
+pip install -r requirements-audiodit.txt
+```
+
+Flags: `--tts_model` (default `meituan-longcat/LongCat-AudioDiT-1B`), `--tts_device_map`, `--audiodit_nfe`, `--audiodit_guidance_strength`, `--audiodit_guidance_method` (`cfg` / `apg`), `--audiodit_seed`. Voice cloning: **`--audiodit_prompt_audio`** + **`--audiodit_prompt_text`** (transcript of the reference clip).
+
+**VRAM:** AudioDiT (especially 3.5B) plus avatar DiT on one GPU may OOM or jitter; use one GPU with strict scheduling or a dedicated TTS worker.
+
+**`transformers` version:** AudioDiT wants a recent transformers stack; verify compatibility with your main `requirements.txt` in the target venv.
+
 ## Recommended Pod Environment
 
 ```bash
@@ -105,6 +119,24 @@ python scripts/infer.py \
   --num_frames 93 \
   --num_inference_steps 8 \
   --output /workspace/out_anna_speak.mp4
+```
+
+### 2c. AI2V from text (LongCat-AudioDiT TTS)
+
+```bash
+python scripts/infer.py \
+  --checkpoint_dir /workspace/weights/ARACHNE-X-Avatar \
+  --mode ai2v \
+  --image /path/to/ref.png \
+  --speak_text "Line synthesized with LongCat-AudioDiT, then lip-synced by the avatar." \
+  --tts_provider longcat_audiodit \
+  --tts_model meituan-longcat/LongCat-AudioDiT-1B \
+  --audiodit_guidance_method apg \
+  --prompt "A realistic close-up speaking to camera, lip synced to speech" \
+  --resolution 480p \
+  --num_frames 93 \
+  --num_inference_steps 8 \
+  --output /workspace/out_audiodit_speak.mp4
 ```
 
 ## Optional: custom avatar LoRA at inference

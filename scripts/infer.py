@@ -56,6 +56,17 @@ def _resolve_avatar_wav_path(args) -> Tuple[str, bool]:
     speak = (getattr(args, "speak_text", None) or "").strip()
     if not speak:
         raise ValueError("Provide --audio or non-empty --speak_text for this mode.")
+    tts_kw = {}
+    prov = (args.tts_provider or "").strip().lower()
+    if prov in ("longcat_audiodit", "audiodit"):
+        tts_kw = dict(
+            audiodit_nfe=args.audiodit_nfe,
+            audiodit_guidance_strength=args.audiodit_guidance_strength,
+            audiodit_guidance_method=args.audiodit_guidance_method,
+            audiodit_prompt_audio=args.audiodit_prompt_audio,
+            audiodit_prompt_text=args.audiodit_prompt_text,
+            audiodit_seed=args.audiodit_seed,
+        )
     synth = create_speech_synthesizer(
         args.tts_provider,
         model_id=args.tts_model,
@@ -64,6 +75,7 @@ def _resolve_avatar_wav_path(args) -> Tuple[str, bool]:
         speaker=args.tts_speaker,
         instruct=args.tts_instruct or None,
         attn_implementation=args.tts_attn,
+        **tts_kw,
     )
     fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="arachne_tts_")
     os.close(fd)
@@ -156,19 +168,19 @@ def main():
         "--tts_provider",
         type=str,
         default="qwen",
-        help="TTS backend when using --speak_text (supported: qwen). Install: pip install -r requirements-tts.txt",
+        help="TTS backend when using --speak_text (qwen | longcat_audiodit). See requirements-tts.txt / requirements-audiodit.txt",
     )
     parser.add_argument(
         "--tts_model",
         type=str,
         default=None,
-        help='Hugging Face model id or local path (default: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice for provider qwen).',
+        help="HF id or local path (qwen default: Qwen3-TTS-CustomVoice; longcat_audiodit default: LongCat-AudioDiT-1B).",
     )
     parser.add_argument(
         "--tts_device_map",
         type=str,
         default=None,
-        help='Qwen device_map, e.g. "cuda:0" or "cpu" (default: cuda:0 if CUDA else cpu).',
+        help='TTS device: Qwen ``device_map`` or AudioDiT ``.to(device)`` (default: cuda:0 if CUDA else cpu).',
     )
     parser.add_argument("--tts_language", type=str, default="English")
     parser.add_argument("--tts_speaker", type=str, default="Ryan")
@@ -178,6 +190,38 @@ def main():
         type=str,
         default=None,
         help='Attention impl for Qwen3TTSModel (e.g. flash_attention_2, sdpa). Default: auto.',
+    )
+    parser.add_argument("--audiodit_nfe", type=int, default=16, help="LongCat-AudioDiT ODE steps (only longcat_audiodit).")
+    parser.add_argument(
+        "--audiodit_guidance_strength",
+        type=float,
+        default=4.0,
+        help="LongCat-AudioDiT CFG/APG strength (only longcat_audiodit).",
+    )
+    parser.add_argument(
+        "--audiodit_guidance_method",
+        type=str,
+        default="cfg",
+        choices=["cfg", "apg"],
+        help="LongCat-AudioDiT guidance (only longcat_audiodit).",
+    )
+    parser.add_argument(
+        "--audiodit_prompt_audio",
+        type=str,
+        default=None,
+        help="Optional reference WAV for voice cloning (only longcat_audiodit; requires --audiodit_prompt_text).",
+    )
+    parser.add_argument(
+        "--audiodit_prompt_text",
+        type=str,
+        default=None,
+        help="Transcript of --audiodit_prompt_audio (only longcat_audiodit).",
+    )
+    parser.add_argument(
+        "--audiodit_seed",
+        type=int,
+        default=1024,
+        help="RNG seed for LongCat-AudioDiT (only longcat_audiodit).",
     )
     parser.add_argument(
         "--audio_chunk_sec",
