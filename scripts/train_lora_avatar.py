@@ -29,7 +29,11 @@ if str(ROOT) not in sys.path:
 from safetensors.torch import save_file
 
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-from arachne_x.training_latent_common import collate_latent_samples, validate_latent_sample
+from arachne_x.training_latent_common import (
+    collate_latent_samples,
+    squeeze_collated_singleton_batch_dim,
+    validate_latent_sample,
+)
 from arachne_x.training_wds import LatentWebDataset
 from arachne_x.modules.lora_utils import (
     build_initial_lora_state_dict,
@@ -236,10 +240,10 @@ def main():
     step = 0
     for batch in batch_iter:
         batch = _to_device(batch, device, fw_dtype)
-        latents = batch["latents"]
+        latents = squeeze_collated_singleton_batch_dim(batch["latents"])
         if latents.ndim == 4:
             latents = latents.unsqueeze(0)
-        noise = batch["noise"]
+        noise = squeeze_collated_singleton_batch_dim(batch["noise"])
         if noise.ndim == 4:
             noise = noise.unsqueeze(0)
         prompt_embeds = batch["prompt_embeds"]
@@ -249,7 +253,7 @@ def main():
         if prompt_mask.ndim == 1:
             prompt_mask = prompt_mask.unsqueeze(0)
         timesteps = batch["timesteps"].view(-1)
-        audio_embs = batch["audio_embs"]
+        audio_embs = squeeze_collated_singleton_batch_dim(batch["audio_embs"])
         if audio_embs.ndim == 4:
             audio_embs = audio_embs.unsqueeze(0)
 

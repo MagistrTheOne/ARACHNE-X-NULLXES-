@@ -12,7 +12,11 @@ from torch.utils.data import Dataset, DataLoader
 
 from arachne_x.modules.longcat_video_dit import LongCatVideoTransformer3DModel
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
-from arachne_x.training_latent_common import collate_latent_samples, validate_latent_sample
+from arachne_x.training_latent_common import (
+    collate_latent_samples,
+    squeeze_collated_singleton_batch_dim,
+    validate_latent_sample,
+)
 from arachne_x.training_wds import LatentWebDataset
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
@@ -168,10 +172,10 @@ def main():
     step = 0
     for batch in batch_iter:
         batch = _to_device(batch, device, dtype)
-        latents = batch["latents"]
+        latents = squeeze_collated_singleton_batch_dim(batch["latents"])
         if latents.ndim == 4:
             latents = latents.unsqueeze(0)
-        noise = batch["noise"]
+        noise = squeeze_collated_singleton_batch_dim(batch["noise"])
         if noise.ndim == 4:
             noise = noise.unsqueeze(0)
         prompt_embeds = batch["prompt_embeds"]
@@ -185,7 +189,7 @@ def main():
         if use_audio:
             if "audio_embs" not in batch:
                 raise KeyError("avatar training requires audio_embs in dataset")
-            audio_embs = batch["audio_embs"]
+            audio_embs = squeeze_collated_singleton_batch_dim(batch["audio_embs"])
             if audio_embs.ndim == 4:
                 audio_embs = audio_embs.unsqueeze(0)
             noise_pred = model(

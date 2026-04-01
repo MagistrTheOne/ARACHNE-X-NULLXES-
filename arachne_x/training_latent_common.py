@@ -21,6 +21,19 @@ def validate_latent_sample(sample: Dict[str, Any], *, require_audio: bool, sourc
     return sample  # type: ignore[return-value]
 
 
+def squeeze_collated_singleton_batch_dim(x: torch.Tensor) -> torch.Tensor:
+    """
+    ``default_collate`` / ``torch.stack`` turns per-sample ``[1, C, T, H, W]`` into ``[B, 1, C, T, H, W]``.
+    LongCat DiT expects ``[B, C, T, H, W]`` (same for stacked ``audio_embs`` when dim 1 is a lone 1).
+    """
+    if x.dim() == 6 and x.size(1) == 1:
+        return x.squeeze(1)
+    return x
+
+
+_KEYS_SQUEEZE = frozenset({"latents", "noise", "audio_embs"})
+
+
 def collate_latent_samples(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """Stack per-field tensors into a batch dict (same layout as default DataLoader for tensor values)."""
     if not samples:
@@ -28,7 +41,10 @@ def collate_latent_samples(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, 
     out: Dict[str, torch.Tensor] = {}
     for k in samples[0]:
         vals = [s[k] for s in samples]
-        out[k] = torch.stack(vals, dim=0)
+        t = torch.stack(vals, dim=0)
+        if k in _KEYS_SQUEEZE:
+            t = squeeze_collated_singleton_batch_dim(t)
+        out[k] = t
     return out
 
 
