@@ -28,8 +28,15 @@ def normalize_prompt_embeds_batch(x: torch.Tensor) -> torch.Tensor:
     """
     while x.dim() > 4 and x.size(1) == 1:
         x = x.squeeze(1)
+    if x.dim() > 4:
+        raise ValueError(
+            f"prompt_embeds shape {tuple(x.shape)} cannot be reduced to 4D [B,1,S,D] for CaptionEmbedder "
+            "(expected extra axes to be singleton at dim 1, e.g. [B,1,1,S,D] from stacking [1,1,S,D])."
+        )
     if x.dim() == 3:
         x = x.unsqueeze(1)
+    if x.dim() != 4:
+        raise ValueError(f"prompt_embeds must be 4D [B,1,S,D] after normalize, got {tuple(x.shape)}")
     return x
 
 
