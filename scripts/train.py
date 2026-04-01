@@ -77,6 +77,25 @@ def _load_config(path: str) -> H200TrainingConfig:
     return H200TrainingConfig(**cfg)
 
 
+def _make_optimizer(model: torch.nn.Module, args: argparse.Namespace, weight_decay: float, device: str):
+    lr = args.lr
+    if args.adam8bit:
+        if device != "cuda":
+            raise ValueError("--adam8bit requires CUDA")
+        try:
+            import bitsandbytes as bnb  # type: ignore
+        except ImportError as e:
+            raise ImportError("Install bitsandbytes for --adam8bit: pip install bitsandbytes") from e
+        print("[train] optimizer=AdamW8bit (bitsandbytes)")
+        return bnb.optim.AdamW8bit(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    opt_kw: dict = {"lr": lr, "weight_decay": weight_decay, "fused": False}
+    if device == "cuda":
+        opt_kw["foreach"] = bool(args.adam_foreach)
+    print(f"[train] optimizer=AdamW(foreach={opt_kw.get('foreach', 'n/a')})")
+    return torch.optim.AdamW(model.parameters(), **opt_kw)
+
+
 def _output_dir_arg(value: str) -> str:
     """Treat empty / whitespace as missing (e.g. ``--output_dir "$OUT"`` when OUT is unset)."""
     s = (value or "").strip()
@@ -126,6 +145,17 @@ def main():
         action="store_true",
         help="Disable DiT activation checkpointing (faster steps, much higher VRAM). Default: on when "
         "H200TrainingConfig.use_gradient_checkpointing is True.",
+    )
+    parser.add_argument(
+        "--adam8bit",
+        action="store_true",
+        help="Use bitsandbytes AdamW8bit (pip install bitsandbytes). Cuts optimizer-state VRAM ~4x vs FP32 Adam; "
+        "recommended for full DiT fine-tune on one GPU.",
+    )
+    parser.add_argument(
+        "--adam_foreach",
+        action="store_true",
+        help="AdamW multi-tensor foreach (faster optimizer.step, higher peak VRAM). Default: off.",
     )
     add_resolve_args(parser)
     args = parser.parse_args()
@@ -253,6 +283,8 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+        if device == "cuda":
+            torch.cuda.empty_cache()
         optimizer.step()
 
         if step % 50 == 0:
