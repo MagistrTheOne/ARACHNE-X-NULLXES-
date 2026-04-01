@@ -79,15 +79,24 @@ def _load_config(path: str) -> H200TrainingConfig:
 
 def _make_optimizer(model: torch.nn.Module, args: argparse.Namespace, weight_decay: float, device: str):
     lr = args.lr
-    if args.adam8bit:
-        if device != "cuda":
-            raise ValueError("--adam8bit requires CUDA")
+    # Avatar full fine-tune on one GPU: FP32 Adam states OOM; use 8-bit optimizer by default when bnb is available.
+    want_8bit = False
+    if device == "cuda":
+        want_8bit = bool(args.adam8bit) or (args.mode == "avatar" and not args.no_adam8bit)
+
+    if want_8bit:
         try:
             import bitsandbytes as bnb  # type: ignore
-        except ImportError as e:
-            raise ImportError("Install bitsandbytes for --adam8bit: pip install bitsandbytes") from e
-        print("[train] optimizer=AdamW8bit (bitsandbytes)")
-        return bnb.optim.AdamW8bit(model.parameters(), lr=lr, weight_decay=weight_decay)
+        except ImportError:
+            if args.adam8bit:
+                raise ImportError("Install bitsandbytes for --adam8bit: pip install bitsandbytes") from None
+            print(
+                "[train] WARNING: bitsandbytes not installed; using AdamW(foreach=False). "
+                "Avatar full fine-tune usually OOMs at optimizer.step — pip install bitsandbytes"
+            )
+        else:
+            print("[train] optimizer=AdamW8bit (bitsandbytes)")
+            return bnb.optim.AdamW8bit(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     opt_kw: dict = {"lr": lr, "weight_decay": weight_decay, "fused": False}
     if device == "cuda":
@@ -149,8 +158,12 @@ def main():
     parser.add_argument(
         "--adam8bit",
         action="store_true",
-        help="Use bitsandbytes AdamW8bit (pip install bitsandbytes). Cuts optimizer-state VRAM ~4x vs FP32 Adam; "
-        "recommended for full DiT fine-tune on one GPU.",
+        help="Force bitsandbytes AdamW8bit (also default for --mode avatar on CUDA unless --no_adam8bit).",
+    )
+    parser.add_argument(
+        "--no_adam8bit",
+        action="store_true",
+        help="Do not use AdamW8bit for avatar on CUDA (plain AdamW; needs huge VRAM for optimizer state).",
     )
     parser.add_argument(
         "--adam_foreach",
@@ -230,7 +243,7 @@ def main():
     elif hasattr(model, "disable_gradient_checkpointing"):
         model.disable_gradient_checkpointing()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
+    optimizer = _make_optimizer(model, args, config.weight_decay, device)
 
     step = 0
     for batch in batch_iter:
