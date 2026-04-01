@@ -106,6 +106,12 @@ def main():
         default=4,
         help="DataLoader workers (map-style: shuffle each epoch; WDS uses worker split).",
     )
+    parser.add_argument(
+        "--no_gradient_checkpointing",
+        action="store_true",
+        help="Disable DiT activation checkpointing (faster steps, much higher VRAM). Default: on when "
+        "H200TrainingConfig.use_gradient_checkpointing is True.",
+    )
     add_resolve_args(parser)
     args = parser.parse_args()
 
@@ -167,6 +173,13 @@ def main():
 
     model.to(device)
     model.train()
+
+    use_gc = bool(getattr(config, "use_gradient_checkpointing", True)) and not args.no_gradient_checkpointing
+    if use_gc and hasattr(model, "gradient_checkpointing"):
+        model.gradient_checkpointing = True
+        print("[train] gradient_checkpointing=True (saves VRAM during backward; use --no_gradient_checkpointing to disable)")
+    elif hasattr(model, "gradient_checkpointing"):
+        model.gradient_checkpointing = False
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
 
