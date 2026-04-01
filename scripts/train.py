@@ -175,11 +175,13 @@ def main():
     model.train()
 
     use_gc = bool(getattr(config, "use_gradient_checkpointing", True)) and not args.no_gradient_checkpointing
-    if use_gc and hasattr(model, "gradient_checkpointing"):
-        model.gradient_checkpointing = True
-        print("[train] gradient_checkpointing=True (saves VRAM during backward; use --no_gradient_checkpointing to disable)")
-    elif hasattr(model, "gradient_checkpointing"):
-        model.gradient_checkpointing = False
+    # Diffusers ModelMixin: must call enable_gradient_checkpointing() so _gradient_checkpointing_func is set;
+    # setting gradient_checkpointing=True alone leaves _gradient_checkpointing_func=None and crashes in forward.
+    if use_gc and hasattr(model, "enable_gradient_checkpointing"):
+        model.enable_gradient_checkpointing()
+        print("[train] gradient_checkpointing on (enable_gradient_checkpointing(); --no_gradient_checkpointing to disable)")
+    elif hasattr(model, "disable_gradient_checkpointing"):
+        model.disable_gradient_checkpointing()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
 
