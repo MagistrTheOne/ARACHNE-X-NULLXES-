@@ -1,9 +1,8 @@
 import argparse
 import json
 import os
-from dataclasses import asdict
 from glob import glob
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 import torch
@@ -12,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader
 
 from arachne_x.modules.longcat_video_dit import LongCatVideoTransformer3DModel
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.training_latent_common import collate_latent_samples, validate_latent_sample
+from arachne_x.training_wds import LatentWebDataset
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
 
@@ -29,8 +30,9 @@ class LatentDataset(Dataset):
     - audio_embs (avatar only): [T, W, S2, D] or [1, T, W, S2, D]
     """
 
-    def __init__(self, dataset_dir: str):
+    def __init__(self, dataset_dir: str, *, require_audio: bool = False):
         self.files = sorted(glob(os.path.join(dataset_dir, "*.pt")) + glob(os.path.join(dataset_dir, "*.npz")))
+        self.require_audio = require_audio
         if not self.files:
             raise FileNotFoundError(f"No .pt or .npz files found in {dataset_dir}")
 
@@ -45,10 +47,7 @@ class LatentDataset(Dataset):
             data = np.load(path)
             sample = {k: torch.from_numpy(data[k]) for k in data.files}
 
-        required = {"latents", "prompt_embeds", "prompt_mask", "timesteps", "noise"}
-        missing = required - set(sample.keys())
-        if missing:
-            raise KeyError(f"{path} missing keys: {sorted(missing)}")
+        validate_latent_sample(sample, require_audio=self.require_audio, source=f"{path}: ")
 
         return sample
 
@@ -75,7 +74,14 @@ def main():
     parser = argparse.ArgumentParser(description="ARACHNE-X training entrypoint")
     parser.add_argument("--mode", type=str, choices=["base", "avatar"], required=True)
     parser.add_argument("--checkpoint_dir", type=str, required=True)
-    parser.add_argument("--dataset_dir", type=str, required=True)
+    ds = parser.add_mutually_exclusive_group(required=True)
+    ds.add_argument("--dataset_dir", type=str, default=None, help="Folder with *.pt / *.npz (LatentDataset)")
+    ds.add_argument(
+        "--wds_shards",
+        type=str,
+        default=None,
+        help='WebDataset shards URL or brace glob, e.g. "/data/shard_{000000..000099}.tar"',
+    )
     parser.add_argument("--output_dir", type=str, default="./outputs_train")
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=1)
@@ -98,8 +104,30 @@ def main():
         cache_dir=args.weights_cache_dir,
     )
 
-    dataset = LatentDataset(args.dataset_dir)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    if args.dataset_dir:
+        dataset = LatentDataset(args.dataset_dir, require_audio=(args.mode == "avatar"))
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            drop_last=True,
+        )
+    else:
+        use_audio = args.mode == "avatar"
+        iterable = LatentWebDataset(
+            args.wds_shards,
+            require_audio=use_audio,
+            shuffle=max(0, args.wds_shuffle),
+        )
+        loader = DataLoader(
+            iterable,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate_latent_samples,
+            drop_last=True,
+        )
 
     if args.mode == "base":
         model = LongCatVideoTransformer3DModel.from_pretrained(

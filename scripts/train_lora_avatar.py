@@ -27,6 +27,8 @@ if str(ROOT) not in sys.path:
 from safetensors.torch import save_file
 
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.training_latent_common import collate_latent_samples, validate_latent_sample
+from arachne_x.training_wds import LatentWebDataset
 from arachne_x.modules.lora_utils import (
     build_initial_lora_state_dict,
     create_lora_network,
@@ -57,12 +59,7 @@ class LatentDataset(Dataset):
             data = np.load(path)
             sample = {k: torch.from_numpy(data[k]) for k in data.files}
 
-        required = {"latents", "prompt_embeds", "prompt_mask", "timesteps", "noise"}
-        missing = required - set(sample.keys())
-        if missing:
-            raise KeyError(f"{path} missing keys: {sorted(missing)}")
-        if "audio_embs" not in sample:
-            raise KeyError(f"{path}: avatar LoRA training requires audio_embs")
+        validate_latent_sample(sample, require_audio=True, source=f"{path}: ")
         return sample
 
 
@@ -79,7 +76,14 @@ def _to_device(batch: Dict[str, torch.Tensor], device: str, dtype: torch.dtype) 
 def main():
     parser = argparse.ArgumentParser(description="ARACHNE-X avatar DiT LoRA training")
     parser.add_argument("--checkpoint_dir", type=str, required=True, help="Root with avatar_single/")
-    parser.add_argument("--dataset_dir", type=str, required=True)
+    ds = parser.add_mutually_exclusive_group(required=True)
+    ds.add_argument("--dataset_dir", type=str, default=None, help="Folder with *.pt / *.npz")
+    ds.add_argument(
+        "--wds_shards",
+        type=str,
+        default=None,
+        help='WebDataset shards, e.g. "/data/shard_{000000..000009}.tar"',
+    )
     parser.add_argument("--output_dir", type=str, default="./outputs_train_lora_avatar")
     parser.add_argument("--lora_key", type=str, default="train", help="Key in dit.lora_dict and enable_loras")
     parser.add_argument(
@@ -111,6 +115,8 @@ def main():
         default=None,
         help="AdamW weight decay; if omitted, use H200TrainingConfig.weight_decay.",
     )
+    parser.add_argument("--wds_shuffle", type=int, default=5000, help="WebDataset shuffle buffer (0=off).")
+    parser.add_argument("--num_workers", type=int, default=4)
     add_resolve_args(parser)
     args = parser.parse_args()
 
@@ -145,8 +151,29 @@ def main():
         cache_dir=args.weights_cache_dir,
     )
 
-    dataset = LatentDataset(args.dataset_dir)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    if args.dataset_dir:
+        dataset = LatentDataset(args.dataset_dir)
+        loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            drop_last=True,
+        )
+    else:
+        iterable = LatentWebDataset(
+            args.wds_shards,
+            require_audio=True,
+            shuffle=max(0, args.wds_shuffle),
+        )
+        loader = DataLoader(
+            iterable,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collate_latent_samples,
+            drop_last=True,
+        )
 
     dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
         checkpoint_dir,

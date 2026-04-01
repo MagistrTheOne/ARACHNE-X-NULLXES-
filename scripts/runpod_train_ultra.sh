@@ -5,7 +5,8 @@
 #
 # Перед первым запуском:
 #   1) Клонировать репо, установить зависимости: pip install -r requirements.txt
-#   2) Подготовить корень весов (WeightsLayout) и папку с .pt/.npz для LatentDataset
+#   2) Подготовить корень весов (WeightsLayout) и данные: либо папка .pt/.npz (LatentDataset),
+#      либо WebDataset-шарды (ARACHNE_WDS_SHARDS + pip install webdataset; см. scripts/pack_latent_shards_wds.py)
 #   3) Выставить переменные ниже или передать через export перед вызовом скрипта
 #
 # Использование:
@@ -13,6 +14,7 @@
 #   export ARACHNE_REPO_ROOT=/workspace/ARACHNE-X
 #   export ARACHNE_CHECKPOINT_DIR=/workspace/weights/ULTRA_bundle
 #   export ARACHNE_DATASET_DIR=/workspace/data/latents_avatar
+#   # или: export ARACHNE_WDS_SHARDS="/workspace/data/wds/shard_{000000..000099}.tar"  (без ARACHNE_DATASET_DIR)
 #   export ARACHNE_TRAIN_MODE=avatar
 #   export ARACHNE_MERGE_INTO=/workspace/weights/ULTRA_production
 #   ./scripts/runpod_train_ultra.sh
@@ -30,8 +32,18 @@ export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # --- обязательные переменные ---
 : "${ARACHNE_CHECKPOINT_DIR:?Set ARACHNE_CHECKPOINT_DIR (full WeightsLayout root)}"
-: "${ARACHNE_DATASET_DIR:?Set ARACHNE_DATASET_DIR (folder with *.pt or *.npz)}"
 : "${ARACHNE_MERGE_INTO:?Set ARACHNE_MERGE_INTO (production root; final/ merges into dit/ or avatar_single/)}"
+
+if [[ -n "${ARACHNE_WDS_SHARDS:-}" ]]; then
+  if [[ -n "${ARACHNE_DATASET_DIR:-}" ]]; then
+    echo "ERROR: set only one of ARACHNE_DATASET_DIR or ARACHNE_WDS_SHARDS" >&2
+    exit 2
+  fi
+  DATA_MODE="wds"
+else
+  : "${ARACHNE_DATASET_DIR:?Set ARACHNE_DATASET_DIR (folder with *.pt or *.npz) or set ARACHNE_WDS_SHARDS}"
+  DATA_MODE="flat"
+fi
 
 TRAIN_MODE="${ARACHNE_TRAIN_MODE:-avatar}"
 OUTPUT_DIR="${ARACHNE_OUTPUT_DIR:-${REPO_ROOT}/outputs_train_runpod}"
@@ -49,7 +61,11 @@ fi
 echo "== ARACHNE-X train (ULTRA) =="
 echo "  REPO_ROOT           = $REPO_ROOT"
 echo "  CHECKPOINT_DIR      = $ARACHNE_CHECKPOINT_DIR"
-echo "  DATASET_DIR         = $ARACHNE_DATASET_DIR"
+if [[ "$DATA_MODE" == "flat" ]]; then
+  echo "  DATASET_DIR         = $ARACHNE_DATASET_DIR"
+else
+  echo "  WDS_SHARDS          = $ARACHNE_WDS_SHARDS"
+fi
 echo "  MERGE_INTO          = $ARACHNE_MERGE_INTO"
 echo "  MODE                = $TRAIN_MODE"
 echo "  OUTPUT_DIR          = $OUTPUT_DIR"
@@ -57,22 +73,23 @@ echo "  MAX_STEPS           = $MAX_STEPS"
 echo "  allow_hub_download  = $ALLOW_HUB"
 echo
 
-if [[ ! -d "$ARACHNE_DATASET_DIR" ]]; then
-  echo "ERROR: ARACHNE_DATASET_DIR is not a directory: $ARACHNE_DATASET_DIR" >&2
-  exit 2
+if [[ "$DATA_MODE" == "flat" ]]; then
+  if [[ ! -d "$ARACHNE_DATASET_DIR" ]]; then
+    echo "ERROR: ARACHNE_DATASET_DIR is not a directory: $ARACHNE_DATASET_DIR" >&2
+    exit 2
+  fi
+  shopt -s nullglob
+  EXIST=( "${ARACHNE_DATASET_DIR}"/*.pt "${ARACHNE_DATASET_DIR}"/*.npz )
+  if [[ ${#EXIST[@]} -eq 0 ]]; then
+    echo "ERROR: No .pt or .npz files in $ARACHNE_DATASET_DIR" >&2
+    exit 2
+  fi
+  shopt -u nullglob
 fi
-shopt -s nullglob
-EXIST=( "${ARACHNE_DATASET_DIR}"/*.pt "${ARACHNE_DATASET_DIR}"/*.npz )
-if [[ ${#EXIST[@]} -eq 0 ]]; then
-  echo "ERROR: No .pt or .npz files in $ARACHNE_DATASET_DIR" >&2
-  exit 2
-fi
-shopt -u nullglob
 
 CMD=(
   python "$REPO_ROOT/scripts/arachne_x_train.py"
   --checkpoint-dir "$ARACHNE_CHECKPOINT_DIR"
-  --dataset-dir "$ARACHNE_DATASET_DIR"
   --output-dir "$OUTPUT_DIR"
   --mode "$TRAIN_MODE"
   --batch-size "$BATCH_SIZE"
@@ -81,6 +98,11 @@ CMD=(
   --save-every "$SAVE_EVERY"
   --merge-into "$ARACHNE_MERGE_INTO"
 )
+if [[ "$DATA_MODE" == "flat" ]]; then
+  CMD+=(--dataset-dir "$ARACHNE_DATASET_DIR")
+else
+  CMD+=(--wds-shards "$ARACHNE_WDS_SHARDS")
+fi
 if [[ -n "$CONFIG" ]]; then
   CMD+=(--config "$CONFIG")
 fi

@@ -38,7 +38,11 @@ def decode_wds_sample_pt(sample: Dict[str, Any], *, require_audio: bool) -> Dict
     if raw is None:
         raise KeyError("WebDataset sample missing sample.pt")
     buf = io.BytesIO(raw) if isinstance(raw, (bytes, bytearray)) else io.BytesIO(bytes(raw))
-    obj = torch.load(buf, map_location="cpu", weights_only=False)
+    try:
+        obj = torch.load(buf, map_location="cpu", weights_only=False)
+    except TypeError:
+        buf.seek(0)
+        obj = torch.load(buf, map_location="cpu")
     if not isinstance(obj, dict):
         raise TypeError(f"sample.pt must be a dict, got {type(obj)}")
     return validate_latent_sample(obj, require_audio=require_audio, source="")

@@ -6,7 +6,8 @@ ARACHNE-X pod training launcher — один запуск на машине с G
 
 Обязательно:
   ARACHNE_CHECKPOINT_DIR — корень весов (локальный путь или org/repo при --allow-hub-download)
-  ARACHNE_DATASET_DIR    — папка с .pt/.npz под LatentDataset
+  ARACHNE_DATASET_DIR    — папка с .pt/.npz под LatentDataset (или используйте ARACHNE_WDS_SHARDS)
+  ARACHNE_WDS_SHARDS     — WebDataset URL/glob шардов, например /data/shard_{000000..000099}.tar
 
 Часто нужно:
   ARACHNE_TRAIN_MODE     — base | avatar (default: base)
@@ -97,6 +98,9 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint-dir", default=os.environ.get("ARACHNE_CHECKPOINT_DIR"))
     parser.add_argument("--dataset-dir", default=os.environ.get("ARACHNE_DATASET_DIR"))
+    parser.add_argument("--wds-shards", default=os.environ.get("ARACHNE_WDS_SHARDS"))
+    parser.add_argument("--wds-shuffle", type=int, default=_env_int("ARACHNE_WDS_SHUFFLE", 5000))
+    parser.add_argument("--num-workers", type=int, default=_env_int("ARACHNE_NUM_WORKERS", 4))
     parser.add_argument("--output-dir", default=os.environ.get("ARACHNE_OUTPUT_DIR", "./outputs_train"))
     parser.add_argument("--mode", choices=["base", "avatar"], default=os.environ.get("ARACHNE_TRAIN_MODE", "base"))
     parser.add_argument("--config", default=os.environ.get("ARACHNE_CONFIG"))
@@ -121,8 +125,13 @@ def main() -> None:
     if not args.checkpoint_dir or not str(args.checkpoint_dir).strip():
         sys.stderr.write("Set ARACHNE_CHECKPOINT_DIR or pass --checkpoint-dir\n")
         sys.exit(2)
-    if not args.dataset_dir or not str(args.dataset_dir).strip():
-        sys.stderr.write("Set ARACHNE_DATASET_DIR or pass --dataset-dir\n")
+    has_flat = args.dataset_dir and str(args.dataset_dir).strip()
+    has_wds = args.wds_shards and str(args.wds_shards).strip()
+    if not has_flat and not has_wds:
+        sys.stderr.write("Set ARACHNE_DATASET_DIR or ARACHNE_WDS_SHARDS (or pass --dataset-dir / --wds-shards)\n")
+        sys.exit(2)
+    if has_flat and has_wds:
+        sys.stderr.write("Use only one of --dataset-dir and --wds-shards\n")
         sys.exit(2)
 
     cmd: list[str] = [
@@ -132,8 +141,6 @@ def main() -> None:
         args.mode,
         "--checkpoint_dir",
         str(args.checkpoint_dir),
-        "--dataset_dir",
-        str(args.dataset_dir),
         "--output_dir",
         str(args.output_dir),
         "--batch_size",
@@ -144,7 +151,15 @@ def main() -> None:
         str(args.max_steps),
         "--save_every",
         str(args.save_every),
+        "--wds_shuffle",
+        str(args.wds_shuffle),
+        "--num_workers",
+        str(args.num_workers),
     ]
+    if has_flat:
+        cmd.extend(["--dataset_dir", str(args.dataset_dir)])
+    else:
+        cmd.extend(["--wds_shards", str(args.wds_shards)])
     if args.config:
         cmd.extend(["--config", str(args.config)])
     if args.allow_hub_download:

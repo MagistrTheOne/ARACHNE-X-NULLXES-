@@ -65,13 +65,14 @@ class LatentWebDataset(IterableDataset):
             def decoder(sample):
                 return decode_wds_sample_pt(sample, require_audio=require_audio)
 
-        dataset = wds.WebDataset(
-            self.url,
-            resampled=True,
-            nodesplit=wds.split_by_node,
-            workersplit=wds.split_by_worker,
-            handler=wds.warn_and_continue,
-        )
+        wd_kwargs = dict(resampled=True, handler=wds.warn_and_continue)
+        node_split = getattr(wds, "split_by_node", None)
+        worker_split = getattr(wds, "split_by_worker", None)
+        if node_split is not None:
+            wd_kwargs["nodesplit"] = node_split
+        if worker_split is not None:
+            wd_kwargs["workersplit"] = worker_split
+        dataset = wds.WebDataset(self.url, **wd_kwargs)
         if self.shuffle > 0:
             dataset = dataset.shuffle(self.shuffle)
         dataset = dataset.map(decoder)
