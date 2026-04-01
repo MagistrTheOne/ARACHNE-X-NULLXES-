@@ -14,6 +14,7 @@ from arachne_x.modules.longcat_video_dit import LongCatVideoTransformer3DModel
 from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
 from arachne_x.training_latent_common import (
     collate_latent_samples,
+    normalize_prompt_embeds_batch,
     squeeze_collated_singleton_batch_dim,
     validate_latent_sample,
 )
@@ -178,12 +179,12 @@ def main():
         noise = squeeze_collated_singleton_batch_dim(batch["noise"])
         if noise.ndim == 4:
             noise = noise.unsqueeze(0)
-        prompt_embeds = batch["prompt_embeds"]
-        if prompt_embeds.ndim == 3:
-            prompt_embeds = prompt_embeds.unsqueeze(0)
+        prompt_embeds = normalize_prompt_embeds_batch(batch["prompt_embeds"])
         prompt_mask = batch["prompt_mask"]
         if prompt_mask.ndim == 1:
             prompt_mask = prompt_mask.unsqueeze(0)
+        while prompt_mask.dim() > 2 and prompt_mask.size(1) == 1:
+            prompt_mask = prompt_mask.squeeze(1)
         timesteps = batch["timesteps"].view(-1)
 
         if use_audio:

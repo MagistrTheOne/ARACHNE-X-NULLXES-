@@ -21,6 +21,18 @@ def validate_latent_sample(sample: Dict[str, Any], *, require_audio: bool, sourc
     return sample  # type: ignore[return-value]
 
 
+def normalize_prompt_embeds_batch(x: torch.Tensor) -> torch.Tensor:
+    """
+    Export often stores ``prompt_embeds`` as ``[1, 1, S, D]``. Collate yields ``[B, 1, 1, S, D]``.
+    ``CaptionEmbedder`` / y_embedder expects 4D ``[B, 1, S, D]``.
+    """
+    while x.dim() > 4 and x.size(1) == 1:
+        x = x.squeeze(1)
+    if x.dim() == 3:
+        x = x.unsqueeze(1)
+    return x
+
+
 def squeeze_collated_singleton_batch_dim(x: torch.Tensor) -> torch.Tensor:
     """
     ``default_collate`` / ``torch.stack`` turns per-sample ``[1, C, T, H, W]`` into ``[B, 1, C, T, H, W]``.
@@ -44,6 +56,8 @@ def collate_latent_samples(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, 
         t = torch.stack(vals, dim=0)
         if k in _KEYS_SQUEEZE:
             t = squeeze_collated_singleton_batch_dim(t)
+        elif k == "prompt_embeds":
+            t = normalize_prompt_embeds_batch(t)
         out[k] = t
     return out
 
