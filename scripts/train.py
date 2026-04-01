@@ -76,6 +76,15 @@ def _load_config(path: str) -> H200TrainingConfig:
     return H200TrainingConfig(**cfg)
 
 
+def _output_dir_arg(value: str) -> str:
+    """Treat empty / whitespace as missing (e.g. ``--output_dir "$OUT"`` when OUT is unset)."""
+    s = (value or "").strip()
+    if not s:
+        print("[train] --output_dir empty; using ./outputs_train (set OUT or pass e.g. --output_dir /workspace/out)")
+        return "./outputs_train"
+    return s
+
+
 def main():
     parser = argparse.ArgumentParser(description="ARACHNE-X training entrypoint")
     parser.add_argument("--mode", type=str, choices=["base", "avatar"], required=True)
@@ -88,7 +97,12 @@ def main():
         default=None,
         help='WebDataset shards URL or brace glob, e.g. "/data/shard_{000000..000099}.tar"',
     )
-    parser.add_argument("--output_dir", type=str, default="./outputs_train")
+    parser.add_argument(
+        "--output_dir",
+        type=_output_dir_arg,
+        default="./outputs_train",
+        help="Checkpoint output directory (default: ./outputs_train). Empty string falls back to default.",
+    )
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -114,6 +128,8 @@ def main():
     )
     add_resolve_args(parser)
     args = parser.parse_args()
+    # Again in case anything assigned Namespace after parse (defensive)
+    args.output_dir = _output_dir_arg(args.output_dir)
 
     os.makedirs(args.output_dir, exist_ok=True)
 

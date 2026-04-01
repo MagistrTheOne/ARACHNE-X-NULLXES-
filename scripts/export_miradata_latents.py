@@ -1,7 +1,11 @@
 """
 Batch-export base training .pt files from MiraData-style metadata (HF or CSV).
 
-Requires local video clips: join ``video_root`` with ``file_path`` from each row.
+**Important:** Hugging Face ``TencentARC/MiraData`` is **metadata only** (captions + ``file_path``).
+You must download the actual clips (see the dataset README: ``download_data.py``, Google Drive meta)
+and point ``--video_root`` at the folder that matches those paths.
+
+Requires local video clips: ``os.path.join(video_root, file_path)`` (or absolute ``file_path``).
 Install ``pip install datasets`` when using ``--from_hf``.
 
 Example (after downloading clips per Mira README):
@@ -63,6 +67,12 @@ def main():
     parser.add_argument("--split", type=str, default="train", help="HF split name")
     parser.add_argument("--streaming", action="store_true", help="Stream HF dataset (slower export, low RAM)")
     parser.add_argument("--video_root", type=str, required=True, help="Root directory for clip files (joined with file_path)")
+    parser.add_argument(
+        "--video_path_column",
+        type=str,
+        default="file_path",
+        help="Row key for relative or absolute path to the clip (default: file_path)",
+    )
     parser.add_argument("--checkpoint_dir", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--max_samples", type=int, default=0, help="Stop after N successful exports (0 = no limit)")
@@ -105,6 +115,10 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    vr = os.path.abspath(args.video_root)
+    if not os.path.isdir(vr):
+        print(f"[miradata] WARNING: video_root is not a directory: {vr}")
+
     if args.from_hf:
         row_iter = _iter_rows_from_hf(args.from_hf, args.split, args.streaming)
     else:
@@ -112,11 +126,20 @@ def main():
 
     done = 0
     idx = 0
+    skipped_no_path = 0
+    skip_logs = 0
+    first_row_keys_printed = False
     for row in row_iter:
         if args.max_samples and done >= args.max_samples:
             break
-        fp = row.get("file_path")
+        if not first_row_keys_printed and isinstance(row, dict):
+            print(f"[miradata] first row keys: {sorted(row.keys())}")
+            first_row_keys_printed = True
+        fp = row.get(args.video_path_column)
+        if fp is None and args.video_path_column != "file_path":
+            fp = row.get("file_path")
         if not fp:
+            skipped_no_path += 1
             idx += 1
             continue
         cap = row.get(args.caption_field) or ""
@@ -148,12 +171,25 @@ def main():
             done += 1
         except Exception as e:
             if args.skip_errors:
-                print(f"[skip idx={idx}] {e}")
+                if skip_logs < args.max_skip_logs:
+                    print(f"[skip idx={idx}] {e}")
+                    skip_logs += 1
             else:
                 raise
         idx += 1
 
-    print(f"Finished: exported {done} samples under {args.output_dir}")
+    rows_seen = idx
+    failed_other = rows_seen - done - skipped_no_path
+    print(
+        f"Finished: exported {done} samples under {args.output_dir} "
+        f"(rows_seen={rows_seen}, empty_path={skipped_no_path}, failed_export={failed_other})"
+    )
+    if done == 0:
+        print(
+            "[miradata] 0 exports: HF split only has metadata. Download clips so that "
+            f"video_root={vr!r} + file_path exists on disk, or fix --video_path_column / paths."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
