@@ -8,10 +8,12 @@ latents, prompt_embeds, prompt_mask, timesteps, noise, audio_embs.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
 from glob import glob
+from typing import Iterable
 from pathlib import Path
 from typing import Dict
 
@@ -175,6 +177,8 @@ def main():
             drop_last=True,
         )
 
+    batch_iter: Iterable = itertools.cycle(loader) if args.dataset_dir else loader
+
     dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
         checkpoint_dir,
         subfolder="avatar_single",
@@ -230,7 +234,7 @@ def main():
         json.dump(meta, f, indent=2)
 
     step = 0
-    for batch in loader:
+    for batch in batch_iter:
         batch = _to_device(batch, device, fw_dtype)
         latents = batch["latents"]
         if latents.ndim == 4:

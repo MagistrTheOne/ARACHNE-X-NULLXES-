@@ -1,8 +1,9 @@
 import argparse
+import itertools
 import json
 import os
 from glob import glob
-from typing import Dict
+from typing import Dict, Iterable
 
 import numpy as np
 import torch
@@ -88,6 +89,18 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--save_every", type=int, default=500)
+    parser.add_argument(
+        "--wds_shuffle",
+        type=int,
+        default=5000,
+        help="WebDataset shuffle buffer (0 = off). Ignored for --dataset_dir.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="DataLoader workers (map-style: shuffle each epoch; WDS uses worker split).",
+    )
     add_resolve_args(parser)
     args = parser.parse_args()
 
@@ -129,6 +142,9 @@ def main():
             drop_last=True,
         )
 
+    # Map-style loader exhausts after one epoch; cycle so max_steps works with few .pt files.
+    batch_iter: Iterable = itertools.cycle(loader) if args.dataset_dir else loader
+
     if args.mode == "base":
         model = LongCatVideoTransformer3DModel.from_pretrained(
             checkpoint_dir,
@@ -150,7 +166,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.weight_decay)
 
     step = 0
-    for batch in loader:
+    for batch in batch_iter:
         batch = _to_device(batch, device, dtype)
         latents = batch["latents"]
         if latents.ndim == 4:
