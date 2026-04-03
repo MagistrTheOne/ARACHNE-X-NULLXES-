@@ -23,7 +23,10 @@ PUBLIC_HTTP_ENV = "NULLXES_PUBLIC_HTTP_BASE"
 PUBLIC_WS_ENV = "NULLXES_PUBLIC_WS_BASE"
 CORS_ORIGIN_ENV = "NULLXES_CORS_ORIGIN"
 AVATAR_PREVIEW_VIDEO_ENV = "NULLXES_AVATAR_PREVIEW_VIDEO_URL"
+AVATAR_PREVIEW_ASSET_ENV = "NULLXES_AVATAR_PREVIEW_ASSET_PATH"
 AVATAR_PREVIEW_PROFILE_ENV = "NULLXES_ARACHNE_OUTPUT_PROFILE"
+# Same-origin mp4 for <video src>; build URL with NULLXES_PUBLIC_HTTP_BASE + this path.
+AVATAR_PREVIEW_ASSET_URL_PATH = "/v1/avatar/preview/asset.mp4"
 WS_AUTH_TIMEOUT_SEC = 12.0
 WS_CLOSE_AUTH = 4401
 PROTOCOL_VERSION = 1
@@ -60,6 +63,17 @@ def _iso_z(ts: float) -> str:
     return (
         datetime.datetime.utcfromtimestamp(ts).replace(microsecond=0).isoformat() + "Z"
     )
+
+
+def _public_http_base(request: web.Request) -> str:
+    """Browser-facing http(s) origin for links returned in JSON (proxy-safe)."""
+    env_base = os.environ.get(PUBLIC_HTTP_ENV, "").strip().rstrip("/")
+    if env_base:
+        return env_base
+    xf_proto = request.headers.get("X-Forwarded-Proto", "").strip().lower()
+    scheme = xf_proto if xf_proto in ("http", "https") else request.scheme
+    host = request.headers.get("Host", "localhost:8080")
+    return f"{scheme}://{host}"
 
 
 def _public_ws_base(request: web.Request) -> str:
@@ -193,6 +207,26 @@ async def _handle_avatar_preview_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers=_cors_headers(request))
 
 
+async def handle_avatar_preview_asset(request: web.Request) -> web.Response:
+    """Public GET: stream local mp4 for same-origin videoPreviewUrl (no service key)."""
+    path = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
+    cors = _cors_headers(request)
+    if not path or not os.path.isfile(path):
+        return web.Response(
+            status=404,
+            text="avatar preview asset not configured or missing\n",
+            headers=cors,
+        )
+    return web.FileResponse(
+        path,
+        headers={
+            "Content-Type": "video/mp4",
+            "Cache-Control": "public, max-age=3600",
+            **cors,
+        },
+    )
+
+
 async def handle_avatar_preview(request: web.Request) -> web.Response:
     """
     Dashboard avatar preview (line B): returns a public mp4 URL without running infer.
@@ -216,13 +250,28 @@ async def handle_avatar_preview(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_body"}, status=400, headers=cors)
 
     video_url = os.environ.get(AVATAR_PREVIEW_VIDEO_ENV, "").strip()
+    asset_path = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
+    if not video_url and asset_path:
+        if not os.path.isfile(asset_path):
+            return web.json_response(
+                {
+                    "error": "preview_asset_missing",
+                    "detail": f"{AVATAR_PREVIEW_ASSET_ENV} is not a readable file: {asset_path}",
+                },
+                status=503,
+                headers=cors,
+            )
+        base = _public_http_base(request)
+        video_url = base + AVATAR_PREVIEW_ASSET_URL_PATH
     if not video_url:
         return web.json_response(
             {
                 "error": "preview_not_configured",
                 "detail": (
-                    f"Set {AVATAR_PREVIEW_VIDEO_ENV} to a public HTTPS URL of an mp4 "
-                    "(stub preview until infer/at2v is wired)."
+                    f"Set {AVATAR_PREVIEW_VIDEO_ENV} to a full HTTPS mp4 URL, or set "
+                    f"{AVATAR_PREVIEW_ASSET_ENV} to a local mp4 path and "
+                    f"{PUBLIC_HTTP_ENV} (e.g. https://1qs8mciim8zovo-8080.proxy.runpod.net) "
+                    f"so videoPreviewUrl is same-origin."
                 ),
             },
             status=503,

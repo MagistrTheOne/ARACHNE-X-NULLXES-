@@ -9,7 +9,7 @@
 | HTTP base | Точный origin для server-side вызовов `POST /v1/realtime/token` (например `https://arachne-api.dev.nullxes.example`). |
 | WebSocket | Либо прямой `wss://.../v1/ws`, либо **same-origin** прокси в Next (`/api/arachne/ws` → upstream), чтобы упростить CORS и cookies. |
 | OpenAPI | `GET {HTTP_BASE}/v1/openapi.json` — версия и пути должны совпадать с [ARACHNE_X_FRONTEND_CONTRACT.md](./ARACHNE_X_FRONTEND_CONTRACT.md). |
-| Avatar preview | `POST {HTTP_BASE}/v1/avatar/preview` (server-to-server, тот же ключ). На ARACHNE должен быть задан `NULLXES_AVATAR_PREVIEW_VIDEO_URL` (публичный mp4). См. [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md). |
+| Avatar preview | `POST {HTTP_BASE}/v1/avatar/preview` (server-to-server, ключ). Same-origin: `NULLXES_PUBLIC_HTTP_BASE` + `NULLXES_AVATAR_PREVIEW_ASSET_PATH` → `GET …/v1/avatar/preview/asset.mp4`. Или внешний `NULLXES_AVATAR_PREVIEW_VIDEO_URL`. См. [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md). |
 
 **Рекомендация:** для prod предпочтительно **Next proxy** для WS и отсутствие прямого `wss` с фронта на чужой домен; иначе на ARACHNE нужен явный allowlist `Origin`.
 

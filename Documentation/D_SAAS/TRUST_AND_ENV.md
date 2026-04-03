@@ -44,8 +44,12 @@
 
 | Переменная | Обязательность | Назначение |
 |------------|----------------|------------|
-| `NULLXES_AVATAR_PREVIEW_VIDEO_URL` | Для **200** на `POST /v1/avatar/preview` | Публичный **HTTPS** URL файла **mp4**, который сервер возвращает как `videoPreviewUrl`. Если пусто — **503** `preview_not_configured`. |
-| `NULLXES_ARACHNE_OUTPUT_PROFILE` | Нет | Строка для поля `arachneOutputProfile` в JSON-ответе (по умолчанию `gpt-realtime-arachne-v1-mvp`). Удобно пометить стенд (realtime / GPT-5 и т.д.) для фронта. |
+| `NULLXES_PUBLIC_HTTP_BASE` | Для same-origin превью | Публичный origin браузера, например `https://1qs8mciim8zovo-8080.proxy.runpod.net`. Участвует в сборке `videoPreviewUrl` = `{base}/v1/avatar/preview/asset.mp4`. |
+| `NULLXES_AVATAR_PREVIEW_ASSET_PATH` | Альтернатива внешнему URL | Локальный путь к **mp4** на машине ARACHNE; отдаётся через **`GET /v1/avatar/preview/asset.mp4`** (без ключа). |
+| `NULLXES_AVATAR_PREVIEW_VIDEO_URL` | Опционально | Явный полный HTTPS URL mp4; если задан, **перекрывает** same-origin режим. |
+| `NULLXES_ARACHNE_OUTPUT_PROFILE` | Нет | Строка для поля `arachneOutputProfile` в JSON-ответе (по умолчанию `gpt-realtime-arachne-v1-mvp`). |
+
+Для **200** на `POST /v1/avatar/preview` нужно либо непустой `NULLXES_AVATAR_PREVIEW_VIDEO_URL`, либо валидный файл по `NULLXES_AVATAR_PREVIEW_ASSET_PATH` плюс корректный `NULLXES_PUBLIC_HTTP_BASE` (или сработает fallback `Host` / `X-Forwarded-Proto` из запроса).
 
 ## Рекомендуемые переменные на стороне `dai_saas` (справочно)
 

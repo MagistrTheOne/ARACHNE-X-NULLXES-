@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -108,6 +109,7 @@ def test_openapi_contains_realtime_paths():
     assert "/v1/ws" in SPEC["paths"]
     assert "/v1/chat" in SPEC["paths"]
     assert "/v1/avatar/preview" in SPEC["paths"]
+    assert "/v1/avatar/preview/asset.mp4" in SPEC["paths"]
 
 
 @pytest.mark.asyncio
@@ -157,3 +159,42 @@ async def test_avatar_preview_requires_service_key(monkeypatch):
             headers={"X-NULLXES-Realtime-Service-Key": "svc_secret"},
         )
         assert r2.status == 200
+
+
+@pytest.mark.asyncio
+async def test_avatar_preview_same_origin_asset(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", raising=False)
+    mp4 = tmp_path / "demo.mp4"
+    mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_ASSET_PATH", str(mp4))
+    monkeypatch.setenv(
+        "NULLXES_PUBLIC_HTTP_BASE",
+        "https://1qs8mciim8zovo-8080.proxy.runpod.net",
+    )
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/preview", json={"employeeId": "1"})
+        assert r.status == 200
+        data = await r.json()
+        assert (
+            data["videoPreviewUrl"]
+            == "https://1qs8mciim8zovo-8080.proxy.runpod.net/v1/avatar/preview/asset.mp4"
+        )
+        g = await client.get("/v1/avatar/preview/asset.mp4")
+        assert g.status == 200
+        assert "video/mp4" in g.headers.get("Content-Type", "")
+
+
+@pytest.mark.asyncio
+async def test_avatar_preview_video_url_overrides_asset(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    mp4 = tmp_path / "demo.mp4"
+    mp4.write_bytes(b"x")
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_ASSET_PATH", str(mp4))
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://cdn.example.com/a.mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/preview", json={})
+        data = await r.json()
+        assert data["videoPreviewUrl"] == "https://cdn.example.com/a.mp4"

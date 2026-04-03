@@ -106,7 +106,7 @@ flowchart LR
 
 ### 3c. Avatar preview (stub, линия B)
 
-**`POST /v1/avatar/preview`** — только **server-to-server**, тот же ключ, что для mint/chat. Возвращает **`videoPreviewUrl`** (публичный HTTPS mp4) для кнопки превью / зеркала поля **`employees.config.videoPreviewUrl`**. Реальный at2v / `infer.py` не вызывается; источник URL — env `NULLXES_AVATAR_PREVIEW_VIDEO_URL` на ARACHNE. Детали и curl: [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md).
+**`POST /v1/avatar/preview`** — только **server-to-server**, тот же ключ, что для mint/chat. Возвращает **`videoPreviewUrl`** для кнопки превью / зеркала поля **`employees.config.videoPreviewUrl`**. Реальный at2v / `infer.py` не вызывается. URL: либо `NULLXES_AVATAR_PREVIEW_VIDEO_URL`, либо same-origin `{NULLXES_PUBLIC_HTTP_BASE}/v1/avatar/preview/asset.mp4` при `NULLXES_AVATAR_PREVIEW_ASSET_PATH`. Статика mp4: **`GET /v1/avatar/preview/asset.mp4`** (без ключа). Детали: [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md).
 
 ---
 

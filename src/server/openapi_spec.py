@@ -210,12 +210,27 @@ SPEC = {
                 },
             }
         },
+        "/v1/avatar/preview/asset.mp4": {
+            "get": {
+                "summary": "Stream local stub mp4 (same-origin preview)",
+                "description": (
+                    "Public; no service key. File path from NULLXES_AVATAR_PREVIEW_ASSET_PATH. "
+                    "videoPreviewUrl from POST points here when using same-origin mode."
+                ),
+                "responses": {
+                    "200": {"description": "video/mp4"},
+                    "404": {"description": "Asset not configured or missing on disk"},
+                },
+            }
+        },
         "/v1/avatar/preview": {
             "post": {
                 "summary": "Avatar preview mp4 URL (stub; no infer)",
                 "description": (
                     "Server-to-server; same auth as /v1/realtime/token. "
-                    "Returns videoPreviewUrl from NULLXES_AVATAR_PREVIEW_VIDEO_URL until at2v/infer is wired."
+                    "videoPreviewUrl: NULLXES_AVATAR_PREVIEW_VIDEO_URL if set, else "
+                    "NULLXES_PUBLIC_HTTP_BASE + /v1/avatar/preview/asset.mp4 when "
+                    "NULLXES_AVATAR_PREVIEW_ASSET_PATH points to a local file."
                 ),
                 "parameters": [
                     {
@@ -279,7 +294,7 @@ SPEC = {
                     "400": {"description": "Validation error"},
                     "401": {"description": "Missing or invalid service key"},
                     "503": {
-                        "description": "NULLXES_AVATAR_PREVIEW_VIDEO_URL not set",
+                        "description": "No external URL and no usable NULLXES_AVATAR_PREVIEW_ASSET_PATH",
                     },
                 },
             }

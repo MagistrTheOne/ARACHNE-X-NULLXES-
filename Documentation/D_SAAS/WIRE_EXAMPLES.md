@@ -184,7 +184,18 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/chat" \
 
 **Авторизация:** как у mint — `X-NULLXES-Realtime-Service-Key` или `Authorization: Bearer`, если задан `NULLXES_REALTIME_SERVICE_KEY`.
 
-**Сервер:** задайте `NULLXES_AVATAR_PREVIEW_VIDEO_URL` (HTTPS, прямой mp4). Иначе **503** `preview_not_configured`.
+**Сервер (один из вариантов):**
+
+1. **Тот же хост, что RunPod proxy (рекомендуется):**  
+   `NULLXES_PUBLIC_HTTP_BASE=https://1qs8mciim8zovo-8080.proxy.runpod.net`  
+   `NULLXES_AVATAR_PREVIEW_ASSET_PATH=/workspace/demo.mp4` (любой локальный файл mp4 на поде)  
+   Тогда `POST` вернёт  
+   `videoPreviewUrl` = `https://1qs8mciim8zovo-8080.proxy.runpod.net/v1/avatar/preview/asset.mp4`,  
+   а сам файл отдаётся **`GET /v1/avatar/preview/asset.mp4`** (без service key, для `<video src>`).
+
+2. **Внешний CDN:** `NULLXES_AVATAR_PREVIEW_VIDEO_URL=https://…/file.mp4` (перекрывает вариант 1, если задано).
+
+Если ни URL, ни файл не настроены — **503** `preview_not_configured`.
 
 **Тело (все поля опциональны, для будущего пайплайна):**
 
