@@ -11,7 +11,7 @@
 
 Итог для интеграции: **источник истины для mint в MVP — ARACHNE-X** после авторизации пользователя на стороне Next.
 
-## Server-to-server: вызов `POST /v1/realtime/token`, `POST /v1/chat`, `POST /v1/avatar/preview`
+## Server-to-server: вызов `POST /v1/realtime/token`, `POST /v1/chat`, `POST /v1/avatar/preview`, `POST /v1/avatar/bootstrap`
 
 | Переменная | Обязательность | Назначение |
 |------------|----------------|------------|
@@ -38,7 +38,7 @@
 | Переменная | По умолчанию | Назначение |
 |------------|--------------|------------|
 | `NULLXES_REALTIME_TOKEN_TTL_SEC` | `900` | TTL opaque токена (секунды, минимум 60). |
-| `NULLXES_CORS_ORIGIN` | пусто | Если задано (один origin), к ответам `POST /v1/realtime/token`, `POST /v1/chat` и `POST /v1/avatar/preview` добавляются CORS-заголовки и обрабатывается `OPTIONS` (прямой вызов из браузера **не** рекомендуется; типичный путь — только Next server-side). |
+| `NULLXES_CORS_ORIGIN` | пусто | Если задано (один origin), к ответам `POST /v1/realtime/token`, `POST /v1/chat`, `POST /v1/avatar/preview` и `POST /v1/avatar/bootstrap` добавляются CORS-заголовки и обрабатывается `OPTIONS` (прямой вызов из браузера **не** рекомендуется; типичный путь — только Next server-side). |
 
 ## Avatar preview (stub, без infer)
 

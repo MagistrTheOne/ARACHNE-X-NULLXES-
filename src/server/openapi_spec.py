@@ -6,8 +6,11 @@ SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "NULLXES Session & Media API",
-        "version": "0.2.1",
-        "description": "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat (NULLXES / ARACHNE-X). See Documentation/D_SAAS/.",
+        "version": "0.2.2",
+        "description": (
+            "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat, "
+            "avatar preview + bootstrap (NULLXES / ARACHNE-X). See Documentation/D_SAAS/."
+        ),
     },
     "paths": {
         "/health": {"get": {"summary": "Liveness", "responses": {"200": {"description": "OK"}}}},
@@ -296,6 +299,87 @@ SPEC = {
                     "503": {
                         "description": "No external URL and no usable NULLXES_AVATAR_PREVIEW_ASSET_PATH",
                     },
+                },
+            }
+        },
+        "/v1/avatar/bootstrap": {
+            "post": {
+                "summary": "One-shot: mint WS token + stub video preview (GPT Realtime audio elsewhere)",
+                "description": (
+                    "Server-to-server; same auth as /v1/realtime/token. Combines POST /v1/realtime/token "
+                    "and stub preview fields. No audio file upload; audioTransport is gpt_realtime."
+                ),
+                "parameters": [
+                    {
+                        "name": "X-NULLXES-Realtime-Service-Key",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["sessionId"],
+                                "properties": {
+                                    "sessionId": {"type": "string"},
+                                    "employeeId": {"type": "string"},
+                                    "nullxesSessionId": {"type": "string"},
+                                },
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Token, websocketUrl, videoPreviewUrl, audioTransport",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": [
+                                        "sessionId",
+                                        "token",
+                                        "websocketUrl",
+                                        "issuedAt",
+                                        "expiresAt",
+                                        "videoPreviewUrl",
+                                        "avatarPreviewStatus",
+                                        "pipelineMode",
+                                        "arachneOutputProfile",
+                                        "audioTransport",
+                                    ],
+                                    "properties": {
+                                        "sessionId": {"type": "string"},
+                                        "token": {"type": "string"},
+                                        "websocketUrl": {"type": "string"},
+                                        "issuedAt": {"type": "string"},
+                                        "expiresAt": {"type": "string"},
+                                        "videoPreviewUrl": {"type": "string"},
+                                        "avatarPreviewStatus": {"type": "string"},
+                                        "pipelineMode": {"type": "string"},
+                                        "arachneOutputProfile": {"type": "string"},
+                                        "audioTransport": {
+                                            "type": "string",
+                                            "example": "gpt_realtime",
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"description": "Validation error"},
+                    "401": {"description": "Missing or invalid service key"},
+                    "503": {"description": "Preview not configured (same as /v1/avatar/preview)"},
                 },
             }
         },

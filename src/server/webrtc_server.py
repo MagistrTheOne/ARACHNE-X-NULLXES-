@@ -12,6 +12,7 @@ from aiohttp import web
 from src.server.media_layer import media_backend_from_env
 from src.server.openapi_spec import SPEC
 from src.server.realtime_api import (
+    handle_avatar_bootstrap,
     handle_avatar_preview,
     handle_avatar_preview_asset,
     handle_chat,
@@ -70,6 +71,8 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app.router.add_get("/v1/avatar/preview/asset.mp4", handle_avatar_preview_asset)
     app.router.add_post("/v1/avatar/preview", handle_avatar_preview)
     app.router.add_options("/v1/avatar/preview", handle_avatar_preview)
+    app.router.add_post("/v1/avatar/bootstrap", handle_avatar_bootstrap)
+    app.router.add_options("/v1/avatar/bootstrap", handle_avatar_bootstrap)
     app.router.add_get("/v1/ws", handle_websocket)
 
     app.on_startup.append(_on_startup)

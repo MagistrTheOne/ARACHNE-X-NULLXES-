@@ -108,6 +108,10 @@ flowchart LR
 
 **`POST /v1/avatar/preview`** — только **server-to-server**, тот же ключ, что для mint/chat. Возвращает **`videoPreviewUrl`** для кнопки превью / зеркала поля **`employees.config.videoPreviewUrl`**. Реальный at2v / `infer.py` не вызывается. URL: либо `NULLXES_AVATAR_PREVIEW_VIDEO_URL`, либо same-origin `{NULLXES_PUBLIC_HTTP_BASE}/v1/avatar/preview/asset.mp4` при `NULLXES_AVATAR_PREVIEW_ASSET_PATH`. Статика mp4: **`GET /v1/avatar/preview/asset.mp4`** (без ключа). Детали: [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md).
 
+### 3d. Avatar bootstrap (один POST)
+
+**`POST /v1/avatar/bootstrap`** — server-to-server, тот же ключ. Один ответ объединяет **mint WebSocket** (`token`, `websocketUrl`, `issuedAt`, `expiresAt`) и **stub-превью** (`videoPreviewUrl`, `pipelineMode`, `arachneOutputProfile`, `avatarPreviewStatus`). Поле **`audioTransport`: `gpt_realtime`** фиксирует модель продукта: голос не передаётся в ARACHNE этим запросом. Тело как у mint: обязателен **`sessionId`**, опционально `employeeId`, `nullxesSessionId`. См. [WIRE_EXAMPLES.md §5](./WIRE_EXAMPLES.md).
+
 ---
 
 ## 4. Связь оркестратора NULLXES и `sessionId` в UI

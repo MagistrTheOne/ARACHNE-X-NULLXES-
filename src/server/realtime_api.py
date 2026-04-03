@@ -207,6 +207,56 @@ async def _handle_avatar_preview_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers=_cors_headers(request))
 
 
+async def _handle_avatar_bootstrap_options(request: web.Request) -> web.Response:
+    return web.Response(status=204, headers=_cors_headers(request))
+
+
+def _stub_avatar_video_fields_or_error(
+    request: web.Request, cors: Dict[str, str]
+) -> tuple[Optional[Dict[str, Any]], Optional[web.Response]]:
+    """
+    Resolve stub videoPreviewUrl (external env or same-origin asset). No audio assets.
+    Returns (fields dict, None) or (None, error Response).
+    """
+    video_url = os.environ.get(AVATAR_PREVIEW_VIDEO_ENV, "").strip()
+    asset_path = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
+    if not video_url and asset_path:
+        if not os.path.isfile(asset_path):
+            return None, web.json_response(
+                {
+                    "error": "preview_asset_missing",
+                    "detail": f"{AVATAR_PREVIEW_ASSET_ENV} is not a readable file: {asset_path}",
+                },
+                status=503,
+                headers=cors,
+            )
+        base = _public_http_base(request)
+        video_url = base + AVATAR_PREVIEW_ASSET_URL_PATH
+    if not video_url:
+        return None, web.json_response(
+            {
+                "error": "preview_not_configured",
+                "detail": (
+                    f"Set {AVATAR_PREVIEW_VIDEO_ENV} to a full HTTPS mp4 URL, or set "
+                    f"{AVATAR_PREVIEW_ASSET_ENV} to a local mp4 path and "
+                    f"{PUBLIC_HTTP_ENV} (e.g. RunPod proxy https origin) for same-origin preview."
+                ),
+            },
+            status=503,
+            headers=cors,
+        )
+
+    profile = os.environ.get(AVATAR_PREVIEW_PROFILE_ENV, "gpt-realtime-arachne-v1-mvp").strip()
+    if not profile:
+        profile = "gpt-realtime-arachne-v1-mvp"
+
+    return {
+        "videoPreviewUrl": video_url,
+        "pipelineMode": "at2v_stub",
+        "arachneOutputProfile": profile,
+    }, None
+
+
 async def handle_avatar_preview_asset(request: web.Request) -> web.Response:
     """Public GET: stream local mp4 for same-origin videoPreviewUrl (no service key)."""
     path = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
@@ -249,46 +299,64 @@ async def handle_avatar_preview(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "invalid_body"}, status=400, headers=cors)
 
-    video_url = os.environ.get(AVATAR_PREVIEW_VIDEO_ENV, "").strip()
-    asset_path = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
-    if not video_url and asset_path:
-        if not os.path.isfile(asset_path):
-            return web.json_response(
-                {
-                    "error": "preview_asset_missing",
-                    "detail": f"{AVATAR_PREVIEW_ASSET_ENV} is not a readable file: {asset_path}",
-                },
-                status=503,
-                headers=cors,
-            )
-        base = _public_http_base(request)
-        video_url = base + AVATAR_PREVIEW_ASSET_URL_PATH
-    if not video_url:
-        return web.json_response(
-            {
-                "error": "preview_not_configured",
-                "detail": (
-                    f"Set {AVATAR_PREVIEW_VIDEO_ENV} to a full HTTPS mp4 URL, or set "
-                    f"{AVATAR_PREVIEW_ASSET_ENV} to a local mp4 path and "
-                    f"{PUBLIC_HTTP_ENV} (e.g. https://1qs8mciim8zovo-8080.proxy.runpod.net) "
-                    f"so videoPreviewUrl is same-origin."
-                ),
-            },
-            status=503,
-            headers=cors,
-        )
-
-    profile = os.environ.get(AVATAR_PREVIEW_PROFILE_ENV, "gpt-realtime-arachne-v1-mvp").strip()
-    if not profile:
-        profile = "gpt-realtime-arachne-v1-mvp"
+    preview_fields, err = _stub_avatar_video_fields_or_error(request, cors)
+    if err is not None:
+        return err
 
     # Optional for future at2v/infer: employeeId, sessionId, imageUrl, speakText (snake_case ok).
 
+    payload = {**preview_fields, "status": "ready"}
+    return web.json_response(payload, headers=cors)
+
+
+async def handle_avatar_bootstrap(request: web.Request) -> web.Response:
+    """
+    One server-to-server call: mint WebSocket token + stub video preview.
+    Audio is expected via GPT Realtime (or other path), not as upload/wav assets here.
+    """
+    if request.method == "OPTIONS":
+        return await _handle_avatar_bootstrap_options(request)
+    cors = _cors_headers(request)
+    if not _verify_service_request(request):
+        return web.json_response({"error": "unauthorized"}, status=401, headers=cors)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "invalid_json"}, status=400, headers=cors)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid_body"}, status=400, headers=cors)
+    sid = body.get("sessionId") or body.get("session_id")
+    if not sid or not isinstance(sid, str):
+        return web.json_response({"error": "missing_sessionId"}, status=400, headers=cors)
+
+    preview_fields, err = _stub_avatar_video_fields_or_error(request, cors)
+    if err is not None:
+        return err
+
+    emp = body.get("employeeId") or body.get("employee_id")
+    emp_s = str(emp) if emp is not None else None
+    nx = body.get("nullxesSessionId") or body.get("nullxes_session_id")
+    nx_s = str(nx) if nx is not None else None
+
+    store: RealtimeTokenStore = request.app["realtime_token_store"]
+    token, iat, exp = store.mint(
+        str(sid),
+        employee_id=emp_s,
+        nullxes_session_id=nx_s,
+        ttl_sec=_ttl_sec(),
+    )
+    ws_base = _public_ws_base(request)
+    ws_url = f"{ws_base}/v1/ws?token={token}"
+
     payload = {
-        "videoPreviewUrl": video_url,
-        "status": "ready",
-        "pipelineMode": "at2v_stub",
-        "arachneOutputProfile": profile,
+        "sessionId": str(sid),
+        "token": token,
+        "websocketUrl": ws_url,
+        "issuedAt": _iso_z(iat),
+        "expiresAt": _iso_z(exp),
+        **preview_fields,
+        "avatarPreviewStatus": "ready",
+        "audioTransport": "gpt_realtime",
     }
     return web.json_response(payload, headers=cors)
 

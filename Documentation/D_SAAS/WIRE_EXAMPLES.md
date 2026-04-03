@@ -1,4 +1,4 @@
-# D_SAAS ↔ ARACHNE-X: примеры провода (token, WebSocket, chat, avatar preview stub)
+# D_SAAS ↔ ARACHNE-X: примеры провода (token, WebSocket, chat, avatar preview, bootstrap)
 
 Машиночитаемая спека также в `GET /v1/openapi.json` ([openapi_spec.py](../../src/server/openapi_spec.py)).
 
@@ -197,14 +197,14 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/chat" \
 
 Если ни URL, ни файл не настроены — **503** `preview_not_configured`.
 
-**Тело (все поля опциональны, для будущего пайплайна):**
+**Аудио:** в текущем стенде голос идёт через **GPT Realtime** (или иной канал), **не** через загрузку wav в этот POST.
+
+**Тело (все поля опциональны; для будущего at2v можно расширить):**
 
 ```json
 {
   "employeeId": "66",
-  "sessionId": "ui_sess_demo_1",
-  "imageUrl": "https://cdn.example.com/face.png",
-  "speakText": "Короткая фраза для будущего TTS"
+  "sessionId": "ui_sess_demo_1"
 }
 ```
 
@@ -230,6 +230,52 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/preview" \
   -H "Content-Type: application/json" \
   -H "X-NULLXES-Realtime-Service-Key: $NULLXES_REALTIME_SERVICE_KEY" \
   -d "{\"employeeId\":\"66\",\"sessionId\":\"ui_sess_1\"}"
+```
+
+---
+
+## 5. Один вызов: превью + WebSocket `POST /v1/avatar/bootstrap`
+
+**Назначение:** одна server-to-server команда для дашборда: то же, что **`POST /v1/realtime/token`** + поля stub-превью (`videoPreviewUrl`, …). **Без** аудио-ассетов — звук остаётся в **GPT Realtime**.
+
+**Тело (обязателен только `sessionId`):**
+
+```json
+{
+  "sessionId": "ui_sess_demo_1",
+  "employeeId": "66",
+  "nullxesSessionId": "optional_from_line_a"
+}
+```
+
+**Ответ 200 (пример):**
+
+```json
+{
+  "sessionId": "ui_sess_demo_1",
+  "token": "opaque…",
+  "websocketUrl": "wss://…/v1/ws?token=opaque…",
+  "issuedAt": "2026-04-03T12:00:00Z",
+  "expiresAt": "2026-04-03T12:15:00Z",
+  "videoPreviewUrl": "https://…/v1/avatar/preview/asset.mp4",
+  "avatarPreviewStatus": "ready",
+  "pipelineMode": "at2v_stub",
+  "arachneOutputProfile": "gpt-realtime-arachne-v1-mvp",
+  "audioTransport": "gpt_realtime"
+}
+```
+
+Те же env, что для §4 (превью). Если превью не сконфигурировано — **503** (токен не выдаётся).
+
+**Интеграция `dai_saas`:** один Next route, например `POST /api/arachine-x/avatar-bootstrap` → прокси на `{ARACHNE_HTTP_BASE}/v1/avatar/bootstrap` с ключом; клиент получает и `websocketUrl`, и `videoPreviewUrl` одним ответом.
+
+### curl
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/bootstrap" \
+  -H "Content-Type: application/json" \
+  -H "X-NULLXES-Realtime-Service-Key: $NULLXES_REALTIME_SERVICE_KEY" \
+  -d "{\"sessionId\":\"ui_sess_1\",\"employeeId\":\"66\"}"
 ```
 
 ---

@@ -110,6 +110,7 @@ def test_openapi_contains_realtime_paths():
     assert "/v1/chat" in SPEC["paths"]
     assert "/v1/avatar/preview" in SPEC["paths"]
     assert "/v1/avatar/preview/asset.mp4" in SPEC["paths"]
+    assert "/v1/avatar/bootstrap" in SPEC["paths"]
 
 
 @pytest.mark.asyncio
@@ -184,6 +185,47 @@ async def test_avatar_preview_same_origin_asset(tmp_path: Path, monkeypatch):
         g = await client.get("/v1/avatar/preview/asset.mp4")
         assert g.status == 200
         assert "video/mp4" in g.headers.get("Content-Type", "")
+
+
+@pytest.mark.asyncio
+async def test_avatar_bootstrap_combined(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://cdn.example.com/x.mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post(
+            "/v1/avatar/bootstrap",
+            json={"sessionId": "sb1", "employeeId": "9"},
+        )
+        assert r.status == 200
+        data = await r.json()
+        assert data["sessionId"] == "sb1"
+        assert data["audioTransport"] == "gpt_realtime"
+        assert data["avatarPreviewStatus"] == "ready"
+        assert data["videoPreviewUrl"] == "https://cdn.example.com/x.mp4"
+        assert "token" in data and "websocketUrl" in data
+        assert data["token"] in data["websocketUrl"]
+
+
+@pytest.mark.asyncio
+async def test_avatar_bootstrap_missing_session(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://x/mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/bootstrap", json={})
+        assert r.status == 400
+
+
+@pytest.mark.asyncio
+async def test_avatar_bootstrap_preview_503_no_mint(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", raising=False)
+    monkeypatch.delenv("NULLXES_AVATAR_PREVIEW_ASSET_PATH", raising=False)
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/bootstrap", json={"sessionId": "x"})
+        assert r.status == 503
 
 
 @pytest.mark.asyncio
