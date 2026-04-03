@@ -27,6 +27,7 @@ AVATAR_PREVIEW_ASSET_ENV = "NULLXES_AVATAR_PREVIEW_ASSET_PATH"
 AVATAR_PREVIEW_PROFILE_ENV = "NULLXES_ARACHNE_OUTPUT_PROFILE"
 # Same-origin mp4 for <video src>; build URL with NULLXES_PUBLIC_HTTP_BASE + this path.
 AVATAR_PREVIEW_ASSET_URL_PATH = "/v1/avatar/preview/asset.mp4"
+BOOTSTRAP_PREVIEW_COOLDOWN_ENV = "NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC"
 WS_AUTH_TIMEOUT_SEC = 12.0
 WS_CLOSE_AUTH = 4401
 PROTOCOL_VERSION = 1
@@ -211,6 +212,17 @@ async def _handle_avatar_bootstrap_options(request: web.Request) -> web.Response
     return web.Response(status=204, headers=_cors_headers(request))
 
 
+def _bootstrap_preview_cooldown_sec() -> int:
+    try:
+        return max(0, int(os.environ.get(BOOTSTRAP_PREVIEW_COOLDOWN_ENV, "0")))
+    except ValueError:
+        return 0
+
+
+def _bootstrap_preview_cache_key(session_id: str, employee_id: Optional[str]) -> str:
+    return f"{session_id}\x1f{employee_id or ''}"
+
+
 def _stub_avatar_video_fields_or_error(
     request: web.Request, cors: Dict[str, str]
 ) -> tuple[Optional[Dict[str, Any]], Optional[web.Response]]:
@@ -313,6 +325,10 @@ async def handle_avatar_bootstrap(request: web.Request) -> web.Response:
     """
     One server-to-server call: mint WebSocket token + stub video preview.
     Audio is expected via GPT Realtime (or other path), not as upload/wav assets here.
+
+    Real at2v / DiT generation is not invoked in stub mode (pipelineMode at2v_stub).
+    When generation is wired, use NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC to avoid
+    re-running it on every bootstrap; token is still minted each call.
     """
     if request.method == "OPTIONS":
         return await _handle_avatar_bootstrap_options(request)
@@ -329,12 +345,38 @@ async def handle_avatar_bootstrap(request: web.Request) -> web.Response:
     if not sid or not isinstance(sid, str):
         return web.json_response({"error": "missing_sessionId"}, status=400, headers=cors)
 
-    preview_fields, err = _stub_avatar_video_fields_or_error(request, cors)
-    if err is not None:
-        return err
-
     emp = body.get("employeeId") or body.get("employee_id")
     emp_s = str(emp) if emp is not None else None
+
+    force_preview = bool(
+        body.get("regeneratePreview")
+        or body.get("forceAvatarRefresh")
+        or body.get("regenerate_preview")
+    )
+    cd_sec = _bootstrap_preview_cooldown_sec()
+    cache: Dict[str, tuple[float, Dict[str, Any]]] = request.app["avatar_bootstrap_preview_cache"]
+    ckey = _bootstrap_preview_cache_key(str(sid), emp_s)
+    preview_cached = False
+
+    if cd_sec > 0 and not force_preview:
+        now = time.time()
+        hit = cache.get(ckey)
+        if hit is not None and (now - hit[0]) < cd_sec:
+            preview_fields = hit[1]
+            preview_cached = True
+        else:
+            preview_fields, err = _stub_avatar_video_fields_or_error(request, cors)
+            if err is not None:
+                return err
+            cache[ckey] = (now, dict(preview_fields))
+    else:
+        if force_preview:
+            cache.pop(ckey, None)
+        preview_fields, err = _stub_avatar_video_fields_or_error(request, cors)
+        if err is not None:
+            return err
+        if cd_sec > 0:
+            cache[ckey] = (time.time(), dict(preview_fields))
     nx = body.get("nullxesSessionId") or body.get("nullxes_session_id")
     nx_s = str(nx) if nx is not None else None
 
@@ -357,6 +399,7 @@ async def handle_avatar_bootstrap(request: web.Request) -> web.Response:
         **preview_fields,
         "avatarPreviewStatus": "ready",
         "audioTransport": "gpt_realtime",
+        "avatarPreviewCached": preview_cached,
     }
     return web.json_response(payload, headers=cors)
 

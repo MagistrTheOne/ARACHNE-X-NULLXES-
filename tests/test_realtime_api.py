@@ -202,9 +202,49 @@ async def test_avatar_bootstrap_combined(monkeypatch):
         assert data["sessionId"] == "sb1"
         assert data["audioTransport"] == "gpt_realtime"
         assert data["avatarPreviewStatus"] == "ready"
+        assert data["avatarPreviewCached"] is False
         assert data["videoPreviewUrl"] == "https://cdn.example.com/x.mp4"
         assert "token" in data and "websocketUrl" in data
         assert data["token"] in data["websocketUrl"]
+
+
+@pytest.mark.asyncio
+async def test_avatar_bootstrap_preview_cooldown_cache(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://cdn.example.com/c.mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r1 = await client.post(
+            "/v1/avatar/bootstrap",
+            json={"sessionId": "cd1", "employeeId": "1"},
+        )
+        r2 = await client.post(
+            "/v1/avatar/bootstrap",
+            json={"sessionId": "cd1", "employeeId": "1"},
+        )
+        assert r1.status == 200 and r2.status == 200
+        d1, d2 = await r1.json(), await r2.json()
+        assert d1["avatarPreviewCached"] is False
+        assert d2["avatarPreviewCached"] is True
+        assert d1["videoPreviewUrl"] == d2["videoPreviewUrl"]
+        assert d1["token"] != d2["token"]
+
+
+@pytest.mark.asyncio
+async def test_avatar_bootstrap_regenerate_preview_bypasses_cache(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://cdn.example.com/z.mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/v1/avatar/bootstrap", json={"sessionId": "cd2", "employeeId": "2"})
+        r2 = await client.post(
+            "/v1/avatar/bootstrap",
+            json={"sessionId": "cd2", "employeeId": "2", "regeneratePreview": True},
+        )
+        assert r2.status == 200
+        assert (await r2.json())["avatarPreviewCached"] is False
 
 
 @pytest.mark.asyncio

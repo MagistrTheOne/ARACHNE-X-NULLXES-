@@ -261,9 +261,23 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/preview" \
   "avatarPreviewStatus": "ready",
   "pipelineMode": "at2v_stub",
   "arachneOutputProfile": "gpt-realtime-arachne-v1-mvp",
-  "audioTransport": "gpt_realtime"
+  "audioTransport": "gpt_realtime",
+  "avatarPreviewCached": false
 }
 ```
+
+**AT2V / генерация:** сейчас `pipelineMode: "at2v_stub"` — **нет** вызова `infer.py` / DiT. Когда подключите реальный at2v, генерация будет жить за этим же контрактом; кулдаун (ниже) как раз чтобы **не гонять** её на каждый bootstrap.
+
+**Кулдаун превью (анти-спам / «ваншот» на окно времени):**  
+`NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC` (например `300`) — для одной пары **`sessionId` + `employeeId`** в течение окна повторно подставляется **тот же** блок превью (`videoPreviewUrl`, …) из памяти процесса; **`token` и `websocketUrl` всё равно новые** на каждый вызов. В ответе **`avatarPreviewCached: true`**, если превью взято из кэша.
+
+Сбросить кэш и пересчитать превью (позже — перезапустить генерацию):
+
+```json
+{ "sessionId": "ui_sess_demo_1", "regeneratePreview": true }
+```
+
+(алиас: `forceAvatarRefresh`.)
 
 Те же env, что для §4 (превью). Если превью не сконфигурировано — **503** (токен не выдаётся).
 

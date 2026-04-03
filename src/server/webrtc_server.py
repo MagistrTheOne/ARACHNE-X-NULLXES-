@@ -54,6 +54,7 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app["webhook_secret"] = os.environ.get("NULLXES_WEBHOOK_SECRET", "").strip() or None
     app["workers"] = {}
     app["realtime_token_store"] = RealtimeTokenStore()
+    app["avatar_bootstrap_preview_cache"] = {}
 
     app.router.add_get("/health", _handle_health)
     app.router.add_get("/v1/openapi.json", _handle_openapi)

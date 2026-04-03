@@ -48,6 +48,7 @@
 | `NULLXES_AVATAR_PREVIEW_ASSET_PATH` | Альтернатива внешнему URL | Локальный путь к **mp4** на машине ARACHNE; отдаётся через **`GET /v1/avatar/preview/asset.mp4`** (без ключа). |
 | `NULLXES_AVATAR_PREVIEW_VIDEO_URL` | Опционально | Явный полный HTTPS URL mp4; если задан, **перекрывает** same-origin режим. |
 | `NULLXES_ARACHNE_OUTPUT_PROFILE` | Нет | Строка для поля `arachneOutputProfile` в JSON-ответе (по умолчанию `gpt-realtime-arachne-v1-mvp`). |
+| `NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC` | `0` | Только `POST /v1/avatar/bootstrap`: секунды, в течение которых для одного ключа `sessionId` + `employeeId` повторно отдаётся **закэшированный** блок превью (без повторного «тяжёлого» шага; в stub это тот же URL). Токен WS **всегда** новый. Тело `regeneratePreview: true` сбрасывает кэш для ключа. |
 
 Для **200** на `POST /v1/avatar/preview` нужно либо непустой `NULLXES_AVATAR_PREVIEW_VIDEO_URL`, либо валидный файл по `NULLXES_AVATAR_PREVIEW_ASSET_PATH` плюс корректный `NULLXES_PUBLIC_HTTP_BASE` (или сработает fallback `Host` / `X-Forwarded-Proto` из запроса).
 

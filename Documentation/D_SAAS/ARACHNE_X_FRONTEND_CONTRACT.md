@@ -110,7 +110,7 @@ flowchart LR
 
 ### 3d. Avatar bootstrap (один POST)
 
-**`POST /v1/avatar/bootstrap`** — server-to-server, тот же ключ. Один ответ объединяет **mint WebSocket** (`token`, `websocketUrl`, `issuedAt`, `expiresAt`) и **stub-превью** (`videoPreviewUrl`, `pipelineMode`, `arachneOutputProfile`, `avatarPreviewStatus`). Поле **`audioTransport`: `gpt_realtime`** фиксирует модель продукта: голос не передаётся в ARACHNE этим запросом. Тело как у mint: обязателен **`sessionId`**, опционально `employeeId`, `nullxesSessionId`. См. [WIRE_EXAMPLES.md §5](./WIRE_EXAMPLES.md).
+**`POST /v1/avatar/bootstrap`** — server-to-server, тот же ключ. Один ответ объединяет **mint WebSocket** (`token`, `websocketUrl`, `issuedAt`, `expiresAt`) и **stub-превью** (`videoPreviewUrl`, `pipelineMode`, `arachneOutputProfile`, `avatarPreviewStatus`). Поле **`audioTransport`: `gpt_realtime`** фиксирует модель продукта: голос не передаётся в ARACHNE этим запросом. Тело как у mint: обязателен **`sessionId`**, опционально `employeeId`, `nullxesSessionId`; опционально **`regeneratePreview`** (сброс кэша превью). Поле **`avatarPreviewCached`** — превью взято из кулдаун-кэша. Реальный **at2v** в коде пока не вызывается (`at2v_stub`); кулдаун (`NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC`) рассчитан на будущую генерацию. См. [WIRE_EXAMPLES.md §5](./WIRE_EXAMPLES.md).
 
 ---
 

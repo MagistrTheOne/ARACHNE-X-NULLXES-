@@ -6,7 +6,7 @@ SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "NULLXES Session & Media API",
-        "version": "0.2.2",
+        "version": "0.2.3",
         "description": (
             "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat, "
             "avatar preview + bootstrap (NULLXES / ARACHNE-X). See Documentation/D_SAAS/."
@@ -304,10 +304,12 @@ SPEC = {
         },
         "/v1/avatar/bootstrap": {
             "post": {
-                "summary": "One-shot: mint WS token + stub video preview (GPT Realtime audio elsewhere)",
+                "summary": "Mint WS token + avatar preview (stub now; at2v later). GPT Realtime for audio.",
                 "description": (
-                    "Server-to-server; same auth as /v1/realtime/token. Combines POST /v1/realtime/token "
-                    "and stub preview fields. No audio file upload; audioTransport is gpt_realtime."
+                    "Server-to-server; same auth as /v1/realtime/token. "
+                    "Preview fields can be cached per sessionId+employeeId when "
+                    "NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC > 0; token is always minted fresh. "
+                    "When real at2v is wired, cooldown avoids re-running generation on every call."
                 ),
                 "parameters": [
                     {
@@ -334,6 +336,11 @@ SPEC = {
                                     "sessionId": {"type": "string"},
                                     "employeeId": {"type": "string"},
                                     "nullxesSessionId": {"type": "string"},
+                                    "regeneratePreview": {
+                                        "type": "boolean",
+                                        "description": "Bypass preview cache / cooldown for this key",
+                                    },
+                                    "forceAvatarRefresh": {"type": "boolean"},
                                 },
                             }
                         }
@@ -357,6 +364,7 @@ SPEC = {
                                         "pipelineMode",
                                         "arachneOutputProfile",
                                         "audioTransport",
+                                        "avatarPreviewCached",
                                     ],
                                     "properties": {
                                         "sessionId": {"type": "string"},
@@ -371,6 +379,10 @@ SPEC = {
                                         "audioTransport": {
                                             "type": "string",
                                             "example": "gpt_realtime",
+                                        },
+                                        "avatarPreviewCached": {
+                                            "type": "boolean",
+                                            "description": "True if videoPreviewUrl came from cooldown cache",
                                         },
                                     },
                                 }
