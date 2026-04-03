@@ -11,6 +11,8 @@ from aiohttp import web
 
 from src.server.media_layer import media_backend_from_env
 from src.server.openapi_spec import SPEC
+from src.server.realtime_api import handle_chat, handle_realtime_token, handle_websocket
+from src.server.realtime_store import RealtimeTokenStore
 from src.server.session_manager import SessionManager, SessionRecord, SessionState
 from src.server.session_worker import SessionWorker
 from src.server.webhook_security import SIGNATURE_HEADER, TIMESTAMP_HEADER, verify_webhook
@@ -44,6 +46,7 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app["media_backend"] = media_backend_from_env(max_slots)
     app["webhook_secret"] = os.environ.get("NULLXES_WEBHOOK_SECRET", "").strip() or None
     app["workers"] = {}
+    app["realtime_token_store"] = RealtimeTokenStore()
 
     app.router.add_get("/health", _handle_health)
     app.router.add_get("/v1/openapi.json", _handle_openapi)
@@ -53,6 +56,12 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app.router.add_get("/v1/sessions/{session_id}/status", _handle_session_status)
     app.router.add_patch("/v1/sessions/{session_id}/media", _handle_session_media_patch)
     app.router.add_get("/v1/media/slots", _handle_media_slots)
+
+    app.router.add_post("/v1/realtime/token", handle_realtime_token)
+    app.router.add_options("/v1/realtime/token", handle_realtime_token)
+    app.router.add_post("/v1/chat", handle_chat)
+    app.router.add_options("/v1/chat", handle_chat)
+    app.router.add_get("/v1/ws", handle_websocket)
 
     app.on_startup.append(_on_startup)
     return app

@@ -276,6 +276,7 @@ Webhook или router назначает сессии **sticky** на ноду; 
 - [DIGITAL_EMPLOYEE_SYSTEM_ARCHITECTURE.md](../DOC_CHECK/DIGITAL_EMPLOYEE_SYSTEM_ARCHITECTURE.md)  
 - [JobAI_Pilot_Phase1_technical_brief_RU.md](./JobAI_Pilot_Phase1_technical_brief_RU.md)  
 - [NULLXES x JobAI integration](../DOC_CHECK/NULLXES%20x%20JobAI%20intregration%20H200%20&%20RTX%206000+.md)  
+- [D_SAAS / dashboard контракт](../D_SAAS/ARACHNE_X_FRONTEND_CONTRACT.md) — стыковка **Next `dai_saas`** с ARACHNE-X (токен, WebSocket, HTTP-чат); **MVP-провод** реализован в `src/server/realtime_api.py` + `GET /v1/openapi.json`. **Не смешивать** с материалами JobAI в этом каталоге.
 
 Реализация HTTP-слоя: `src/server/webrtc_server.py`, `GET /v1/openapi.json`.
 
