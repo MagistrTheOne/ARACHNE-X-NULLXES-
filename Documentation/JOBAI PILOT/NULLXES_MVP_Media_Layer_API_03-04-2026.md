@@ -60,6 +60,82 @@ flowchart TB
 4. Avatar: на каждый микро-тёрн — шаг `generate_streaming_ai2v`; общий таймлайн с аудио.  
 5. Выход: виртуальные устройства (PipeWire/Pulse) и/или WebRTC send.
 
+### 2.1. Развёртывание на одном поде (Linux + GPU)
+
+Ниже — **технический вид** одной media/realtime-ноды: что крутится внутри пода, где лежат веса, как сходятся аудио-слоты и вывод аватара. Это не инструкция по запуску, а ориентир для DevOps и интеграторов.
+
+```mermaid
+flowchart TB
+  subgraph pod [Pod Linux GPU]
+    subgraph net [Network]
+      ING[Service Ingress :8080]
+    end
+    subgraph proc [Процесс Python]
+      SRV[aiohttp gateway src/server]
+      WRK[SessionWorker задачи asyncio по сессиям]
+    end
+    subgraph audio [OS audio]
+      PW[PipeWire или Pulse]
+      V0[nx_slot_0 и monitor]
+      VN[nx_slot_N-1 и monitor]
+    end
+    subgraph gpu [GPU CUDA VRAM]
+      STT[STT faster-whisper]
+      TTS[TTS stream]
+      AV[ARACHNE-X streaming_ai2v]
+    end
+    subgraph vol [Volume на поде]
+      W[Веса моделей не в git]
+    end
+    subgraph bridge [Опционально тот же под или рядом]
+      ZC[Zoom Chromium virtual cam]
+    end
+    ING --> SRV
+    SRV --> WRK
+    WRK --> STT
+    WRK --> TTS
+    WRK --> AV
+    WRK <--> V0
+    W --> STT
+    W --> TTS
+    W --> AV
+    PW --- V0
+    PW --- VN
+    ZC <--> V0
+  end
+  BE[JobAI backend] -->|webhook HTTPS| ING
+  SRV -.->|callbacks best-effort| BE
+  USER[Клиент кандидата Zoom] <-->|RTC| ZC
+```
+
+- **Один основной процесс** `scripts/run_webrtc_server.py`: HTTP (webhook, сессии, слоты) + **asyncio worker на сессию** (в MVP — задачи в том же процессе; при росте нагрузки worker можно выносить в отдельные процессы/поды).  
+- **GPU:** STT, TTS и ARACHNE-X конкурируют за VRAM и SMs — на пилоте обычно **жёсткая сериализация** тяжёлых стадий или лимит параллельных «горячих» сессий на одну карту.  
+- **Веса:** монтируются **только на поде** (volume, cache, init-container); образ приложения не обязан содержать чекпоинты.  
+- **Аудио:** null-sink `nx_slot_k` создаётся через Pulse-совместимый API (`pactl`); **monitor** — точка, откуда забирается сигнал «что услышит Zoom как микрофон бота».
+
+### 2.2. Где «проявляется» аватар
+
+| Уровень | Что это означает технически |
+|---------|-----------------------------|
+| **Внутри пода** | TTS отдаёт PCM → нарезка на **микро-тёрны** → для каждого тёрна шаг **`generate_streaming_ai2v`** → из VAE идёт **поток кадров** + синхронное аудио на одном таймлайне. Это и есть аватар в runtime: не один файл, а **continuous frame stream**. |
+| **До глаз кандидата** | Зависит от интеграции: **virtual camera** (v4l2loopback / OBS и т.п.) и виртуальный аудиомаршрут в Zoom; либо **WebRTC** (энкодированный VP8/H.264 + Opus) в браузер, когда медиа-слой доведён до полноценного WebRTC-out. |
+| **Без моста на выход** | Пайплайн может крутить STT/LLM/TTS/диффузию «вхолостую» в памяти — **визуально** аватар не проявится, пока не подключён энкодер + транспорт к клиенту. |
+
+### 2.3. Несколько media nodes (roadmap)
+
+```mermaid
+flowchart LR
+  BE[JobAI] --> GW[NULLXES API router]
+  GW --> P1[Pod media-node-1]
+  GW --> P2[Pod media-node-2]
+  GW --> PN[Pod media-node-N]
+  P1 --- R[(Redis или аналог состояния)]
+  P2 --- R
+  PN --- R
+```
+
+Webhook или router назначает сессии **sticky** на ноду; ответ клиенту содержит **endpoint выбранной ноды** (и при необходимости отдельный пул LLM, см. [DIGITAL_EMPLOYEE_SYSTEM_ARCHITECTURE.md](../DOC_CHECK/DIGITAL_EMPLOYEE_SYSTEM_ARCHITECTURE.md)).
+
 ---
 
 ## 3. Компоненты MVP (реализация в репозитории)
