@@ -107,3 +107,53 @@ def test_openapi_contains_realtime_paths():
     assert "/v1/realtime/token" in SPEC["paths"]
     assert "/v1/ws" in SPEC["paths"]
     assert "/v1/chat" in SPEC["paths"]
+    assert "/v1/avatar/preview" in SPEC["paths"]
+
+
+@pytest.mark.asyncio
+async def test_avatar_preview_stub(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv(
+        "NULLXES_AVATAR_PREVIEW_VIDEO_URL",
+        "https://cdn.example.com/stub.mp4",
+    )
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post(
+            "/v1/avatar/preview",
+            json={"employeeId": "1", "sessionId": "s"},
+        )
+        assert r.status == 200
+        data = await r.json()
+        assert data["videoPreviewUrl"] == "https://cdn.example.com/stub.mp4"
+        assert data["status"] == "ready"
+        assert data["pipelineMode"] == "at2v_stub"
+        assert data["arachneOutputProfile"] == "gpt-realtime-arachne-v1-mvp"
+
+
+@pytest.mark.asyncio
+async def test_avatar_preview_not_configured(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.delenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", raising=False)
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/preview", json={})
+        assert r.status == 503
+        data = await r.json()
+        assert data["error"] == "preview_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_avatar_preview_requires_service_key(monkeypatch):
+    monkeypatch.setenv("NULLXES_REALTIME_SERVICE_KEY", "svc_secret")
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_VIDEO_URL", "https://x/mp4")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/avatar/preview", json={})
+        assert r.status == 401
+        r2 = await client.post(
+            "/v1/avatar/preview",
+            json={},
+            headers={"X-NULLXES-Realtime-Service-Key": "svc_secret"},
+        )
+        assert r2.status == 200

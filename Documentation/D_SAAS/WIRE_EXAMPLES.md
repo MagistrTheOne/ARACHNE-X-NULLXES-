@@ -1,4 +1,4 @@
-# D_SAAS ↔ ARACHNE-X: примеры провода (token, WebSocket, опциональный chat)
+# D_SAAS ↔ ARACHNE-X: примеры провода (token, WebSocket, chat, avatar preview stub)
 
 Машиночитаемая спека также в `GET /v1/openapi.json` ([openapi_spec.py](../../src/server/openapi_spec.py)).
 
@@ -174,6 +174,51 @@ data: {"delta":"..."}
 curl -sS -X POST "http://127.0.0.1:8080/v1/chat" \
   -H "Content-Type: application/json" \
   -d "{\"sessionId\":\"ui_sess_demo_1\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"
+```
+
+---
+
+## 4. Avatar preview stub `POST /v1/avatar/preview`
+
+**Назначение:** отдать **публичный URL mp4** для UI / поля `employees.config.videoPreviewUrl` **без** запуска `scripts/infer.py`. Позже тот же путь можно заменить на реальный at2v / очередь.
+
+**Авторизация:** как у mint — `X-NULLXES-Realtime-Service-Key` или `Authorization: Bearer`, если задан `NULLXES_REALTIME_SERVICE_KEY`.
+
+**Сервер:** задайте `NULLXES_AVATAR_PREVIEW_VIDEO_URL` (HTTPS, прямой mp4). Иначе **503** `preview_not_configured`.
+
+**Тело (все поля опциональны, для будущего пайплайна):**
+
+```json
+{
+  "employeeId": "66",
+  "sessionId": "ui_sess_demo_1",
+  "imageUrl": "https://cdn.example.com/face.png",
+  "speakText": "Короткая фраза для будущего TTS"
+}
+```
+
+**Ответ 200:**
+
+```json
+{
+  "videoPreviewUrl": "https://cdn.example.com/demos/avatar_stub.mp4",
+  "status": "ready",
+  "pipelineMode": "at2v_stub",
+  "arachneOutputProfile": "gpt-realtime-arachne-v1-mvp"
+}
+```
+
+`arachneOutputProfile` переопределяется env `NULLXES_ARACHNE_OUTPUT_PROFILE` (по умолчанию строка выше).
+
+**Интеграция `dai_saas`:** `ARACHNE_AVATAR_PREVIEW_URL` на стороне Next обычно указывает на **этот** эндпоинт относительно `ARACHNE_HTTP_BASE`, например `https://<pod-proxy>/v1/avatar/preview` — Next проксирует server-to-server с ключом.
+
+### curl
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/preview" \
+  -H "Content-Type: application/json" \
+  -H "X-NULLXES-Realtime-Service-Key: $NULLXES_REALTIME_SERVICE_KEY" \
+  -d "{\"employeeId\":\"66\",\"sessionId\":\"ui_sess_1\"}"
 ```
 
 ---

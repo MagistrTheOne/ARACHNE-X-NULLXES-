@@ -11,7 +11,7 @@
 
 Итог для интеграции: **источник истины для mint в MVP — ARACHNE-X** после авторизации пользователя на стороне Next.
 
-## Server-to-server: вызов `POST /v1/realtime/token` и `POST /v1/chat`
+## Server-to-server: вызов `POST /v1/realtime/token`, `POST /v1/chat`, `POST /v1/avatar/preview`
 
 | Переменная | Обязательность | Назначение |
 |------------|----------------|------------|
@@ -38,7 +38,14 @@
 | Переменная | По умолчанию | Назначение |
 |------------|--------------|------------|
 | `NULLXES_REALTIME_TOKEN_TTL_SEC` | `900` | TTL opaque токена (секунды, минимум 60). |
-| `NULLXES_CORS_ORIGIN` | пусто | Если задано (один origin), к ответам `POST /v1/realtime/token` и `POST /v1/chat` добавляются CORS-заголовки и обрабатывается `OPTIONS` (прямой вызов из браузера **не** рекомендуется; типичный путь — только Next server-side). |
+| `NULLXES_CORS_ORIGIN` | пусто | Если задано (один origin), к ответам `POST /v1/realtime/token`, `POST /v1/chat` и `POST /v1/avatar/preview` добавляются CORS-заголовки и обрабатывается `OPTIONS` (прямой вызов из браузера **не** рекомендуется; типичный путь — только Next server-side). |
+
+## Avatar preview (stub, без infer)
+
+| Переменная | Обязательность | Назначение |
+|------------|----------------|------------|
+| `NULLXES_AVATAR_PREVIEW_VIDEO_URL` | Для **200** на `POST /v1/avatar/preview` | Публичный **HTTPS** URL файла **mp4**, который сервер возвращает как `videoPreviewUrl`. Если пусто — **503** `preview_not_configured`. |
+| `NULLXES_ARACHNE_OUTPUT_PROFILE` | Нет | Строка для поля `arachneOutputProfile` в JSON-ответе (по умолчанию `gpt-realtime-arachne-v1-mvp`). Удобно пометить стенд (realtime / GPT-5 и т.д.) для фронта. |
 
 ## Рекомендуемые переменные на стороне `dai_saas` (справочно)
 

@@ -22,6 +22,8 @@ TTL_ENV = "NULLXES_REALTIME_TOKEN_TTL_SEC"
 PUBLIC_HTTP_ENV = "NULLXES_PUBLIC_HTTP_BASE"
 PUBLIC_WS_ENV = "NULLXES_PUBLIC_WS_BASE"
 CORS_ORIGIN_ENV = "NULLXES_CORS_ORIGIN"
+AVATAR_PREVIEW_VIDEO_ENV = "NULLXES_AVATAR_PREVIEW_VIDEO_URL"
+AVATAR_PREVIEW_PROFILE_ENV = "NULLXES_ARACHNE_OUTPUT_PROFILE"
 WS_AUTH_TIMEOUT_SEC = 12.0
 WS_CLOSE_AUTH = 4401
 PROTOCOL_VERSION = 1
@@ -185,6 +187,61 @@ async def handle_chat(request: web.Request) -> web.Response:
         },
         headers=cors,
     )
+
+
+async def _handle_avatar_preview_options(request: web.Request) -> web.Response:
+    return web.Response(status=204, headers=_cors_headers(request))
+
+
+async def handle_avatar_preview(request: web.Request) -> web.Response:
+    """
+    Dashboard avatar preview (line B): returns a public mp4 URL without running infer.
+
+    Real DiT / at2v can replace this later; body fields are accepted for forward compatibility.
+    """
+    if request.method == "OPTIONS":
+        return await _handle_avatar_preview_options(request)
+    cors = _cors_headers(request)
+    if not _verify_service_request(request):
+        return web.json_response({"error": "unauthorized"}, status=401, headers=cors)
+    raw = await request.read()
+    if not raw.strip():
+        body: Dict[str, Any] = {}
+    else:
+        try:
+            body = JSON_DECODER.decode(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return web.json_response({"error": "invalid_json"}, status=400, headers=cors)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid_body"}, status=400, headers=cors)
+
+    video_url = os.environ.get(AVATAR_PREVIEW_VIDEO_ENV, "").strip()
+    if not video_url:
+        return web.json_response(
+            {
+                "error": "preview_not_configured",
+                "detail": (
+                    f"Set {AVATAR_PREVIEW_VIDEO_ENV} to a public HTTPS URL of an mp4 "
+                    "(stub preview until infer/at2v is wired)."
+                ),
+            },
+            status=503,
+            headers=cors,
+        )
+
+    profile = os.environ.get(AVATAR_PREVIEW_PROFILE_ENV, "gpt-realtime-arachne-v1-mvp").strip()
+    if not profile:
+        profile = "gpt-realtime-arachne-v1-mvp"
+
+    # Optional for future at2v/infer: employeeId, sessionId, imageUrl, speakText (snake_case ok).
+
+    payload = {
+        "videoPreviewUrl": video_url,
+        "status": "ready",
+        "pipelineMode": "at2v_stub",
+        "arachneOutputProfile": profile,
+    }
+    return web.json_response(payload, headers=cors)
 
 
 async def handle_websocket(request: web.Request) -> web.StreamResponse:

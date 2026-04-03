@@ -104,6 +104,10 @@ flowchart LR
 
 **Ответ:** как в примере в начале §3; поле `websocketUrl` указывает на `…/v1/ws` (см. [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md)).
 
+### 3c. Avatar preview (stub, линия B)
+
+**`POST /v1/avatar/preview`** — только **server-to-server**, тот же ключ, что для mint/chat. Возвращает **`videoPreviewUrl`** (публичный HTTPS mp4) для кнопки превью / зеркала поля **`employees.config.videoPreviewUrl`**. Реальный at2v / `infer.py` не вызывается; источник URL — env `NULLXES_AVATAR_PREVIEW_VIDEO_URL` на ARACHNE. Детали и curl: [WIRE_EXAMPLES.md §4](./WIRE_EXAMPLES.md).
+
 ---
 
 ## 4. Связь оркестратора NULLXES и `sessionId` в UI

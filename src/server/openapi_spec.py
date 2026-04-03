@@ -6,7 +6,7 @@ SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "NULLXES Session & Media API",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "description": "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat (NULLXES / ARACHNE-X). See Documentation/D_SAAS/.",
     },
     "paths": {
@@ -207,6 +207,80 @@ SPEC = {
                     "200": {"description": "JSON message or SSE stream"},
                     "400": {"description": "Validation error"},
                     "401": {"description": "Missing or invalid service key"},
+                },
+            }
+        },
+        "/v1/avatar/preview": {
+            "post": {
+                "summary": "Avatar preview mp4 URL (stub; no infer)",
+                "description": (
+                    "Server-to-server; same auth as /v1/realtime/token. "
+                    "Returns videoPreviewUrl from NULLXES_AVATAR_PREVIEW_VIDEO_URL until at2v/infer is wired."
+                ),
+                "parameters": [
+                    {
+                        "name": "X-NULLXES-Realtime-Service-Key",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "requestBody": {
+                    "required": False,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "employeeId": {"type": "string"},
+                                    "sessionId": {"type": "string"},
+                                    "imageUrl": {"type": "string"},
+                                    "speakText": {"type": "string"},
+                                },
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Stub preview URL (aligns with employees.config.videoPreviewUrl)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": [
+                                        "videoPreviewUrl",
+                                        "status",
+                                        "pipelineMode",
+                                        "arachneOutputProfile",
+                                    ],
+                                    "properties": {
+                                        "videoPreviewUrl": {
+                                            "type": "string",
+                                            "description": "Public HTTPS URL to mp4",
+                                        },
+                                        "status": {"type": "string", "example": "ready"},
+                                        "pipelineMode": {"type": "string", "example": "at2v_stub"},
+                                        "arachneOutputProfile": {
+                                            "type": "string",
+                                            "example": "gpt-realtime-arachne-v1-mvp",
+                                        },
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"description": "Validation error"},
+                    "401": {"description": "Missing or invalid service key"},
+                    "503": {
+                        "description": "NULLXES_AVATAR_PREVIEW_VIDEO_URL not set",
+                    },
                 },
             }
         },

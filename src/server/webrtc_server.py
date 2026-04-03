@@ -11,7 +11,12 @@ from aiohttp import web
 
 from src.server.media_layer import media_backend_from_env
 from src.server.openapi_spec import SPEC
-from src.server.realtime_api import handle_chat, handle_realtime_token, handle_websocket
+from src.server.realtime_api import (
+    handle_avatar_preview,
+    handle_chat,
+    handle_realtime_token,
+    handle_websocket,
+)
 from src.server.realtime_store import RealtimeTokenStore
 from src.server.session_manager import SessionManager, SessionRecord, SessionState
 from src.server.session_worker import SessionWorker
@@ -61,6 +66,8 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app.router.add_options("/v1/realtime/token", handle_realtime_token)
     app.router.add_post("/v1/chat", handle_chat)
     app.router.add_options("/v1/chat", handle_chat)
+    app.router.add_post("/v1/avatar/preview", handle_avatar_preview)
+    app.router.add_options("/v1/avatar/preview", handle_avatar_preview)
     app.router.add_get("/v1/ws", handle_websocket)
 
     app.on_startup.append(_on_startup)
