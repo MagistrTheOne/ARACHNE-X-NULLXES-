@@ -17,6 +17,17 @@
 |------------|----------------|------------|
 | `NULLXES_REALTIME_SERVICE_KEY` | Рекомендуется в stage/prod | Общий секрет: заголовок `X-NULLXES-Realtime-Service-Key: <value>` или `Authorization: Bearer <value>`. Если **не задан**, проверка отключена (**только dev**; в лог пишется предупреждение). |
 
+## Оркестратор (VAD → STT → LLM → TTS → avatar): `pipeline_config.json`
+
+Скрипт [`scripts/run_webrtc_server.py`](../../scripts/run_webrtc_server.py) подхватывает JSON с ключами **`vad`**, **`asr`**, **`llm`**, **`tts`**, **`avatar`** (дополнительные ключи на корне допускаются, например `webrtc`).
+
+| Переменная | Назначение |
+|------------|------------|
+| `NULLXES_PIPELINE_CONFIG` | Путь к `pipeline_config.json`, если не передан аргумент `--pipeline-config`. |
+| (fallback) | Если переменная не задана и аргумент пустой — используется [`config/pipeline_config.defaults.json`](../../config/pipeline_config.defaults.json) в корне репозитория. |
+
+Шаблон под RunPod (те же ключи, больше полей): [`config/pipeline_config.runpod.example.json`](../../config/pipeline_config.runpod.example.json). Реальные модели подставляются воркерами и переменными окружения (см. блок про `NULLXES_AVATAR_INFERENCE_*` выше).
+
 ## Webhook линии A (без смешения с дашбордом)
 
 | Переменная | Назначение |
@@ -44,6 +55,9 @@
 | `NULLXES_AVATAR_INFERENCE_PATH` | `/v1/longcat/generate` | Путь относительно базы. Эталон: `services/longcat-worker`. |
 | `NULLXES_AVATAR_INFERENCE_SERVICE_KEY` | пусто | Если задан — заголовок `X-NULLXES-Avatar-Inference-Key` на воркер. |
 | `NULLXES_AVATAR_INFERENCE_TIMEOUT_SEC` | `600` | Таймаут HTTP к воркеру (сек). |
+| `NULLXES_AVATAR_INFERENCE_ASYNC` | пусто | `1` / `true` — очередь jobs на воркере (`POST .../infer/jobs` + poll + result); иначе синхронный `POST` на generate. |
+| `NULLXES_AVATAR_INFERENCE_JOBS_PATH` | `/v1/infer/jobs` | Путь постановки job относительно базы воркера. |
+| `NULLXES_AVATAR_INFERENCE_POLL_MS` | `500` | Интервал опроса статуса job (мс). |
 | `NULLXES_AVATAR_INFERENCE_TASK` | `text-to-video` | `task` по умолчанию для WS, если в `chat.send` нет `inference.task`. Поддерживаются также `audio-text-to-video`, `audio-image-to-video` (воркер ARACHNE). |
 | `NULLXES_AVATAR_INFERENCE_IMAGE_BASE64` | пусто | Референс-картинка, если не передана в `chat.send.inference.imageBase64`. |
 | `NULLXES_AVATAR_INFERENCE_AUDIO_BASE64` | пусто | Аудио (base64), если не в кадре `chat.send.inference.audioBase64`. |

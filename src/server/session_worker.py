@@ -89,8 +89,9 @@ class SessionWorker:
         rec.health["stt"] = "streaming"
         sm.touch_record(rec)
 
-        # --- LLM token stream ---
-        phrase = "Здравствуйте, я готов продолжить интервью."
+        # --- LLM token stream (stub; real stack reads pipeline_cfg["llm"]) ---
+        llm = self._pipeline_cfg.get("llm") or {}
+        phrase = str(llm.get("demo_phrase") or "Здравствуйте, я готов продолжить интервью.")
         for w in phrase.split():
             if self._cancel.is_set():
                 return

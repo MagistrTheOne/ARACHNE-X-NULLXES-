@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "vad": {
+    "backend": "silero_onnx",
+    "model_id": "snakers4/silero-vad",
+    "sample_rate_hz": 16000,
+    "note": "Use ONNX or PyTorch Silero on Linux GPU pods; CoreML builds are for Apple devices only."
+  },
+  "asr": {
+    "backend": "faster_whisper",
+    "model_id": "Systran/faster-whisper-large-v3",
+    "device": "cuda",
+    "compute_type": "float16",
+    "language": null
+  },
+  "llm": {
+    "backend": "transformers",
+    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+    "device_map": "auto",
+    "max_new_tokens": 512,
+    "demo_phrase": "Здравствуйте, я готов продолжить интервью."
+  },
+  "tts": {
+    "backend": "qwen3_tts",
+    "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "device_map": "cuda:0",
+    "sample_rate_hz": 24000
+  },
+  "avatar": {
+    "backend": "longcat_worker_http",
+    "inference_url_env": "NULLXES_AVATAR_INFERENCE_URL",
+    "video_model_id": "meituan-longcat/LongCat-Video",
+    "avatar_model_id": "meituan-longcat/LongCat-Video-Avatar",
+    "use_async_jobs_env": "NULLXES_AVATAR_INFERENCE_ASYNC",
+    "fail_once": false
+  },
+  "webrtc": {
+    "role": "future_full_tracks",
+    "notes": "MVP uses HTTP+WS dashboard; bind Opus in/out and video track when media layer is wired."
+  }
+}
