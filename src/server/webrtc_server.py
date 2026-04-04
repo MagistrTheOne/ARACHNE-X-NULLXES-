@@ -77,7 +77,23 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app.router.add_get("/v1/ws", handle_websocket)
 
     app.on_startup.append(_on_startup)
+    app.on_startup.append(_avatar_http_session_startup)
+    app.on_cleanup.append(_avatar_http_session_cleanup)
     return app
+
+
+async def _avatar_http_session_startup(app: web.Application) -> None:
+    import aiohttp
+
+    app["avatar_http_session"] = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=None),
+    )
+
+
+async def _avatar_http_session_cleanup(app: web.Application) -> None:
+    sess = app.get("avatar_http_session")
+    if sess is not None and not sess.closed:
+        await sess.close()
 
 
 async def _on_startup(app: web.Application) -> None:

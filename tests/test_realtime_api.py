@@ -9,6 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from src.server.avatar_ws_frames import clear_frame_cache
@@ -140,6 +141,52 @@ async def test_websocket_avatar_video_jpeg_after_chat(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_websocket_avatar_inference_mp4_from_worker(monkeypatch, tmp_path):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    clear_frame_cache()
+    mp4 = tmp_path / "worker_out.mp4"
+    _write_tiny_mp4(mp4)
+
+    async def worker_generate(request: web.Request) -> web.StreamResponse:
+        await request.read()
+        return web.FileResponse(mp4, headers={"Content-Type": "video/mp4"})
+
+    worker_app = web.Application()
+    worker_app.router.add_post("/v1/longcat/generate", worker_generate)
+
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_MODE", "inference")
+    monkeypatch.setenv("NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES", "10")
+
+    async with TestClient(TestServer(worker_app)) as wclient:
+        base = f"http://{wclient.host}:{wclient.port}"
+        monkeypatch.setenv("NULLXES_AVATAR_INFERENCE_URL", base)
+        app = create_app()
+        async with TestClient(TestServer(app)) as client:
+            r = await client.post("/v1/realtime/token", json={"sessionId": "ws_inf"})
+            tok = (await r.json())["token"]
+            ws = await client.ws_connect(f"/v1/ws?token={tok}")
+            try:
+                await ws.receive_json()
+                await ws.receive_json()
+                await ws.send_str(
+                    json.dumps({"type": "chat.send", "id": "inf1", "text": "hello"})
+                )
+                assert (await ws.receive_json())["type"] == "chat.message.received"
+                m4 = await ws.receive_json()
+                assert m4["type"] == "avatar.state.changed" and m4["state"] == "speaking"
+                for seq in (1, 2, 3, 4):
+                    ch = await ws.receive_json()
+                    assert ch["type"] == "avatar.stream.chunk"
+                    assert ch["seq"] == seq
+                    assert ch.get("encoding") == "jpeg_base64"
+                    assert isinstance(ch.get("data"), str) and len(ch["data"]) > 80
+                mid = await ws.receive_json()
+                assert mid["type"] == "avatar.state.changed" and mid["state"] == "idle"
+            finally:
+                await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_websocket_avatar_stub_disabled(monkeypatch):
     monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
     monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_STUB", "0")
@@ -197,6 +244,7 @@ async def test_chat_json_stub(monkeypatch):
         assert r.status == 200
         data = await r.json()
         assert data["message"]["role"] == "assistant"
+        assert data["message"]["content"] == "hello"
 
 
 def test_openapi_contains_realtime_paths():
@@ -227,7 +275,7 @@ async def test_avatar_preview_stub(monkeypatch):
         data = await r.json()
         assert data["videoPreviewUrl"] == "https://cdn.example.com/stub.mp4"
         assert data["status"] == "ready"
-        assert data["pipelineMode"] == "at2v_stub"
+        assert data["pipelineMode"] == "static_preview"
         assert data["arachneOutputProfile"] == "gpt-realtime-arachne-v1-mvp"
 
 
@@ -377,3 +425,4 @@ async def test_avatar_preview_video_url_overrides_asset(tmp_path: Path, monkeypa
         r = await client.post("/v1/avatar/preview", json={})
         data = await r.json()
         assert data["videoPreviewUrl"] == "https://cdn.example.com/a.mp4"
+

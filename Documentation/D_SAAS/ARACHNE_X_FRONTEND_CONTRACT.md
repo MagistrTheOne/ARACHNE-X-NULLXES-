@@ -110,7 +110,7 @@ flowchart LR
 
 ### 3d. Avatar bootstrap (один POST)
 
-**`POST /v1/avatar/bootstrap`** — server-to-server, тот же ключ. Один ответ объединяет **mint WebSocket** (`token`, `websocketUrl`, `issuedAt`, `expiresAt`) и **stub-превью** (`videoPreviewUrl`, `pipelineMode`, `arachneOutputProfile`, `avatarPreviewStatus`). Поле **`audioTransport`: `gpt_realtime`** фиксирует модель продукта: голос не передаётся в ARACHNE этим запросом. Тело как у mint: обязателен **`sessionId`**, опционально `employeeId`, `nullxesSessionId`; опционально **`regeneratePreview`** (сброс кэша превью). Поле **`avatarPreviewCached`** — превью взято из кулдаун-кэша. Реальный **at2v** в коде пока не вызывается (`at2v_stub`); кулдаун (`NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC`) рассчитан на будущую генерацию. См. [WIRE_EXAMPLES.md §5](./WIRE_EXAMPLES.md).
+**`POST /v1/avatar/bootstrap`** — server-to-server, тот же ключ. Один ответ объединяет **mint WebSocket** (`token`, `websocketUrl`, `issuedAt`, `expiresAt`) и **статическое превью** (`videoPreviewUrl`, `pipelineMode`, `arachneOutputProfile`, `avatarPreviewStatus`). Поле **`audioTransport`: `gpt_realtime`** фиксирует модель продукта: голос не передаётся в ARACHNE этим запросом. Тело как у mint: обязателен **`sessionId`**, опционально `employeeId`, `nullxesSessionId`; опционально **`regeneratePreview`** (сброс кэша превью). Поле **`avatarPreviewCached`** — превью взято из кулдаун-кэша. Реальный **at2v** в коде пока не вызывается (`static_preview`); кулдаун (`NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC`) рассчитан на будущую генерацию. См. [WIRE_EXAMPLES.md §5](./WIRE_EXAMPLES.md).
 
 ---
 
@@ -136,9 +136,11 @@ flowchart LR
 
 **Формат кадров (MVP сигналов):** **JSON text frames**, UTF-8, одно событие на кадр (можно расширить до NDJSON позже).
 
-**Медиа (видео по WebSocket):** при наличии **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** (тот же mp4, что для `GET /v1/avatar/preview/asset.mp4`) сервер по умолчанию шлёт в `avatar.stream.chunk` поля **`encoding`: `jpeg_base64`** и **`data`** (строка base64). Клиент может отрисовывать кадры в `<canvas>` / `ImageBitmap`. Для стендов без файла или при `NULLXES_WS_AVATAR_STREAM_MODE=stub` остаются **только метаданные** (`seq`, `kind`). WebRTC и сырой binary — отдельный этап.
+**Медиа (видео по WebSocket):** в проде ARACHNE-X зовёт **GPU-воркер** (`NULLXES_AVATAR_INFERENCE_URL`, контракт `services/longcat-worker/README.md`), получает сгенерированный **MP4** ([LongCat-Video](https://huggingface.co/meituan-longcat/LongCat-Video) и т.д.), декодирует в JPEG и шлёт в `avatar.stream.chunk` поля **`encoding`: `jpeg_base64`** и **`data`**. Альтернатива без воркера: локальный **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** (режим `video`). Режим **`stub`**: только метаданные. Если воркер не настроен и файла нет — режим **`off`**, фронт остаётся заглушкой (ожидаемо).
 
-**Вариант B (ARACHNE-X):** после входящего `chat.send` сервер отвечает `chat.message.received`, затем (если не отключено: `NULLXES_WS_AVATAR_STREAM_STUB` ≠ `0` и режим не `off`) асинхронно шлёт `avatar.state.changed` (`speaking`) → серия `avatar.stream.chunk` (`kind`: `video`, растущий `seq`; опционально JPEG payload) → `avatar.state.changed` (`idle`). Реальный mp4-декод на сервере; вывод нейросети (LongCat/at2v) можно подставить вместо чтения файла, сохранив тот же контракт кадров.
+**Опционально в `chat.send`:** объект **`inference`** (`task`, `imageBase64`, `audioBase64`, `continuationState`, `numSegments`, `refImgIndex`) — перекрывает значения из env для вызова GPU-воркера в режиме `inference`.
+
+**Вариант B (ARACHNE-X):** после входящего `chat.send` сервер отвечает `chat.message.received`, затем (если не отключено: `NULLXES_WS_AVATAR_STREAM_STUB` ≠ `0` и режим не `off`) асинхронно шлёт `avatar.state.changed` (`speaking`) → серия `avatar.stream.chunk` → `avatar.state.changed` (`idle`). При ошибке воркера возможен `session.error` (`avatar_inference_failed` / `avatar_inference_empty`) и `idle`.
 
 ---
 

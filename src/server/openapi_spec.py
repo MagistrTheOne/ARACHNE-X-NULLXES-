@@ -6,7 +6,7 @@ SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "NULLXES Session & Media API",
-        "version": "0.2.5",
+        "version": "0.2.7",
         "description": (
             "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat, "
             "avatar preview + bootstrap (NULLXES / ARACHNE-X). See Documentation/D_SAAS/."
@@ -170,7 +170,7 @@ SPEC = {
         },
         "/v1/chat": {
             "post": {
-                "summary": "Optional HTTP chat (stub; MVP chat is WebSocket)",
+                "summary": "Optional HTTP chat (echo or fixed reply; MVP chat is WebSocket)",
                 "description": "Server-to-server; same auth as /v1/realtime/token. stream=true returns text/event-stream.",
                 "parameters": [
                     {
@@ -215,7 +215,7 @@ SPEC = {
         },
         "/v1/avatar/preview/asset.mp4": {
             "get": {
-                "summary": "Stream local stub mp4 (same-origin preview)",
+                "summary": "Stream local mp4 (same-origin preview)",
                 "description": (
                     "Public; no service key. File path from NULLXES_AVATAR_PREVIEW_ASSET_PATH. "
                     "videoPreviewUrl from POST points here when using same-origin mode."
@@ -228,7 +228,7 @@ SPEC = {
         },
         "/v1/avatar/preview": {
             "post": {
-                "summary": "Avatar preview mp4 URL (stub; no infer)",
+                "summary": "Avatar preview mp4 URL (static asset or URL; no infer)",
                 "description": (
                     "Server-to-server; same auth as /v1/realtime/token. "
                     "videoPreviewUrl: NULLXES_AVATAR_PREVIEW_VIDEO_URL if set, else "
@@ -284,7 +284,7 @@ SPEC = {
                                             "description": "Public HTTPS URL to mp4",
                                         },
                                         "status": {"type": "string", "example": "ready"},
-                                        "pipelineMode": {"type": "string", "example": "at2v_stub"},
+                                        "pipelineMode": {"type": "string", "example": "static_preview"},
                                         "arachneOutputProfile": {
                                             "type": "string",
                                             "example": "gpt-realtime-arachne-v1-mvp",
@@ -304,7 +304,7 @@ SPEC = {
         },
         "/v1/avatar/bootstrap": {
             "post": {
-                "summary": "Mint WS token + avatar preview (stub now; at2v later). GPT Realtime for audio.",
+                "summary": "Mint WS token + avatar preview (static URL). GPT Realtime for audio.",
                 "description": (
                     "Server-to-server; same auth as /v1/realtime/token. "
                     "Preview fields can be cached per sessionId+employeeId when "
@@ -402,10 +402,11 @@ SPEC = {
                     "Upgrade to WebSocket. Auth: query ?token=... from /v1/realtime/token, or first text frame "
                     "{\"type\":\"auth\",\"token\":\"...\",\"protocolVersion\":1}. "
                     "After each chat.send, server may emit avatar.state.changed + avatar.stream.chunk + "
-                    "avatar.state.changed. If NULLXES_AVATAR_PREVIEW_ASSET_PATH points to a readable mp4 (and "
-                    "NULLXES_WS_AVATAR_STREAM_MODE is unset or video), chunks include encoding jpeg_base64 + data; "
-                    "otherwise metadata-only stub (MODE=stub or no file). NULLXES_WS_AVATAR_STREAM_STUB=0 disables "
-                    "the chain. See Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure."
+                    "avatar.state.changed. Prod: set NULLXES_AVATAR_INFERENCE_URL to a LongCat-compatible worker "
+                    "(POST MP4 or JSON videoBase64); default mode becomes inference. Local file preview: "
+                    "NULLXES_AVATAR_PREVIEW_ASSET_PATH + video mode. Dev-only metadata: MODE=stub. "
+                    "NULLXES_WS_AVATAR_STREAM_STUB=0 disables the chain. See services/longcat-worker/README.md "
+                    "and Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure."
                 ),
                 "parameters": [
                     {

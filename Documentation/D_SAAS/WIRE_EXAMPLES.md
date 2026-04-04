@@ -111,7 +111,9 @@ curl -sS -X POST "https://arachne.example.com/v1/realtime/token" \
 
 **Вариант B (оживление по WS):** сразу после `chat.message.received` сервер (если не выключено env) шлёт асинхронно `avatar.state.changed` → `speaking` → серия `avatar.stream.chunk` → `avatar.state.changed` → `idle`.
 
-**Режим по умолчанию:** если задан **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** и файл читается, кадры — **реальные JPEG** в JSON (`encoding`: `jpeg_base64`, поле `data`). Интервал между кадрами берётся из FPS файла (с ограничением). Если файла нет или режим принудительно `stub` — только метаданные (`seq`, `kind`), как раньше.
+**Прод (LongCat / [LongCat-Video](https://huggingface.co/meituan-longcat/LongCat-Video)):** задайте **`NULLXES_AVATAR_INFERENCE_URL`** на HTTP-воркер (шаблон в репозитории: `services/longcat-worker`). После `chat.send` ARACHNE-X вызывает воркер с текстом пользователя как `prompt`, получает **MP4**, декодирует в JPEG и шлёт те же `avatar.stream.chunk` с `jpeg_base64`.
+
+**Локальный файл без воркера:** если задан **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** и режим `video`, кадры из этого mp4. Если URL воркера не задан и файла нет — по умолчанию **цепочка не шлётся** (`off`). Режим **`stub`** — только метаданные (`seq`, `kind`) для dev.
 
 ```json
 {"type":"avatar.state.changed","at":1712140801201,"state":"speaking"}
@@ -132,7 +134,10 @@ curl -sS -X POST "https://arachne.example.com/v1/realtime/token" \
 | Env | По умолчанию | Смысл |
 |-----|--------------|--------|
 | `NULLXES_WS_AVATAR_STREAM_STUB` | `1` | `0` — не слать avatar.* после `chat.send` |
-| `NULLXES_WS_AVATAR_STREAM_MODE` | (авто) | `video` \| `stub` \| `off`. Авто: `video` при существующем `NULLXES_AVATAR_PREVIEW_ASSET_PATH`, иначе `stub` |
+| `NULLXES_WS_AVATAR_STREAM_MODE` | (авто) | `inference` \| `video` \| `stub` \| `off`. Авто: `inference` при `NULLXES_AVATAR_INFERENCE_URL`; иначе `video` при файле превью; иначе `off` |
+| `NULLXES_AVATAR_INFERENCE_URL` | — | База воркера (prod) |
+| `NULLXES_AVATAR_INFERENCE_PATH` | `/v1/longcat/generate` | POST generate |
+| `NULLXES_AVATAR_INFERENCE_TASK` | `text-to-video` | Задача для воркера (T2V / I2V / continuation) |
 | `NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS` | `5` | Для **stub**: число `avatar.stream.chunk` (1…60) |
 | `NULLXES_WS_AVATAR_STREAM_CHUNK_MS` | `40` | Для **stub**: пауза между чанками, мс (0…500) |
 | `NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES` | `120` | Для **video**: максимум кадров за один проход (субсэмпл из длинного mp4) |
@@ -244,7 +249,7 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/chat" \
 {
   "videoPreviewUrl": "https://cdn.example.com/demos/avatar_stub.mp4",
   "status": "ready",
-  "pipelineMode": "at2v_stub",
+  "pipelineMode": "static_preview",
   "arachneOutputProfile": "gpt-realtime-arachne-v1-mvp"
 }
 ```
@@ -266,7 +271,7 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/preview" \
 
 ## 5. Один вызов: превью + WebSocket `POST /v1/avatar/bootstrap`
 
-**Назначение:** одна server-to-server команда для дашборда: то же, что **`POST /v1/realtime/token`** + поля stub-превью (`videoPreviewUrl`, …). **Без** аудио-ассетов — звук остаётся в **GPT Realtime**.
+**Назначение:** одна server-to-server команда для дашборда: то же, что **`POST /v1/realtime/token`** + поля статическое превью (`videoPreviewUrl`, …). **Без** аудио-ассетов — звук остаётся в **GPT Realtime**.
 
 **Тело (обязателен только `sessionId`):**
 
@@ -289,14 +294,14 @@ curl -sS -X POST "http://127.0.0.1:8080/v1/avatar/preview" \
   "expiresAt": "2026-04-03T12:15:00Z",
   "videoPreviewUrl": "https://…/v1/avatar/preview/asset.mp4",
   "avatarPreviewStatus": "ready",
-  "pipelineMode": "at2v_stub",
+  "pipelineMode": "static_preview",
   "arachneOutputProfile": "gpt-realtime-arachne-v1-mvp",
   "audioTransport": "gpt_realtime",
   "avatarPreviewCached": false
 }
 ```
 
-**AT2V / генерация:** сейчас `pipelineMode: "at2v_stub"` — **нет** вызова `infer.py` / DiT. Когда подключите реальный at2v, генерация будет жить за этим же контрактом; кулдаун (ниже) как раз чтобы **не гонять** её на каждый bootstrap.
+**AT2V / генерация:** сейчас `pipelineMode: "static_preview"` — **нет** вызова `infer.py` / DiT. Когда подключите реальный at2v, генерация будет жить за этим же контрактом; кулдаун (ниже) как раз чтобы **не гонять** её на каждый bootstrap.
 
 **Кулдаун превью (анти-спам / «ваншот» на окно времени):**  
 `NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC` (например `300`) — для одной пары **`sessionId` + `employeeId`** в течение окна повторно подставляется **тот же** блок превью (`videoPreviewUrl`, …) из памяти процесса; **`token` и `websocketUrl` всё равно новые** на каждый вызов. В ответе **`avatarPreviewCached: true`**, если превью взято из кэша.
