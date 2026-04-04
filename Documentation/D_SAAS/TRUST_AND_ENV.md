@@ -38,6 +38,13 @@
 | Переменная | По умолчанию | Назначение |
 |------------|--------------|------------|
 | `NULLXES_REALTIME_TOKEN_TTL_SEC` | `900` | TTL opaque токена (секунды, минимум 60). |
+| `NULLXES_WS_AVATAR_STREAM_STUB` | `1` | WebSocket: после `chat.send` слать цепочку avatar-событий. `0` — отключить. |
+| `NULLXES_WS_AVATAR_STREAM_MODE` | (авто) | `video` — JPEG base64 из `NULLXES_AVATAR_PREVIEW_ASSET_PATH` при успешном декоде; `stub` — только `seq`/`kind`; `off` — как `STUB=0`. Авто: `video` если файл превью существует, иначе `stub`. |
+| `NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS` | `5` | Режим **stub**: число `avatar.stream.chunk` (1…60). |
+| `NULLXES_WS_AVATAR_STREAM_CHUNK_MS` | `40` | Режим **stub**: задержка между чанками (мс, 0…500). |
+| `NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES` | `120` | Режим **video**: макс. кадров за один ответ (субсэмпл длинного mp4). |
+| `NULLXES_WS_AVATAR_VIDEO_MAX_WIDTH` | `480` | Режим **video**: ширина JPEG после даунскейла. |
+| `NULLXES_WS_AVATAR_VIDEO_JPEG_QUALITY` | `80` | Режим **video**: JPEG quality 30…95. |
 | `NULLXES_CORS_ORIGIN` | пусто | Если задано (один origin), к ответам `POST /v1/realtime/token`, `POST /v1/chat`, `POST /v1/avatar/preview` и `POST /v1/avatar/bootstrap` добавляются CORS-заголовки и обрабатывается `OPTIONS` (прямой вызов из браузера **не** рекомендуется; типичный путь — только Next server-side). |
 
 ## Avatar preview (stub, без infer)

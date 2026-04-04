@@ -6,7 +6,7 @@ SPEC = {
     "openapi": "3.0.3",
     "info": {
         "title": "NULLXES Session & Media API",
-        "version": "0.2.3",
+        "version": "0.2.5",
         "description": (
             "MVP webhook, session control, media slots, dashboard realtime token/WebSocket/chat, "
             "avatar preview + bootstrap (NULLXES / ARACHNE-X). See Documentation/D_SAAS/."
@@ -398,7 +398,15 @@ SPEC = {
         "/v1/ws": {
             "get": {
                 "summary": "Dashboard WebSocket (protocol v1)",
-                "description": "Upgrade to WebSocket. Auth: query ?token=... from /v1/realtime/token, or first text frame {\"type\":\"auth\",\"token\":\"...\",\"protocolVersion\":1}. JSON text frames per Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure.",
+                "description": (
+                    "Upgrade to WebSocket. Auth: query ?token=... from /v1/realtime/token, or first text frame "
+                    "{\"type\":\"auth\",\"token\":\"...\",\"protocolVersion\":1}. "
+                    "After each chat.send, server may emit avatar.state.changed + avatar.stream.chunk + "
+                    "avatar.state.changed. If NULLXES_AVATAR_PREVIEW_ASSET_PATH points to a readable mp4 (and "
+                    "NULLXES_WS_AVATAR_STREAM_MODE is unset or video), chunks include encoding jpeg_base64 + data; "
+                    "otherwise metadata-only stub (MODE=stub or no file). NULLXES_WS_AVATAR_STREAM_STUB=0 disables "
+                    "the chain. See Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure."
+                ),
                 "parameters": [
                     {
                         "name": "token",

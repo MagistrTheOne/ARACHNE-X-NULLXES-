@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -11,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
+from src.server.avatar_ws_frames import load_jpeg_frames_from_mp4
 from src.server.realtime_store import RealtimeTokenStore
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,10 @@ AVATAR_PREVIEW_PROFILE_ENV = "NULLXES_ARACHNE_OUTPUT_PROFILE"
 # Same-origin mp4 for <video src>; build URL with NULLXES_PUBLIC_HTTP_BASE + this path.
 AVATAR_PREVIEW_ASSET_URL_PATH = "/v1/avatar/preview/asset.mp4"
 BOOTSTRAP_PREVIEW_COOLDOWN_ENV = "NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC"
+WS_AVATAR_STREAM_STUB_ENV = "NULLXES_WS_AVATAR_STREAM_STUB"
+WS_AVATAR_STREAM_MODE_ENV = "NULLXES_WS_AVATAR_STREAM_MODE"
+WS_AVATAR_STREAM_CHUNK_MS_ENV = "NULLXES_WS_AVATAR_STREAM_CHUNK_MS"
+WS_AVATAR_STREAM_NUM_CHUNKS_ENV = "NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS"
 WS_AUTH_TIMEOUT_SEC = 12.0
 WS_CLOSE_AUTH = 4401
 PROTOCOL_VERSION = 1
@@ -496,6 +502,128 @@ async def _send_error(ws: web.WebSocketResponse, message: str) -> None:
     await _send_json(ws, {"type": "session.error", "at": _now_ms(), "message": message})
 
 
+def _ws_avatar_stream_effective_mode() -> str:
+    """
+    off — no avatar chain after chat.
+    stub — metadata-only avatar.stream.chunk (NUM_CHUNKS / CHUNK_MS).
+    video — JPEG base64 chunks from NULLXES_AVATAR_PREVIEW_ASSET_PATH when decodable; else stub.
+
+    NULLXES_WS_AVATAR_STREAM_STUB=0 forces off (backward compatible).
+    If MODE is unset: video when preview asset file exists on disk, else stub.
+    """
+    stub_raw = os.environ.get(WS_AVATAR_STREAM_STUB_ENV, "1").strip().lower()
+    if stub_raw in ("0", "false", "no", "off"):
+        return "off"
+    explicit = os.environ.get(WS_AVATAR_STREAM_MODE_ENV, "").strip().lower()
+    if explicit in ("off", "stub", "video"):
+        return explicit
+    asset = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
+    if asset and os.path.isfile(asset):
+        return "video"
+    return "stub"
+
+
+def _ws_avatar_stream_timing() -> tuple[int, float]:
+    try:
+        n = max(1, min(60, int(os.environ.get(WS_AVATAR_STREAM_NUM_CHUNKS_ENV, "5"))))
+    except ValueError:
+        n = 5
+    try:
+        ms = max(0, min(500, int(os.environ.get(WS_AVATAR_STREAM_CHUNK_MS_ENV, "40"))))
+    except ValueError:
+        ms = 40
+    return n, ms / 1000.0
+
+
+async def _video_avatar_ws_playback(
+    ws: web.WebSocketResponse, frames_b64: list[str], fps: float
+) -> None:
+    """Emit speaking → one chunk per JPEG frame → idle."""
+    delay_s = 1.0 / fps if fps > 0 else 1.0 / 30.0
+    try:
+        if ws.closed:
+            return
+        await _send_json(
+            ws,
+            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
+        )
+        for seq, data in enumerate(frames_b64, start=1):
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+            if ws.closed:
+                return
+            await _send_json(
+                ws,
+                {
+                    "type": "avatar.stream.chunk",
+                    "at": _now_ms(),
+                    "kind": "video",
+                    "seq": seq,
+                    "encoding": "jpeg_base64",
+                    "data": data,
+                },
+            )
+        if ws.closed:
+            return
+        await _send_json(
+            ws,
+            {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
+        )
+    except Exception:
+        logger.debug("ws avatar video playback stopped", exc_info=True)
+
+
+async def _stub_avatar_ws_playback(ws: web.WebSocketResponse) -> None:
+    """
+    Metadata-only chunks (no payload). Used when MODE=stub or as fallback when video decode fails.
+    Цепочка после chat.send — см. Documentation/D_SAAS/ARACHNE_X_FRONTEND_CONTRACT.md §5–6.
+    """
+    n_chunks, delay_s = _ws_avatar_stream_timing()
+    try:
+        if ws.closed:
+            return
+        await _send_json(
+            ws,
+            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
+        )
+        for seq in range(1, n_chunks + 1):
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+            if ws.closed:
+                return
+            await _send_json(
+                ws,
+                {
+                    "type": "avatar.stream.chunk",
+                    "at": _now_ms(),
+                    "kind": "video",
+                    "seq": seq,
+                },
+            )
+        if ws.closed:
+            return
+        await _send_json(
+            ws,
+            {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
+        )
+    except Exception:
+        logger.debug("ws avatar stub playback stopped", exc_info=True)
+
+
+async def _run_avatar_ws_playback(ws: web.WebSocketResponse, mode: str, asset_path: str) -> None:
+    if mode == "video":
+        if asset_path and os.path.isfile(asset_path):
+            frames, fps = load_jpeg_frames_from_mp4(asset_path)
+            if frames:
+                await _video_avatar_ws_playback(ws, frames, fps)
+                return
+            logger.info("avatar ws: video mode but zero frames from %s, using stub", asset_path)
+        else:
+            logger.debug("avatar ws: video mode but no readable asset path, using stub")
+    if mode in ("stub", "video"):
+        await _stub_avatar_ws_playback(ws)
+
+
 async def _handle_ws_text(ws: web.WebSocketResponse, raw: str, _rec: Any) -> None:
     try:
         data = JSON_DECODER.decode(raw)
@@ -522,6 +650,10 @@ async def _handle_ws_text(ws: web.WebSocketResponse, raw: str, _rec: Any) -> Non
                 },
             },
         )
+        m = _ws_avatar_stream_effective_mode()
+        if m != "off":
+            ap = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
+            asyncio.create_task(_run_avatar_ws_playback(ws, m, ap))
         return
     if typ == "session.disconnect":
         await ws.close()

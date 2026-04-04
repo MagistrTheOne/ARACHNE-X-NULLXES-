@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from src.server.avatar_ws_frames import clear_frame_cache
 from src.server.webrtc_server import create_app
+
+
+def _write_tiny_mp4(path: Path) -> None:
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    w = cv2.VideoWriter(str(path), fourcc, 10.0, (32, 32))
+    for i in range(4):
+        fr = np.zeros((32, 32, 3), dtype=np.uint8)
+        fr[:, :] = (10 + i * 20, 50, 200)
+        w.write(fr)
+    w.release()
 
 
 @pytest.mark.asyncio
@@ -58,6 +72,89 @@ async def test_websocket_query_token_frames(monkeypatch):
             m3 = await ws.receive_json()
             assert m3["type"] == "chat.message.received"
             assert "hi" in m3["message"]["text"]
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_websocket_avatar_stub_after_chat(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_MODE", "stub")
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_CHUNK_MS", "0")
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS", "3")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/realtime/token", json={"sessionId": "ws_av"})
+        tok = (await r.json())["token"]
+        ws = await client.ws_connect(f"/v1/ws?token={tok}")
+        try:
+            await ws.receive_json()
+            await ws.receive_json()
+            await ws.send_str(json.dumps({"type": "chat.send", "id": "a1", "text": "hi"}))
+            assert (await ws.receive_json())["type"] == "chat.message.received"
+            m4 = await ws.receive_json()
+            assert m4["type"] == "avatar.state.changed" and m4["state"] == "speaking"
+            for seq in (1, 2, 3):
+                ch = await ws.receive_json()
+                assert ch["type"] == "avatar.stream.chunk"
+                assert ch["seq"] == seq
+                assert ch["kind"] == "video"
+            mid = await ws.receive_json()
+            assert mid["type"] == "avatar.state.changed" and mid["state"] == "idle"
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_websocket_avatar_video_jpeg_after_chat(monkeypatch, tmp_path):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    clear_frame_cache()
+    mp4 = tmp_path / "clip.mp4"
+    _write_tiny_mp4(mp4)
+    monkeypatch.setenv("NULLXES_AVATAR_PREVIEW_ASSET_PATH", str(mp4))
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_MODE", "video")
+    monkeypatch.setenv("NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES", "10")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/realtime/token", json={"sessionId": "ws_av_vid"})
+        tok = (await r.json())["token"]
+        ws = await client.ws_connect(f"/v1/ws?token={tok}")
+        try:
+            await ws.receive_json()
+            await ws.receive_json()
+            await ws.send_str(json.dumps({"type": "chat.send", "id": "v1", "text": "hi"}))
+            assert (await ws.receive_json())["type"] == "chat.message.received"
+            m4 = await ws.receive_json()
+            assert m4["type"] == "avatar.state.changed" and m4["state"] == "speaking"
+            for seq in (1, 2, 3, 4):
+                ch = await ws.receive_json()
+                assert ch["type"] == "avatar.stream.chunk"
+                assert ch["seq"] == seq
+                assert ch["kind"] == "video"
+                assert ch.get("encoding") == "jpeg_base64"
+                assert isinstance(ch.get("data"), str) and len(ch["data"]) > 80
+            mid = await ws.receive_json()
+            assert mid["type"] == "avatar.state.changed" and mid["state"] == "idle"
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_websocket_avatar_stub_disabled(monkeypatch):
+    monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_STUB", "0")
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post("/v1/realtime/token", json={"sessionId": "ws_av2"})
+        tok = (await r.json())["token"]
+        ws = await client.ws_connect(f"/v1/ws?token={tok}")
+        try:
+            await ws.receive_json()
+            await ws.receive_json()
+            await ws.send_str(json.dumps({"type": "chat.send", "id": "x", "text": "yo"}))
+            await ws.receive_json()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(ws.receive_json(), timeout=0.2)
         finally:
             await ws.close()
 

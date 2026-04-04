@@ -109,6 +109,36 @@ curl -sS -X POST "https://arachne.example.com/v1/realtime/token" \
 {"type":"chat.message.received","at":1712140801200,"message":{"id":"reply_client-uuid-1","from":"assistant","text":"[stub] Привет"}}
 ```
 
+**Вариант B (оживление по WS):** сразу после `chat.message.received` сервер (если не выключено env) шлёт асинхронно `avatar.state.changed` → `speaking` → серия `avatar.stream.chunk` → `avatar.state.changed` → `idle`.
+
+**Режим по умолчанию:** если задан **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** и файл читается, кадры — **реальные JPEG** в JSON (`encoding`: `jpeg_base64`, поле `data`). Интервал между кадрами берётся из FPS файла (с ограничением). Если файла нет или режим принудительно `stub` — только метаданные (`seq`, `kind`), как раньше.
+
+```json
+{"type":"avatar.state.changed","at":1712140801201,"state":"speaking"}
+```
+
+```json
+{"type":"avatar.stream.chunk","at":1712140801245,"kind":"video","seq":1,"encoding":"jpeg_base64","data":"<base64...>"}
+```
+
+Режим только метаданных (пример без `encoding`/`data`):
+
+```json
+{"type":"avatar.stream.chunk","at":1712140801245,"kind":"video","seq":1}
+```
+
+Полностью отключить цепочку: `NULLXES_WS_AVATAR_STREAM_STUB=0`.
+
+| Env | По умолчанию | Смысл |
+|-----|--------------|--------|
+| `NULLXES_WS_AVATAR_STREAM_STUB` | `1` | `0` — не слать avatar.* после `chat.send` |
+| `NULLXES_WS_AVATAR_STREAM_MODE` | (авто) | `video` \| `stub` \| `off`. Авто: `video` при существующем `NULLXES_AVATAR_PREVIEW_ASSET_PATH`, иначе `stub` |
+| `NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS` | `5` | Для **stub**: число `avatar.stream.chunk` (1…60) |
+| `NULLXES_WS_AVATAR_STREAM_CHUNK_MS` | `40` | Для **stub**: пауза между чанками, мс (0…500) |
+| `NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES` | `120` | Для **video**: максимум кадров за один проход (субсэмпл из длинного mp4) |
+| `NULLXES_WS_AVATAR_VIDEO_MAX_WIDTH` | `480` | Для **video**: масштаб по ширине перед JPEG |
+| `NULLXES_WS_AVATAR_VIDEO_JPEG_QUALITY` | `80` | Для **video**: качество JPEG (30…95) |
+
 ```json
 {"type":"session.error","at":1712140800999,"message":"auth_failed"}
 ```

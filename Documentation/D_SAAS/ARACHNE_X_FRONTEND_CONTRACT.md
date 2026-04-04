@@ -136,7 +136,9 @@ flowchart LR
 
 **Формат кадров (MVP сигналов):** **JSON text frames**, UTF-8, одно событие на кадр (можно расширить до NDJSON позже).
 
-**Медиа (видео/аудио поток):** для production чаще **отдельный транспорт** (WebRTC, binary chunks с префиксом). В типах фронта уже есть `avatar.stream.chunk` с `seq` — на проводе для MVP допускается **только метаданные** без payload (`seq`, `kind`), а реальные кадры — в следующей версии протокола или параллельным каналом (**зафиксировать в `protocolVersion`**).
+**Медиа (видео по WebSocket):** при наличии **`NULLXES_AVATAR_PREVIEW_ASSET_PATH`** (тот же mp4, что для `GET /v1/avatar/preview/asset.mp4`) сервер по умолчанию шлёт в `avatar.stream.chunk` поля **`encoding`: `jpeg_base64`** и **`data`** (строка base64). Клиент может отрисовывать кадры в `<canvas>` / `ImageBitmap`. Для стендов без файла или при `NULLXES_WS_AVATAR_STREAM_MODE=stub` остаются **только метаданные** (`seq`, `kind`). WebRTC и сырой binary — отдельный этап.
+
+**Вариант B (ARACHNE-X):** после входящего `chat.send` сервер отвечает `chat.message.received`, затем (если не отключено: `NULLXES_WS_AVATAR_STREAM_STUB` ≠ `0` и режим не `off`) асинхронно шлёт `avatar.state.changed` (`speaking`) → серия `avatar.stream.chunk` (`kind`: `video`, растущий `seq`; опционально JPEG payload) → `avatar.state.changed` (`idle`). Реальный mp4-декод на сервере; вывод нейросети (LongCat/at2v) можно подставить вместо чтения файла, сохранив тот же контракт кадров.
 
 ---
 
@@ -153,7 +155,7 @@ flowchart LR
 | `session.disconnected` | `{"type":"session.disconnected","at":1712140810000,"reason":"client_close"}` |
 | `session.error` | `{"type":"session.error","at":1712140800999,"message":"auth_failed"}` |
 | `avatar.state.changed` | `{"type":"avatar.state.changed","at":1712140801000,"state":"speaking"}` |
-| `avatar.stream.chunk` | `{"type":"avatar.stream.chunk","at":1712140801100,"kind":"video","seq":42}` |
+| `avatar.stream.chunk` | `{"type":"avatar.stream.chunk","at":1712140801100,"kind":"video","seq":42}` или с кадром: добавить `"encoding":"jpeg_base64","data":"<base64>"` |
 | `chat.message.received` | `{"type":"chat.message.received","at":1712140801200,"message":{"id":"msg_1","from":"assistant","text":"Здравствуйте."}}` |
 
 `at` — Unix timestamp в миллисекундах (как `Date.now()` в JS).
