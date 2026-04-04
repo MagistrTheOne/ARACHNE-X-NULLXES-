@@ -112,3 +112,15 @@ export LONGCAT_CONTEXT_PARALLEL_SIZE=2
 Поля: `audioBase64`, `numSegments`, `refImgIndex`, `inputJson` (доп. поля в `input_json`).
 
 **Моки:** `LONGCAT_MOCK_MP4_PATH` / `LONGCAT_MOCK_VIDEO_BASE64` работают **только** при **`ALLOW_INFERENCE_DEV_MOCK=1`**. Без этого и без репо+весов — **503**.
+
+## Очередь jobs (один GPU / один под H200)
+
+Сериальная очередь в памяти процесса: **`POST /v1/infer/jobs`** → `{"jobId","status":"queued"}` → **`GET /v1/infer/jobs/{jobId}`** до `status: done` → **`GET /v1/infer/jobs/{jobId}/result`** (один раз, `video/mp4`).
+
+| Env | По умолчанию | Смысл |
+|-----|--------------|--------|
+| `INFERENCE_MAX_QUEUE` | `32` | Макс. глубина очереди (ожидающих jobs) |
+
+Синхронный **`POST /v1/longcat/generate`** без изменений.
+
+На стороне ARACHNE-X aiohttp: **`NULLXES_AVATAR_INFERENCE_ASYNC=1`** — клиент использует job API; **`NULLXES_AVATAR_INFERENCE_JOBS_PATH`** (по умолчанию `/v1/infer/jobs`), **`NULLXES_AVATAR_INFERENCE_POLL_MS`** (по умолчанию `500`).
