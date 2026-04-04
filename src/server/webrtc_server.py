@@ -55,6 +55,7 @@ def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
     app["workers"] = {}
     app["realtime_token_store"] = RealtimeTokenStore()
     app["avatar_bootstrap_preview_cache"] = {}
+    app["avatar_frame_queues"] = {}
 
     app.router.add_get("/health", _handle_health)
     app.router.add_get("/v1/openapi.json", _handle_openapi)
@@ -237,6 +238,9 @@ async def _handle_session_media_patch(request: web.Request) -> web.Response:
     if not ok:
         return _json_response({"error": msg}, status=404)
     rec = sm.get(sid)
+    w = _workers(request.app).get(sid)
+    if w is not None and rec is not None:
+        w.refresh_config(rec)
     return _json_response({"ok": True, "media_binding": dict(rec.media_binding) if rec else {}})
 
 

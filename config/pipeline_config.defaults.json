@@ -18,21 +18,20 @@
     "model_id": "Qwen/Qwen2.5-7B-Instruct",
     "device_map": "auto",
     "max_new_tokens": 512,
-    "demo_phrase": "Здравствуйте, я готов продолжить интервью."
+    "demo_phrase": "Здравствуйте, я готов продолжить интервью.",
+    "system_prompt": "You are a concise, helpful assistant. Reply in the same language as the user.",
+    "failure_reply": "I am temporarily unable to respond. Please try again or type your message in chat."
   },
   "tts": {
-    "backend": "qwen3_tts",
-    "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-    "device_map": "cuda:0",
-    "sample_rate_hz": 24000
+    "backend": "edge_tts",
+    "voice": "en-US-AriaNeural"
   },
   "avatar": {
     "backend": "longcat_worker_http",
     "inference_url_env": "NULLXES_AVATAR_INFERENCE_URL",
     "video_model_id": "meituan-longcat/LongCat-Video",
     "avatar_model_id": "meituan-longcat/LongCat-Video-Avatar",
-    "use_async_jobs_env": "NULLXES_AVATAR_INFERENCE_ASYNC",
-    "fail_once": false
+    "use_async_jobs_env": "NULLXES_AVATAR_INFERENCE_ASYNC"
   },
   "webrtc": {
     "role": "future_full_tracks",

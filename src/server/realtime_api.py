@@ -12,8 +12,14 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
-from src.server.avatar_inference_client import avatar_generate_mp4_bytes, inference_base_url
-from src.server.avatar_ws_frames import load_jpeg_frames_from_mp4, load_jpeg_frames_from_mp4_bytes
+import base64
+
+import numpy as np
+
+from src.server.avatar_inference_client import inference_base_url
+from src.server.avatar_stream_client import stream_avatar_jpeg_frames
+from src.server.avatar_ws_frames import load_jpeg_frames_from_mp4
+from src.server.tts_runner import synthesize_pcm_f32_16k
 from src.server.realtime_store import RealtimeTokenStore
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,7 @@ PROTOCOL_VERSION = 1
 
 CHAT_ASSISTANT_FIXED_REPLY_ENV = "NULLXES_CHAT_ASSISTANT_FIXED_REPLY"
 WS_CHAT_ASSISTANT_FIXED_REPLY_ENV = "NULLXES_WS_CHAT_ASSISTANT_FIXED_REPLY"
+ROUTE_VIA_SESSION_WORKER_ENV = "NULLXES_REALTIME_ROUTE_VIA_SESSION_WORKER"
 
 
 def _http_chat_assistant_text(content: str) -> str:
@@ -456,6 +463,13 @@ async def handle_websocket(request: web.Request) -> web.StreamResponse:
     await _send_json(ws, {"type": "session.connecting", "at": _now_ms()})
     await _send_json(ws, {"type": "session.connected", "at": _now_ms()})
 
+    nx_sid = getattr(rec, "nullxes_session_id", None)
+    if isinstance(nx_sid, str) and nx_sid.strip():
+        asyncio.create_task(
+            _pump_avatar_out_queue(ws, nx_sid.strip(), request.app),
+            name=f"ws-pump-{nx_sid.strip()[:8]}",
+        )
+
     try:
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
@@ -522,12 +536,42 @@ async def _send_error(ws: web.WebSocketResponse, message: str) -> None:
     await _send_json(ws, {"type": "session.error", "at": _now_ms(), "message": message})
 
 
+def _route_chat_via_session_worker() -> bool:
+    v = os.environ.get(ROUTE_VIA_SESSION_WORKER_ENV, "1").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+async def _pump_avatar_out_queue(
+    ws: web.WebSocketResponse, nx_sid: str, app: web.Application
+) -> None:
+    """Drain SessionWorker.out_queue (and future producers) to this WebSocket."""
+    while not ws.closed:
+        qmap = app.get("avatar_frame_queues")
+        if not isinstance(qmap, dict):
+            await asyncio.sleep(0.25)
+            continue
+        q = qmap.get(nx_sid)
+        if q is None:
+            await asyncio.sleep(0.2)
+            continue
+        try:
+            msg = await asyncio.wait_for(q.get(), timeout=120.0)
+        except asyncio.TimeoutError:
+            continue
+        if msg is None:
+            continue
+        try:
+            await _send_json(ws, msg)
+        except (ConnectionResetError, ConnectionError):
+            break
+
+
 def _ws_avatar_stream_effective_mode() -> str:
     """
     off — no avatar chain after chat.
     stub — metadata-only avatar.stream.chunk (NUM_CHUNKS / CHUNK_MS); dev/tests only.
     video — JPEG base64 from NULLXES_AVATAR_PREVIEW_ASSET_PATH (local mp4).
-    inference — LongCat / GPU worker: NULLXES_AVATAR_INFERENCE_URL → MP4 → same WS chunks.
+    inference — GPU worker: NULLXES_AVATAR_INFERENCE_URL → NDJSON JPEG stream (no MP4).
 
     NULLXES_WS_AVATAR_STREAM_STUB=0 forces off (backward compatible).
     If MODE is unset: inference when INFERENCE_URL set; else video if preview asset file exists; else off.
@@ -646,50 +690,72 @@ async def _inference_avatar_ws_playback(
     num_seg: int | None = None,
     ref_idx: int | None = None,
 ) -> None:
-    """Prod: POST GPU worker → MP4 bytes → JPEG chunks on same WebSocket."""
-    env_task = os.environ.get(AVATAR_INFERENCE_TASK_ENV, "text-to-video").strip() or "text-to-video"
-    task = (task_override or env_task).strip() or "text-to-video"
+    del task_override, audio_b64, cont_b64, num_seg, ref_idx
     env_img = os.environ.get(AVATAR_INFERENCE_IMAGE_ENV, "").strip() or None
-    env_audio = os.environ.get("NULLXES_AVATAR_INFERENCE_AUDIO_BASE64", "").strip() or None
-    env_cont = os.environ.get("NULLXES_AVATAR_INFERENCE_CONTINUATION_BASE64", "").strip() or None
     use_img = img_b64 or env_img
-    if task == "image-to-video" and not use_img:
-        logger.warning(
-            "%s=image-to-video but no imageBase64 on frame and %s empty — worker may reject",
-            AVATAR_INFERENCE_TASK_ENV,
-            AVATAR_INFERENCE_IMAGE_ENV,
-        )
+    if not use_img:
+        logger.warning("inference avatar: no imageBase64; set %s", AVATAR_INFERENCE_IMAGE_ENV)
+        await _send_error(ws, "avatar_inference_missing_image")
+        return
     http = app.get("avatar_http_session")
+    if http is None or http.closed:
+        await _send_error(ws, "avatar_http_unavailable")
+        return
     use_prompt = (prompt or "").strip() or "Professional avatar speaking clearly, natural motion."
+    pipeline_cfg = app.get("pipeline_cfg") or {}
+    tts_cfg = dict(pipeline_cfg.get("tts") or {})
     try:
-        mp4 = await avatar_generate_mp4_bytes(
+        audio_f32 = await asyncio.to_thread(synthesize_pcm_f32_16k, use_prompt, tts_cfg)
+    except Exception as e:
+        logger.warning("inference path TTS failed: %s", e)
+        await _send_error(ws, "tts_failed")
+        return
+    if audio_f32.size == 0:
+        await _send_error(ws, "tts_empty")
+        return
+    audio_b64_out = base64.b64encode(np.asarray(audio_f32, dtype=np.float32).tobytes()).decode(
+        "ascii"
+    )
+    try:
+        await _send_json(
+            ws,
+            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
+        )
+        seq = 0
+        async for _seq, jpeg_b64 in stream_avatar_jpeg_frames(
             http,
             prompt=use_prompt,
             session_id=session_id or "session",
-            task=task,
-            image_base64=use_img,
-            audio_base64=audio_b64 or env_audio,
-            continuation_state=cont_b64 or env_cont,
-            num_segments=num_seg,
-            ref_img_index=ref_idx,
-        )
-        frames, fps = load_jpeg_frames_from_mp4_bytes(mp4)
-        if frames:
-            await _video_avatar_ws_playback(ws, frames, fps)
-            return
-        logger.error("avatar inference: decoded zero frames from worker MP4")
-        await _send_error(ws, "avatar_inference_empty")
-    except Exception:
-        logger.exception("avatar inference request failed")
-        await _send_error(ws, "avatar_inference_failed")
-    try:
+            image_base64=str(use_img),
+            audio_float32_base64=audio_b64_out,
+        ):
+            if ws.closed:
+                break
+            seq += 1
+            await _send_json(
+                ws,
+                {
+                    "type": "avatar.stream.chunk",
+                    "at": _now_ms(),
+                    "kind": "video",
+                    "seq": seq,
+                    "encoding": "jpeg_base64",
+                    "data": jpeg_b64,
+                },
+            )
         if not ws.closed:
             await _send_json(
                 ws,
                 {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
             )
     except Exception:
-        pass
+        logger.exception("avatar inference stream failed")
+        await _send_error(ws, "avatar_inference_failed")
+        if not ws.closed:
+            await _send_json(
+                ws,
+                {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
+            )
 
 
 async def _run_avatar_ws_playback(
@@ -746,6 +812,13 @@ async def _handle_ws_text(
     if typ == "chat.send":
         text = str(data.get("text") or "")
         cid = str(data.get("id") or f"c_{_now_ms()}")
+        nx = getattr(rec, "nullxes_session_id", None)
+        nx_s = str(nx).strip() if nx else ""
+        workers = app.get("workers") or {}
+        w = workers.get(nx_s) if nx_s else None
+        if _route_chat_via_session_worker() and w is not None and w.running:
+            await w.enqueue_user_text(text)
+            return
         await _send_json(
             ws,
             {
@@ -774,6 +847,21 @@ async def _handle_ws_text(
                     inference_opts=inf_opts,
                 )
             )
+        return
+    if typ == "voice.pcm16":
+        raw_b64 = data.get("data") or data.get("pcmBase64")
+        if not isinstance(raw_b64, str) or not raw_b64.strip():
+            return
+        try:
+            pcm = base64.b64decode(raw_b64)
+        except (ValueError, TypeError):
+            return
+        nx = getattr(rec, "nullxes_session_id", None)
+        nx_s = str(nx).strip() if nx else ""
+        workers = app.get("workers") or {}
+        w = workers.get(nx_s) if nx_s else None
+        if w is not None and w.running:
+            await w.feed_pcm16(pcm)
         return
     if typ == "session.disconnect":
         await ws.close()

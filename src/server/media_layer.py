@@ -137,12 +137,6 @@ class StubMediaSink:
         await asyncio.sleep(0)
 
 
-class StubMediaSource:
-    async def read_chunk(self, max_samples: int) -> bytes:
-        await asyncio.sleep(0.05)
-        return b"\x00" * (max_samples * 4)
-
-
 def media_backend_from_env(num_slots: int) -> MediaLayerBackend:
     """``NULLXES_MEDIA_BACKEND=pulse`` (default) or ``stub``."""
     kind = os.environ.get("NULLXES_MEDIA_BACKEND", "pulse").lower().strip()

@@ -141,26 +141,46 @@ async def test_websocket_avatar_video_jpeg_after_chat(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_websocket_avatar_inference_mp4_from_worker(monkeypatch, tmp_path):
+async def test_websocket_avatar_inference_ndjson_from_worker(monkeypatch):
+    import base64
+
     monkeypatch.delenv("NULLXES_REALTIME_SERVICE_KEY", raising=False)
     clear_frame_cache()
-    mp4 = tmp_path / "worker_out.mp4"
-    _write_tiny_mp4(mp4)
 
-    async def worker_generate(request: web.Request) -> web.StreamResponse:
+    tiny_png = base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    ).decode("ascii")
+
+    async def worker_frames(request: web.Request) -> web.Response:
         await request.read()
-        return web.FileResponse(mp4, headers={"Content-Type": "video/mp4"})
+        img = np.zeros((32, 32, 3), dtype=np.uint8)
+        ok, buf = cv2.imencode(".jpg", img)
+        assert ok
+        b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        body = "".join(
+            json.dumps({"seq": i, "jpegBase64": b64}, ensure_ascii=False) + "\n" for i in range(1, 5)
+        )
+        return web.Response(body=body.encode("utf-8"), content_type="application/x-ndjson")
 
     worker_app = web.Application()
-    worker_app.router.add_post("/v1/longcat/generate", worker_generate)
+    worker_app.router.add_post("/v1/realtime/avatar_frames", worker_frames)
 
     monkeypatch.setenv("NULLXES_WS_AVATAR_STREAM_MODE", "inference")
     monkeypatch.setenv("NULLXES_WS_AVATAR_VIDEO_MAX_FRAMES", "10")
+    monkeypatch.setenv("NULLXES_AVATAR_INFERENCE_IMAGE_BASE64", tiny_png)
+
+    def _fake_tts(text: str, tts_cfg: dict) -> np.ndarray:
+        del text, tts_cfg
+        return np.ones(4800, dtype=np.float32) * 0.02
+
+    monkeypatch.setattr("src.server.realtime_api.synthesize_pcm_f32_16k", _fake_tts)
 
     async with TestClient(TestServer(worker_app)) as wclient:
         base = f"http://{wclient.host}:{wclient.port}"
         monkeypatch.setenv("NULLXES_AVATAR_INFERENCE_URL", base)
         app = create_app()
+        app["pipeline_cfg"] = {"vad": {}, "asr": {}, "llm": {}, "tts": {"backend": "edge_tts"}}
         async with TestClient(TestServer(app)) as client:
             r = await client.post("/v1/realtime/token", json={"sessionId": "ws_inf"})
             tok = (await r.json())["token"]

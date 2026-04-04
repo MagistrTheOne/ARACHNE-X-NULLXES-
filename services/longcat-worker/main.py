@@ -1,28 +1,30 @@
 """
-Avatar / video inference HTTP worker for ARACHNE-X.
-
-Production: ARACHNE_VIDEO_REPO + ARACHNE_CHECKPOINT_DIR (ARACHNE-X ULTRA weights),
-or LONGCAT_VIDEO_REPO + LONGCAT_CHECKPOINT_DIR (legacy LongCat-Video).
-
-Dev mocks (static mp4 / base64) only if ALLOW_INFERENCE_DEV_MOCK=1. Async jobs: POST /v1/infer/jobs.
+Avatar inference HTTP worker: in-process GPU (no torchrun subprocess).
+Streaming: POST /v1/realtime/avatar_frames → application/x-ndjson
+Legacy jobs: POST /v1/infer/jobs (MP4 result file, temp disk for mux only).
 """
+
 from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
+import logging
 import os
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
-from typing import Any, Literal, Optional
+from typing import Any, Iterator, Literal, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from arachne_subprocess import run_arachne_inference
+from gpu_avatar_runtime import generate_mp4_bytes_from_job, stream_avatar_jpeg_frames_sync
 from job_queue import JobStatus, job_queue
-from longcat_subprocess import run_longcat_inference
+
+logger = logging.getLogger(__name__)
 
 EXPECTED_KEY_HEADER = "x-nullxes-avatar-inference-key"
 
@@ -50,27 +52,26 @@ class GenerateBody(BaseModel):
     inputJson: Optional[dict[str, Any]] = None
 
 
+class StreamFramesBody(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    sessionId: str = Field(..., max_length=512)
+    prompt: str = Field("", max_length=16000)
+    imageBase64: str = Field(..., min_length=8)
+    audioFloat32Base64: str = Field(..., min_length=4)
+    negativePrompt: Optional[str] = Field(default=None, max_length=8000)
+    numInferenceSteps: int = Field(default=8, ge=1, le=64)
+    textGuidanceScale: float = Field(default=4.0)
+    audioGuidanceScale: float = Field(default=4.0)
+    resolution: str = Field(default="480p")
+    numFrames: int = Field(default=93, ge=1, le=256)
+
+
 def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
     if not expected:
         return
     if (hdr or "").strip() != expected:
         raise HTTPException(status_code=401, detail="invalid inference key")
-
-
-def _allow_dev_mock() -> bool:
-    return os.environ.get("ALLOW_INFERENCE_DEV_MOCK", "").strip().lower() in ("1", "true", "yes")
-
-
-def _use_arachne() -> bool:
-    r = os.environ.get("ARACHNE_VIDEO_REPO", "").strip()
-    c = os.environ.get("ARACHNE_CHECKPOINT_DIR", "").strip()
-    return bool(r and c)
-
-
-def _use_longcat() -> bool:
-    r = os.environ.get("LONGCAT_VIDEO_REPO", "").strip()
-    c = os.environ.get("LONGCAT_CHECKPOINT_DIR", "").strip()
-    return bool(r and c)
 
 
 def _validate_body(body: GenerateBody) -> None:
@@ -88,100 +89,107 @@ def _validate_body(body: GenerateBody) -> None:
 
 
 def run_generate_sync(body: GenerateBody) -> bytes:
+    from PIL import Image
+
     _validate_body(body)
-    if _allow_dev_mock():
-        mock_path = os.environ.get("LONGCAT_MOCK_MP4_PATH", "").strip()
-        if mock_path and os.path.isfile(mock_path):
-            with open(mock_path, "rb") as f:
-                return f.read()
-    arachne = _use_arachne()
-    legacy = _use_longcat()
-    if not arachne and not legacy:
-        if _allow_dev_mock():
-            demo_b64 = os.environ.get("LONGCAT_MOCK_VIDEO_BASE64", "").strip()
-            if demo_b64:
-                return json.dumps({"videoBase64": demo_b64}).encode("utf-8")
-        raise RuntimeError(
-            "Configure ARACHNE_VIDEO_REPO + ARACHNE_CHECKPOINT_DIR or LONGCAT_*; "
-            "or ALLOW_INFERENCE_DEV_MOCK=1 for dev mocks."
-        )
-    work = tempfile.mkdtemp(prefix="nx_inf_api_")
-    try:
-        out_mp4 = os.path.join(work, "result.mp4")
-        job: dict[str, Any] = {
-            "task": body.task,
-            "prompt": body.prompt,
-            "output_mp4": out_mp4,
-        }
-        if body.negative_prompt:
-            job["negative_prompt"] = body.negative_prompt
-        if body.inputJson:
-            job["input_json_overlay"] = dict(body.inputJson)
-        if body.numSegments is not None:
-            job["num_segments"] = int(body.numSegments)
-        if body.refImgIndex is not None:
-            job["ref_img_index"] = int(body.refImgIndex)
-        if body.task in ("image-to-video", "audio-image-to-video"):
-            raw = base64.b64decode(body.imageBase64 or "")
-            img_path = os.path.join(work, "input_image.png")
-            with open(img_path, "wb") as f:
-                f.write(raw)
-            job["image_path"] = img_path
-        if body.task in ("audio-text-to-video", "audio-image-to-video"):
-            raw = base64.b64decode(body.audioBase64 or "")
-            audio_path = os.path.join(work, "input_audio.bin")
-            with open(audio_path, "wb") as f:
-                f.write(raw)
-            job["audio_path"] = audio_path
-        if body.task == "video-continuation":
-            raw = base64.b64decode(body.continuationState or "")
-            vid_path = os.path.join(work, "condition.mp4")
-            with open(vid_path, "wb") as f:
-                f.write(raw)
-            job["video_path"] = vid_path
-        if arachne:
-            return run_arachne_inference(job)
-        if body.task not in ("text-to-video", "image-to-video", "video-continuation"):
-            raise RuntimeError("This task requires ARACHNE_VIDEO_REPO + ARACHNE_CHECKPOINT_DIR")
-        lc_job: dict[str, Any] = {
-            "task": body.task,
-            "prompt": body.prompt,
-            "output_mp4": out_mp4,
-        }
-        if body.negative_prompt:
-            lc_job["negative_prompt"] = body.negative_prompt
-        if body.task == "image-to-video":
-            lc_job["image_path"] = job["image_path"]
-        if body.task == "video-continuation":
-            lc_job["video_path"] = job["video_path"]
-        return run_longcat_inference(lc_job)
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    task = str(body.task)
+    if task in ("audio-image-to-video", "audio-text-to-video"):
+        work = tempfile.mkdtemp(prefix="nx_inf_")
+        try:
+            out_mp4 = os.path.join(work, "result.mp4")
+            job: dict[str, Any] = {
+                "task": task,
+                "prompt": body.prompt,
+                "output_mp4": out_mp4,
+            }
+            if body.negative_prompt:
+                job["negative_prompt"] = body.negative_prompt
+            if body.task == "audio-image-to-video":
+                raw = base64.b64decode(body.imageBase64 or "")
+                ip = os.path.join(work, "in.png")
+                with open(ip, "wb") as f:
+                    f.write(raw)
+                job["image_path"] = ip
+            else:
+                ip = os.path.join(work, "neutral.png")
+                Image.new("RGB", (832, 480), (40, 40, 48)).save(ip, format="PNG")
+                job["image_path"] = ip
+            raw_a = base64.b64decode(body.audioBase64 or "")
+            ap = os.path.join(work, "in.wav")
+            with open(ap, "wb") as f:
+                f.write(raw_a)
+            job["audio_path"] = ap
+            return generate_mp4_bytes_from_job(job)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    raise RuntimeError(
+        f"Task {task!r} is not supported by the in-process worker "
+        "(only audio-image-to-video and audio-text-to-video). "
+        "Use a dedicated batch service for text-to-video / image-to-video / continuation."
+    )
 
 
 def execute_inference_from_dict(d: dict[str, Any]) -> bytes:
     body = GenerateBody.model_validate(d)
-    data = run_generate_sync(body)
-    if data[:1] == b"{" and b"videoBase64" in data[:220]:
-        obj = json.loads(data.decode("utf-8"))
-        b64 = obj.get("videoBase64") or obj.get("video_base64")
-        if isinstance(b64, str) and b64.strip():
-            return base64.b64decode(b64)
-    return data
+    return run_generate_sync(body)
+
+
+def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
+    import numpy as np
+
+    try:
+        img = base64.b64decode(body.imageBase64)
+        raw = base64.b64decode(body.audioFloat32Base64)
+        audio = np.frombuffer(raw, dtype=np.float32).copy()
+        for seq, jpeg_b64 in stream_avatar_jpeg_frames_sync(
+            image_bytes=img,
+            prompt=body.prompt,
+            audio_f32=audio,
+            negative_prompt=body.negativePrompt or "",
+            num_inference_steps=body.numInferenceSteps,
+            text_guidance_scale=body.textGuidanceScale,
+            audio_guidance_scale=body.audioGuidanceScale,
+            resolution=body.resolution,
+            num_frames=body.numFrames,
+        ):
+            line = json.dumps({"seq": seq, "jpegBase64": jpeg_b64}, ensure_ascii=False) + "\n"
+            yield line.encode("utf-8")
+    except Exception as e:
+        err = json.dumps({"error": str(e)[:4000]}, ensure_ascii=False) + "\n"
+        yield err.encode("utf-8")
 
 
 @asynccontextmanager
-async def _lifespan(app):
+async def _lifespan(_app: object):
     job_queue.set_executor(execute_inference_from_dict)
     job_queue.start_worker()
     yield
     await job_queue.stop_worker()
 
 
-app = FastAPI(title="NULLXES Avatar inference worker", version="1.2.0", lifespan=_lifespan)
+app = FastAPI(title="NULLXES Avatar inference worker", version="2.0.0", lifespan=_lifespan)
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/v1/realtime/avatar_frames")
+async def realtime_avatar_frames(
+    body: StreamFramesBody,
+    x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
+) -> StreamingResponse:
+    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    _check_key(expected, x_nullxes_avatar_inference_key)
+    try:
+        return StreamingResponse(
+            _ndjson_stream(body),
+            media_type="application/x-ndjson",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/v1/longcat/generate")
@@ -197,16 +205,9 @@ async def generate(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         msg = str(e)
-        if "Configure ARACHNE" in msg or "LONGCAT" in msg or "ALLOW_INFERENCE" in msg:
+        if "not supported" in msg or "CUDA" in msg or "checkpoint" in msg.lower():
             raise HTTPException(status_code=503, detail=msg[:8000]) from e
         raise HTTPException(status_code=502, detail=msg[:8000]) from e
-    if data[:1] == b"{":
-        try:
-            obj = json.loads(data.decode("utf-8"))
-            if isinstance(obj, dict) and (obj.get("videoBase64") or obj.get("video_base64")):
-                return Response(content=data, media_type="application/json")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
     return Response(content=data, media_type="video/mp4")
 
 
