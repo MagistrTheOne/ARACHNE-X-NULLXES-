@@ -1,0 +1,28 @@
+services:
+  arachne-x:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    image: arachne-x:gpu
+    shm_size: "8gb"
+    environment:
+      - PYTHONPATH=/workspace/ARACHNE-X
+      # Optional: for Hub downloads (do NOT hardcode tokens in files)
+      # - HF_TOKEN=${HF_TOKEN}
+      # Optional: mirror endpoint workaround
+      # - HF_ENDPOINT=${HF_ENDPOINT}
+    volumes:
+      - ../:/workspace/ARACHNE-X
+      # Mount your weights folder (edit host path as needed)
+      - ./weights:/weights
+      # Outputs
+      - ./outputs:/outputs
+    working_dir: /workspace/ARACHNE-X
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["bash"]

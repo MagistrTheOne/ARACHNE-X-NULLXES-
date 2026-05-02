@@ -1,0 +1,51 @@
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      git \
+      ca-certificates \
+      curl \
+      jq \
+      aria2 \
+      build-essential \
+      ninja-build \
+      libgl1 \
+      libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/ARACHNE-X
+
+# Copy only dependency files first for better layer caching
+COPY requirements.txt requirements.txt
+COPY requirements_avatar.txt requirements_avatar.txt
+COPY requirements-tts.txt requirements-tts.txt
+COPY requirements-audiodit.txt requirements-audiodit.txt
+COPY requirements-datasets.txt requirements-datasets.txt
+
+# Core deps
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Optional deps are installed at runtime in most setups; keep image lean by default.
+# If you want them baked in, build with:
+#   docker build -f docker/Dockerfile.gpu --build-arg INSTALL_AVATAR_DEPS=1 --build-arg INSTALL_TTS_DEPS=1 .
+ARG INSTALL_AVATAR_DEPS=0
+ARG INSTALL_TTS_DEPS=0
+ARG INSTALL_AUDIODIT_DEPS=0
+
+RUN if [ "${INSTALL_AVATAR_DEPS}" = "1" ]; then pip install --no-cache-dir -r requirements_avatar.txt ; fi
+RUN if [ "${INSTALL_TTS_DEPS}" = "1" ]; then pip install --no-cache-dir -r requirements-tts.txt ; fi
+RUN if [ "${INSTALL_AUDIODIT_DEPS}" = "1" ]; then pip install --no-cache-dir -r requirements-audiodit.txt ; fi
+
+# Now copy the full repo
+COPY . .
+
+# For local imports in scripts/* without installs
+ENV PYTHONPATH=/workspace/ARACHNE-X
+
+# Default shell
+CMD ["bash"]
