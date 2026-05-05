@@ -21,7 +21,7 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from gpu_avatar_runtime import generate_mp4_bytes_from_job, stream_avatar_jpeg_frames_sync
+from gpu_avatar_runtime import generate_mp4_bytes_from_job, stream_avatar_frames_raw_sync
 from job_queue import JobStatus, job_queue
 
 logger = logging.getLogger(__name__)
@@ -58,13 +58,17 @@ class StreamFramesBody(BaseModel):
     sessionId: str = Field(..., max_length=512)
     prompt: str = Field("", max_length=16000)
     imageBase64: str = Field(..., min_length=8)
-    audioFloat32Base64: str = Field(..., min_length=4)
+    # Preferred realtime audio contract (MVP): PCM16 mono 16kHz base64 (20-40ms chunking upstream).
+    audioPcm16Base64: Optional[str] = Field(default=None, min_length=4)
+    # Backwards compatibility: float32 mono 16kHz base64.
+    audioFloat32Base64: Optional[str] = Field(default=None, min_length=4)
     negativePrompt: Optional[str] = Field(default=None, max_length=8000)
     numInferenceSteps: int = Field(default=8, ge=1, le=64)
     textGuidanceScale: float = Field(default=4.0)
     audioGuidanceScale: float = Field(default=4.0)
     resolution: str = Field(default="480p")
     numFrames: int = Field(default=93, ge=1, le=256)
+    engine: str = Field(default="longcat", max_length=64)
 
 
 def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
@@ -137,12 +141,39 @@ def execute_inference_from_dict(d: dict[str, Any]) -> bytes:
 
 def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
     import numpy as np
+    import time
+
+    engine = (body.engine or "longcat").strip().lower()
+    if engine == "wan_s2v":
+        err = json.dumps(
+            {
+                "error": (
+                    "wan_s2v engine is not deployed on this worker "
+                    "(use engine=longcat or run a dedicated Wan S2V inference service)"
+                )
+            },
+            ensure_ascii=False,
+        )
+        yield (err + "\n").encode("utf-8")
+        return
+    if engine not in ("longcat", ""):
+        err = json.dumps({"error": f"unknown engine {engine!r}; supported: longcat"}, ensure_ascii=False)
+        yield (err + "\n").encode("utf-8")
+        return
 
     try:
         img = base64.b64decode(body.imageBase64)
-        raw = base64.b64decode(body.audioFloat32Base64)
-        audio = np.frombuffer(raw, dtype=np.float32).copy()
-        for seq, jpeg_b64 in stream_avatar_jpeg_frames_sync(
+        if body.audioPcm16Base64:
+            raw16 = base64.b64decode(body.audioPcm16Base64)
+            pcm16 = np.frombuffer(raw16, dtype=np.int16).astype(np.float32)
+            audio = np.clip(pcm16 / 32768.0, -1.0, 1.0).copy()
+        elif body.audioFloat32Base64:
+            raw = base64.b64decode(body.audioFloat32Base64)
+            audio = np.frombuffer(raw, dtype=np.float32).copy()
+        else:
+            raise ValueError("audioPcm16Base64 or audioFloat32Base64 is required")
+        t0_ns = time.monotonic_ns()
+        for seq, frame_bytes, w, h in stream_avatar_frames_raw_sync(
             image_bytes=img,
             prompt=body.prompt,
             audio_f32=audio,
@@ -153,7 +184,23 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             resolution=body.resolution,
             num_frames=body.numFrames,
         ):
-            line = json.dumps({"seq": seq, "jpegBase64": jpeg_b64}, ensure_ascii=False) + "\n"
+            # Use monotonic clock to timestamp frames for sync downstream.
+            ts_ms = int((time.monotonic_ns() - t0_ns) / 1_000_000)
+            frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
+            line = (
+                json.dumps(
+                    {
+                        "seq": seq,
+                        "tsMs": ts_ms,
+                        "encoding": "rgb24_base64",
+                        "width": w,
+                        "height": h,
+                        "frameBase64": frame_b64,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             yield line.encode("utf-8")
     except Exception as e:
         err = json.dumps({"error": str(e)[:4000]}, ensure_ascii=False) + "\n"

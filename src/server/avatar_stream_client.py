@@ -43,22 +43,24 @@ def _auth_headers() -> dict[str, str]:
     return headers
 
 
-async def stream_avatar_jpeg_frames(
+async def stream_avatar_frames(
     client_session: Optional[aiohttp.ClientSession],
     *,
     prompt: str,
     session_id: str,
     image_base64: str,
-    audio_float32_base64: str,
+    audio_pcm16_base64: Optional[str] = None,
+    audio_float32_base64: Optional[str] = None,
     negative_prompt: str = "",
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
     resolution: str = "480p",
     num_frames: int = 93,
-) -> AsyncIterator[Tuple[int, str]]:
+    engine: Optional[str] = None,
+) -> AsyncIterator[Tuple[int, Dict[str, Any]]]:
     """
-    POST NDJSON stream. Yields (seq, jpeg_base64).
+    POST NDJSON stream. Yields (seq, frame_payload).
     """
     base = inference_base_url()
     if not base:
@@ -68,15 +70,22 @@ async def stream_avatar_jpeg_frames(
         "sessionId": session_id,
         "prompt": prompt[:8000],
         "imageBase64": image_base64,
-        "audioFloat32Base64": audio_float32_base64,
         "numInferenceSteps": int(num_inference_steps),
         "textGuidanceScale": float(text_guidance_scale),
         "audioGuidanceScale": float(audio_guidance_scale),
         "resolution": resolution,
         "numFrames": int(num_frames),
     }
+    if audio_pcm16_base64:
+        body["audioPcm16Base64"] = audio_pcm16_base64
+    elif audio_float32_base64:
+        body["audioFloat32Base64"] = audio_float32_base64
+    else:
+        raise ValueError("audio_pcm16_base64 or audio_float32_base64 is required")
     if negative_prompt:
         body["negativePrompt"] = negative_prompt[:8000]
+    if engine:
+        body["engine"] = str(engine).strip().lower()
 
     url = base + inference_frames_path()
     headers = _auth_headers()
@@ -103,18 +112,30 @@ async def stream_avatar_jpeg_frames(
                     if obj.get("error"):
                         raise RuntimeError(str(obj.get("error"))[:2000])
                     seq = int(obj.get("seq", 0))
-                    data = obj.get("jpegBase64") or obj.get("data")
-                    if isinstance(data, str) and data:
-                        yield seq, data
+                    payload: Dict[str, Any] = {
+                        "encoding": obj.get("encoding") or ("jpeg_base64" if obj.get("jpegBase64") else None),
+                        "data": obj.get("frameBase64") or obj.get("jpegBase64") or obj.get("data"),
+                        "width": obj.get("width"),
+                        "height": obj.get("height"),
+                        "tsMs": obj.get("tsMs"),
+                    }
+                    if isinstance(payload.get("data"), str) and payload["data"]:
+                        yield seq, payload
             tail = buf.strip()
             if tail:
                 obj = json.loads(tail.decode("utf-8"))
                 if obj.get("error"):
                     raise RuntimeError(str(obj.get("error"))[:2000])
                 seq = int(obj.get("seq", 0))
-                data = obj.get("jpegBase64") or obj.get("data")
-                if isinstance(data, str) and data:
-                    yield seq, data
+                payload2: Dict[str, Any] = {
+                    "encoding": obj.get("encoding") or ("jpeg_base64" if obj.get("jpegBase64") else None),
+                    "data": obj.get("frameBase64") or obj.get("jpegBase64") or obj.get("data"),
+                    "width": obj.get("width"),
+                    "height": obj.get("height"),
+                    "tsMs": obj.get("tsMs"),
+                }
+                if isinstance(payload2.get("data"), str) and payload2["data"]:
+                    yield seq, payload2
     finally:
         if close_session and not sess.closed:
             await sess.close()

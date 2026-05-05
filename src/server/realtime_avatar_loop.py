@@ -7,15 +7,16 @@ import base64
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
 
 from src.server.asr_whisper import transcribe_f32_mono_16k
-from src.server.avatar_stream_client import stream_avatar_jpeg_frames
+from src.server.avatar_stream_client import stream_avatar_frames
 from src.server.llm_runner import generate_reply_sync
 from src.server.session_state import RealtimeSessionState
 from src.server.tts_runner import synthesize_pcm_f32_16k
+from src.server.ws_events import ws_event_base
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -29,6 +30,105 @@ def _emotion_hint(vec: np.ndarray) -> str:
     return ",".join(f"{float(v):.3f}" for v in vec[:8])
 
 
+async def stream_avatar_frames_from_audio(
+    *,
+    app: "web.Application",
+    nullxes_session_id: str,
+    state: RealtimeSessionState,
+    audio_f32: np.ndarray,
+    cancel: asyncio.Event,
+    frame_queue: "asyncio.Queue[dict[str, Any]]",
+    prompt: str,
+    engine: Optional[str] = None,
+) -> None:
+    """
+    Stream JPEG chunks from inference worker for arbitrary float32 mono 16 kHz audio (TTS or mic utterance).
+    Emits avatar.state.changed and avatar.stream.chunk messages only (no speaker.changed).
+    """
+    if audio_f32.size == 0:
+        return
+
+    prompt_txt, img_b64, resolution, _ = state.snapshot_avatar()
+    use_prompt = (prompt or prompt_txt).strip() or "neutral speech"
+    if not img_b64 or not str(img_b64).strip():
+        logger.error("No avatar_image_base64 in session state; cannot render")
+        await frame_queue.put(
+            {
+                **ws_event_base(session_id=nullxes_session_id),
+                "type": "session.error",
+                "message": "avatar_image_missing",
+            }
+        )
+        return
+
+    # Single audio format contract to inference: PCM16 mono 16kHz base64.
+    pcm16 = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
+    pcm16 = (pcm16 * 32767.0).astype(np.int16)
+    audio_b64 = base64.b64encode(pcm16.tobytes()).decode("ascii")
+    eng = (engine or "longcat").strip().lower()
+
+    http = app.get("avatar_http_session")
+    base_ev = ws_event_base(session_id=nullxes_session_id)
+    try:
+        await frame_queue.put(
+            {
+                **base_ev,
+                "type": "avatar.state.changed",
+                "state": "speaking",
+            }
+        )
+        seq = 0
+        async for _seq, frame in stream_avatar_frames(
+            http,
+            prompt=use_prompt[:8000],
+            session_id=nullxes_session_id,
+            image_base64=str(img_b64),
+            audio_pcm16_base64=audio_b64,
+            resolution=str(resolution or "480p"),
+            engine=eng if eng != "longcat" else None,
+        ):
+            if cancel.is_set():
+                break
+            seq += 1
+            await frame_queue.put(
+                {
+                    **base_ev,
+                    "type": "avatar.chunk",
+                    "kind": "video",
+                    "seq": seq,
+                    "encoding": str(frame.get("encoding") or "rgb24_base64"),
+                    "data": frame.get("data"),
+                    "width": frame.get("width"),
+                    "height": frame.get("height"),
+                    "tsMs": frame.get("tsMs"),
+                }
+            )
+        await frame_queue.put(
+            {
+                **base_ev,
+                "type": "avatar.state.changed",
+                "state": "idle",
+            }
+        )
+    except Exception as e:
+        logger.exception("GPU avatar stream failed: %s", e)
+        await frame_queue.put(
+            {
+                **base_ev,
+                "type": "session.error",
+                "message": "avatar_inference_failed",
+                "detail": str(e)[:800],
+            }
+        )
+        await frame_queue.put(
+            {
+                **base_ev,
+                "type": "avatar.state.changed",
+                "state": "idle",
+            }
+        )
+
+
 async def run_realtime_avatar_turn(
     *,
     app: "web.Application",
@@ -38,6 +138,7 @@ async def run_realtime_avatar_turn(
     user_text: str,
     cancel: asyncio.Event,
     frame_queue: "asyncio.Queue[dict[str, Any]]",
+    avatar_inference_engine: Optional[str] = None,
 ) -> None:
     """
     user_text: transcript or chat input.
@@ -84,10 +185,11 @@ async def run_realtime_avatar_turn(
         return
 
     state.append_message("assistant", reply_text)
+    base_ev0 = ws_event_base(session_id=nullxes_session_id)
     await frame_queue.put(
         {
+            **base_ev0,
             "type": "chat.message.received",
-            "at": int(time.time() * 1000),
             "message": {
                 "id": f"reply_{nullxes_session_id}_{int(time.time() * 1000)}",
                 "from": "assistant",
@@ -102,8 +204,8 @@ async def run_realtime_avatar_turn(
         logger.warning("TTS failed, text-only stream: %s", e)
         await frame_queue.put(
             {
+                **base_ev0,
                 "type": "avatar.mode",
-                "at": int(time.time() * 1000),
                 "mode": "text_only",
                 "reason": str(e)[:500],
             }
@@ -113,74 +215,35 @@ async def run_realtime_avatar_turn(
     if audio_f32.size == 0:
         return
 
-    prompt, img_b64, resolution, _identity_id = state.snapshot_avatar()
-    if not img_b64 or not str(img_b64).strip():
-        logger.error("No avatar_image_base64 in session state; cannot render")
-        await frame_queue.put(
-            {
-                "type": "session.error",
-                "at": int(time.time() * 1000),
-                "message": "avatar_image_missing",
-            }
-        )
-        return
+    base_ev = ws_event_base(session_id=nullxes_session_id)
+    await frame_queue.put(
+        {
+            **base_ev,
+            "type": "speaker.changed",
+            "speaker": "assistant",
+        }
+    )
 
-    raw_bytes = np.asarray(audio_f32, dtype=np.float32).tobytes()
-    audio_b64 = base64.b64encode(raw_bytes).decode("ascii")
+    prompt_txt, _img, _res, _ = state.snapshot_avatar()
+    render_prompt = (prompt_txt or reply_text[:500]).strip() or reply_text[:500]
 
-    http = app.get("avatar_http_session")
     try:
-        await frame_queue.put(
-            {
-                "type": "avatar.state.changed",
-                "at": int(time.time() * 1000),
-                "state": "speaking",
-            }
+        await stream_avatar_frames_from_audio(
+            app=app,
+            nullxes_session_id=nullxes_session_id,
+            state=state,
+            audio_f32=audio_f32,
+            cancel=cancel,
+            frame_queue=frame_queue,
+            prompt=render_prompt,
+            engine=avatar_inference_engine,
         )
-        seq = 0
-        async for _seq, jpeg_b64 in stream_avatar_jpeg_frames(
-            http,
-            prompt=prompt or reply_text[:500],
-            session_id=nullxes_session_id,
-            image_base64=str(img_b64),
-            audio_float32_base64=audio_b64,
-            resolution=str(resolution or "480p"),
-        ):
-            if cancel.is_set():
-                break
-            seq += 1
-            await frame_queue.put(
-                {
-                    "type": "avatar.stream.chunk",
-                    "at": int(time.time() * 1000),
-                    "kind": "video",
-                    "seq": seq,
-                    "encoding": "jpeg_base64",
-                    "data": jpeg_b64,
-                }
-            )
+    finally:
         await frame_queue.put(
             {
-                "type": "avatar.state.changed",
-                "at": int(time.time() * 1000),
-                "state": "idle",
-            }
-        )
-    except Exception as e:
-        logger.exception("GPU avatar stream failed: %s", e)
-        await frame_queue.put(
-            {
-                "type": "session.error",
-                "at": int(time.time() * 1000),
-                "message": "avatar_inference_failed",
-                "detail": str(e)[:800],
-            }
-        )
-        await frame_queue.put(
-            {
-                "type": "avatar.state.changed",
-                "at": int(time.time() * 1000),
-                "state": "idle",
+                **base_ev,
+                "type": "speaker.changed",
+                "speaker": "none",
             }
         )
 

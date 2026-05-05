@@ -10,10 +10,15 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import numpy as np
 
-from src.server.realtime_avatar_loop import run_realtime_avatar_turn, transcribe_utterance
+from src.server.realtime_avatar_loop import (
+    run_realtime_avatar_turn,
+    stream_avatar_frames_from_audio,
+    transcribe_utterance,
+)
 from src.server.session_manager import SessionManager, SessionRecord, SessionState
 from src.server.session_state import RealtimeSessionState
 from src.server.vad_rms import RMSUtteranceDetector, RMSVADConfig
+from src.server.ws_events import ws_event_base
 
 if TYPE_CHECKING:
     from aiohttp.web import Application
@@ -49,6 +54,11 @@ class SessionWorker:
         self._process_lock = asyncio.Lock()
         max_frames = int(os.environ.get("NULLXES_AVATAR_FRAME_QUEUE_MAX", "48"))
         self.out_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=max_frames)
+        self._duplex_mode: bool = False
+        self._video_audio_source: str = "tts"
+        self._avatar_inference_engine: str = "longcat"
+        self._mic_asr_transcript_only: bool = True
+        self._meeting_id: Optional[str] = None
         self._apply_session_config(record)
 
     def _apply_session_config(self, record: SessionRecord) -> None:
@@ -67,6 +77,30 @@ class SessionWorker:
                 self._state.identity_id = int(iid)
             except (TypeError, ValueError):
                 self._state.identity_id = None
+
+        dm = cfg.get("duplex_mode")
+        if dm is None:
+            dm = cfg.get("duplexMode")
+        self._duplex_mode = bool(dm) if dm is not None else False
+
+        vas = cfg.get("video_audio_source") or cfg.get("videoAudioSource") or "tts"
+        self._video_audio_source = str(vas).lower()
+
+        eng = cfg.get("avatar_inference_engine") or cfg.get("avatarInferenceEngine") or "longcat"
+        self._avatar_inference_engine = str(eng).lower()
+
+        mat = cfg.get("mic_asr_transcript_only")
+        if mat is None:
+            mat = cfg.get("micAsrTranscriptOnly")
+        self._mic_asr_transcript_only = bool(mat) if mat is not None else True
+
+        mid = cfg.get("meeting_id") or cfg.get("meetingId")
+        if mid:
+            self._meeting_id = str(mid).strip()
+        elif self._rec.external_session_id:
+            self._meeting_id = str(self._rec.external_session_id).strip()
+        else:
+            self._meeting_id = None
 
     @property
     def running(self) -> bool:
@@ -100,6 +134,10 @@ class SessionWorker:
             self._turn_cancel.set()
         if self._turn_task and not self._turn_task.done():
             self._turn_task.cancel()
+        if self._mic_cancel:
+            self._mic_cancel.set()
+        if self._mic_task and not self._mic_task.done():
+            self._mic_task.cancel()
 
     async def wait_done(self, timeout: float = 30.0) -> None:
         if self._main_task:
@@ -131,6 +169,43 @@ class SessionWorker:
         if not text:
             return
         await self._work_queue.put(("text", text))
+
+    async def _cancel_mic_render(self) -> None:
+        if self._mic_cancel:
+            self._mic_cancel.set()
+        if self._mic_task and not self._mic_task.done():
+            self._mic_task.cancel()
+            try:
+                await self._mic_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _cancel_assistant_turn(self) -> None:
+        if self._turn_cancel:
+            self._turn_cancel.set()
+        if self._turn_task and not self._turn_task.done():
+            self._turn_task.cancel()
+            try:
+                await self._turn_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _emit_mic_transcript(self, utt: np.ndarray) -> None:
+        asr_cfg = dict(self._pipeline_cfg.get("asr") or {})
+        try:
+            text = await transcribe_utterance(np.asarray(utt, dtype=np.float32).copy(), asr_cfg)
+            if not text.strip():
+                return
+            await self.out_queue.put(
+                {
+                    **ws_event_base(session_id=self._rec.nullxes_session_id, meeting_id=self._meeting_id),
+                    "type": "voice.transcript",
+                    "text": text.strip(),
+                    "source": "mic",
+                }
+            )
+        except Exception as e:
+            logger.debug("mic transcript ASR skipped: %s", e)
 
     async def _run(self) -> None:
         sm: SessionManager = self._app["session_manager"]
@@ -188,6 +263,64 @@ class SessionWorker:
                     logger.warning("work queue full; dropping utterance")
 
     async def _handle_voice_utterance(self, utt: np.ndarray) -> None:
+        if self._duplex_mode and (self._video_audio_source in ("mic", "auto")):
+            await self._cancel_assistant_turn()
+            await self._cancel_mic_render()
+
+            if self._mic_asr_transcript_only:
+                asyncio.create_task(
+                    self._emit_mic_transcript(np.asarray(utt, dtype=np.float32).copy()),
+                    name=f"mic-asr-{self._rec.nullxes_session_id}",
+                )
+
+            sm: SessionManager = self._app["session_manager"]
+            sid = self._rec.nullxes_session_id
+
+            self._mic_cancel = asyncio.Event()
+            mic_cancel = self._mic_cancel
+
+            async def _mic_render() -> None:
+                try:
+                    rec_now = sm.get(sid)
+                    if rec_now:
+                        rec_now.health["stt"] = "duplex_mic"
+                        sm.touch_record(rec_now)
+                    await self.out_queue.put(
+                        {
+                            **ws_event_base(session_id=sid, meeting_id=self._meeting_id),
+                            "type": "speaker.changed",
+                            "speaker": "candidate",
+                        }
+                    )
+                    await stream_avatar_frames_from_audio(
+                        app=self._app,
+                        nullxes_session_id=sid,
+                        state=self._state,
+                        audio_f32=np.asarray(utt, dtype=np.float32),
+                        cancel=mic_cancel,
+                        frame_queue=self.out_queue,
+                        prompt=str(self._state.avatar_prompt or ""),
+                        engine=self._avatar_inference_engine,
+                    )
+                finally:
+                    try:
+                        await self.out_queue.put(
+                            {
+                                **ws_event_base(session_id=sid, meeting_id=self._meeting_id),
+                                "type": "speaker.changed",
+                                "speaker": "none",
+                            }
+                        )
+                    except asyncio.QueueFull:
+                        pass
+                    rec_done = sm.get(sid)
+                    if rec_done:
+                        rec_done.health["avatar"] = "ok"
+                        sm.touch_record(rec_done)
+
+            self._mic_task = asyncio.create_task(_mic_render(), name=f"mic-{sid}")
+            return
+
         asr_cfg = dict(self._pipeline_cfg.get("asr") or {})
         text = ""
         try:
@@ -199,8 +332,8 @@ class SessionWorker:
             try:
                 self.out_queue.put_nowait(
                     {
+                        **ws_event_base(session_id=self._rec.nullxes_session_id, meeting_id=self._meeting_id),
                         "type": "session.notice",
-                        "at": int(time.time() * 1000),
                         "message": "asr_unavailable_use_chat_text",
                     }
                 )
@@ -212,6 +345,7 @@ class SessionWorker:
         await self._start_turn(text.strip(), from_asr=True)
 
     async def _start_turn(self, user_text: str, from_asr: bool) -> None:
+        await self._cancel_mic_render()
         if self._turn_task and not self._turn_task.done():
             if self._turn_cancel:
                 self._turn_cancel.set()
@@ -240,6 +374,7 @@ class SessionWorker:
                     user_text=user_text,
                     cancel=cancel,
                     frame_queue=self.out_queue,
+                    avatar_inference_engine=self._avatar_inference_engine,
                 )
             finally:
                 rec_done = sm.get(sid)

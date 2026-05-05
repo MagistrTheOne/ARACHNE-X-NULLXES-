@@ -112,7 +112,7 @@ def _generate_frames_numpy(
     return out
 
 
-def stream_avatar_jpeg_frames_sync(
+def stream_avatar_frames_raw_sync(
     *,
     image_bytes: bytes,
     prompt: str,
@@ -123,8 +123,7 @@ def stream_avatar_jpeg_frames_sync(
     audio_guidance_scale: float = 4.0,
     resolution: str = "480p",
     num_frames: int = 93,
-) -> Iterator[tuple[int, str]]:
-    import cv2
+) -> Iterator[tuple[int, bytes, int, int]]:
     from PIL import Image
 
     del negative_prompt
@@ -154,12 +153,12 @@ def stream_avatar_jpeg_frames_sync(
             arr = np.asarray(frame)
             if arr.dtype != np.uint8:
                 arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
-            bgr = arr[:, :, ::-1].copy()
-            ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if not ok or buf is None:
+            # Expect RGB uint8 HWC
+            if arr.ndim != 3 or arr.shape[2] != 3:
                 continue
-            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-            yield seq, b64
+            h, w, _c = arr.shape
+            raw = np.ascontiguousarray(arr).tobytes()
+            yield seq, raw, int(w), int(h)
 
 
 def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
