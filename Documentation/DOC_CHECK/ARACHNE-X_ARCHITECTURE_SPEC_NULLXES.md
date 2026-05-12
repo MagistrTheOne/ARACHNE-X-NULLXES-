@@ -110,4 +110,14 @@
 
 ---
 
+## 7. GTM architecture notes (2026)
+
+- [GTM_FOLDER_AUDIT.md](GTM_FOLDER_AUDIT.md) — keep / refactor / archive по каталогам.
+- [GTM_VAE_ABI.md](GTM_VAE_ABI.md) — контракт латентного пространства VAE.
+- [GTM_VAE_STRATEGY.md](GTM_VAE_STRATEGY.md) — совместимая замена VAE vs breaking tokenizer.
+- [GTM_DATA_EVAL.md](GTM_DATA_EVAL.md) — данные и eval gates.
+- Программный инференс без дублирования логики CLI: `arachne_x.runtime` (`execute_infer`, `InferenceEngine`), обёртка — `scripts/infer.py`.
+
+---
+
 **NULLXES LLC** · внутренний обзор для инженеров и партнёров · может дополняться ссылками на `FULL_SYSTEM_OVERVIEW.md` и `ARACHNE_X_API_DOCUMENTATION.md`.
