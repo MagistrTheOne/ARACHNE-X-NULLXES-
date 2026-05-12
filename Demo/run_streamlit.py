@@ -19,7 +19,7 @@ def torch_gc():
 
 # Page configuration
 st.set_page_config(
-    page_title="LongCatVideo Generator",
+    page_title="ARACHNE-X-ULTRA Video",
     page_icon="🎬",
     layout="wide"
 )
@@ -56,7 +56,7 @@ def load_model(checkpoint_dir):
     return pipe, device
 
 def main():
-    st.title("🎬 LongCatVideo Generator")
+    st.title("🎬 ARACHNE-X-ULTRA (NULLXES)")
     st.markdown("Supports Text-to-Video (T2V), Image-to-Video (I2V), and Video Continuation (VC) generation")
     
     checkpoint_dir = st.text_input("Model Dir", "./weights/ARACHNE-X")

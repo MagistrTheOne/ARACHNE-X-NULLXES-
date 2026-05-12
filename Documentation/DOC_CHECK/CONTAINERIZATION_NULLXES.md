@@ -1,4 +1,4 @@
-# ARACHNE-X (NULLXES) — Commands + Containerization (GPU)
+# ARACHNE-X-ULTRA V2 — «Ночная Фурия» — Commands + Containerization (GPU, NULLXES)
 
 ## 0) Conventions used in commands
 
@@ -11,7 +11,8 @@ export OUT=/outputs
 ```
 
 **Video weights (base):**
-- `--checkpoint_dir "$WEIGHTS/ARACHNE-X-ULTRA-VIDEO"` (or `LongCat-Video` bundle)
+
+- `--checkpoint_dir "$WEIGHTS/ARACHNE-X-ULTRA-VIDEO"` (полный снапшот с [HF VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO))
 
 **Avatar weights:**
 - `--checkpoint_dir "$WEIGHTS/ARACHNE-X-ULTRA-AVATAR"` (must contain full expected layout; if avatar bundle lacks `tokenizer/` or `vae/`, link/copy them from the video bundle)
@@ -284,9 +285,5 @@ Never put tokens directly in commands stored in shell history or docs. Use env:
 export HF_TOKEN='***'
 ```
 
-Then either `hf download ...` (CLI) or use the repo helper:
-
-```bash
-python "$ARACHNE_REPO/scripts/download_longcat_video.py" --local-dir "$WEIGHTS/LongCat-Video"
-```
+Загрузка с Hub: карточка [ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) → локальный каталог `$WEIGHTS/ARACHNE-X-ULTRA-VIDEO` (CLI Hub или вспомогательный скрипт в `scripts/` при наличии).
 

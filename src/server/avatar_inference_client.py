@@ -27,7 +27,7 @@ def inference_base_url() -> str:
 
 
 def inference_generate_path() -> str:
-    p = os.environ.get(INFERENCE_PATH_ENV, "/v1/longcat/generate").strip() or "/v1/longcat/generate"
+    p = os.environ.get(INFERENCE_PATH_ENV, "/v1/arachne/generate").strip() or "/v1/arachne/generate"
     return p if p.startswith("/") else f"/{p}"
 
 
@@ -51,8 +51,15 @@ def _poll_ms() -> int:
 
 
 def _service_key() -> Optional[str]:
-    k = os.environ.get(INFERENCE_KEY_ENV, "").strip()
-    return k or None
+    for env_name in (
+        "NULLXES_INFERENCE_SERVICE_KEY",
+        INFERENCE_KEY_ENV,
+        "LONGCAT_INFERENCE_SERVICE_KEY",
+    ):
+        k = os.environ.get(env_name, "").strip()
+        if k:
+            return k
+    return None
 
 
 def _use_async_jobs() -> bool:
@@ -79,6 +86,15 @@ def _build_payload(
     ref_img_index: Optional[int],
     negative_prompt: Optional[str],
     input_json: Optional[dict[str, Any]],
+    speak_text: Optional[str] = None,
+    tts_provider: Optional[str] = None,
+    embed_audio: Optional[bool] = None,
+    output_mode: Optional[str] = None,
+    num_inference_steps: Optional[int] = None,
+    text_guidance_scale: Optional[float] = None,
+    audio_guidance_scale: Optional[float] = None,
+    resolution: Optional[str] = None,
+    num_frames: Optional[int] = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "task": task,
@@ -99,6 +115,24 @@ def _build_payload(
         payload["negative_prompt"] = negative_prompt
     if input_json is not None:
         payload["inputJson"] = input_json
+    if speak_text:
+        payload["speakText"] = speak_text[:8000]
+    if tts_provider:
+        payload["ttsProvider"] = tts_provider
+    if embed_audio is not None:
+        payload["embedAudio"] = bool(embed_audio)
+    if output_mode:
+        payload["outputMode"] = output_mode
+    if num_inference_steps is not None:
+        payload["numInferenceSteps"] = int(num_inference_steps)
+    if text_guidance_scale is not None:
+        payload["textGuidanceScale"] = float(text_guidance_scale)
+    if audio_guidance_scale is not None:
+        payload["audioGuidanceScale"] = float(audio_guidance_scale)
+    if resolution:
+        payload["resolution"] = resolution
+    if num_frames is not None:
+        payload["numFrames"] = int(num_frames)
     return payload
 
 
@@ -157,6 +191,15 @@ async def avatar_generate_mp4_bytes(
     ref_img_index: Optional[int] = None,
     negative_prompt: Optional[str] = None,
     input_json: Optional[dict[str, Any]] = None,
+    speak_text: Optional[str] = None,
+    tts_provider: Optional[str] = None,
+    embed_audio: Optional[bool] = None,
+    output_mode: Optional[str] = None,
+    num_inference_steps: Optional[int] = None,
+    text_guidance_scale: Optional[float] = None,
+    audio_guidance_scale: Optional[float] = None,
+    resolution: Optional[str] = None,
+    num_frames: Optional[int] = None,
 ) -> bytes:
     """POST to worker: sync generate or async job queue (see NULLXES_AVATAR_INFERENCE_ASYNC)."""
     base = inference_base_url()
@@ -174,6 +217,15 @@ async def avatar_generate_mp4_bytes(
         ref_img_index=ref_img_index,
         negative_prompt=negative_prompt,
         input_json=input_json,
+        speak_text=speak_text,
+        tts_provider=tts_provider,
+        embed_audio=embed_audio,
+        output_mode=output_mode,
+        num_inference_steps=num_inference_steps,
+        text_guidance_scale=text_guidance_scale,
+        audio_guidance_scale=audio_guidance_scale,
+        resolution=resolution,
+        num_frames=num_frames,
     )
     headers = _auth_headers()
     total_timeout = _timeout_sec()
@@ -227,8 +279,17 @@ async def longcat_generate_mp4_bytes(
     ref_img_index: Optional[int] = None,
     negative_prompt: Optional[str] = None,
     input_json: Optional[dict[str, Any]] = None,
+    speak_text: Optional[str] = None,
+    tts_provider: Optional[str] = None,
+    embed_audio: Optional[bool] = None,
+    output_mode: Optional[str] = None,
+    num_inference_steps: Optional[int] = None,
+    text_guidance_scale: Optional[float] = None,
+    audio_guidance_scale: Optional[float] = None,
+    resolution: Optional[str] = None,
+    num_frames: Optional[int] = None,
 ) -> bytes:
-    """Backward-compatible name; delegates to avatar_generate_mp4_bytes."""
+    """Legacy alias (historical import name); delegates to avatar_generate_mp4_bytes."""
     return await avatar_generate_mp4_bytes(
         client_session,
         prompt=prompt,
@@ -241,4 +302,13 @@ async def longcat_generate_mp4_bytes(
         ref_img_index=ref_img_index,
         negative_prompt=negative_prompt,
         input_json=input_json,
+        speak_text=speak_text,
+        tts_provider=tts_provider,
+        embed_audio=embed_audio,
+        output_mode=output_mode,
+        num_inference_steps=num_inference_steps,
+        text_guidance_scale=text_guidance_scale,
+        audio_guidance_scale=audio_guidance_scale,
+        resolution=resolution,
+        num_frames=num_frames,
     )

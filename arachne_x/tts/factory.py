@@ -26,7 +26,7 @@ def create_speech_synthesizer(
 
     Supported ``provider`` values:
     - ``qwen``: Qwen3 CustomVoice via ``qwen-tts`` (install ``requirements-tts.txt``).
-    - ``longcat_audiodit`` / ``audiodit``: LongCat-AudioDiT (install ``requirements-audiodit.txt``).
+    - ``longcat_audiodit`` / ``audiodit``: AudioDiT (install ``requirements-audiodit.txt``).
     """
     p = (provider or "").strip().lower()
     if p == "qwen":
@@ -63,4 +63,4 @@ def create_speech_synthesizer(
             seed=1024 if audiodit_seed is None else audiodit_seed,
         )
         return LongCatAudioDiTSynthesizer(settings)
-    raise ValueError(f"Unknown --tts_provider {provider!r}. Supported: qwen, longcat_audiodit")
+    raise ValueError(f"Unknown --tts_provider {provider!r}. Supported: qwen, audiodit (legacy alias: longcat_audiodit)")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# NDJSON smoke test for POST /v1/realtime/avatar_frames (longcat-worker or compatible).
+# NDJSON smoke test for POST /v1/realtime/avatar_frames (NULLXES Inference Worker or compatible).
 # Usage: NULLXES_URL=http://127.0.0.1:8080 scripts/gpu/smoke_avatar_frames.sh
-# Optional: X_NULLXES_KEY=... if worker enforces LONGCAT_INFERENCE_SERVICE_KEY
+# Optional: X_NULLXES_KEY=... if worker enforces NULLXES_INFERENCE_SERVICE_KEY (or legacy LONGCAT_*).
 set -euo pipefail
 
 BASE="${NULLXES_URL:-http://127.0.0.1:8080}"
@@ -33,7 +33,7 @@ body = {
     "resolution": "480p",
     "numFrames": 4,
     "numInferenceSteps": 1,
-    "engine": os.environ.get("NULLXES_SMOKE_ENGINE", "longcat"),
+    "engine": os.environ.get("NULLXES_SMOKE_ENGINE", "arachne"),
 }
 print(json.dumps(body))
 PY

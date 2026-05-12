@@ -126,7 +126,7 @@ def load_jpeg_frames_from_mp4(path: str) -> Tuple[list[str], float]:
 
 def load_jpeg_frames_from_mp4_bytes(data: bytes) -> Tuple[list[str], float]:
     """
-    Decode in-memory MP4 (e.g. LongCat worker response). Not cached.
+    Decode in-memory MP4 (e.g. NULLXES Inference Worker MP4 bytes). Not cached.
     """
     import cv2
 

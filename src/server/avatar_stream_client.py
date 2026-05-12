@@ -35,9 +35,21 @@ def _timeout_sec() -> int:
         return 900
 
 
+def _service_key() -> str:
+    for env_name in (
+        "NULLXES_INFERENCE_SERVICE_KEY",
+        INFERENCE_KEY_ENV,
+        "LONGCAT_INFERENCE_SERVICE_KEY",
+    ):
+        v = os.environ.get(env_name, "").strip()
+        if v:
+            return v
+    return ""
+
+
 def _auth_headers() -> dict[str, str]:
     headers: dict[str, str] = {"Accept": "application/x-ndjson, application/json"}
-    sk = os.environ.get(INFERENCE_KEY_ENV, "").strip()
+    sk = _service_key()
     if sk:
         headers[INFERENCE_KEY_HEADER] = sk
     return headers

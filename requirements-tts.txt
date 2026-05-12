@@ -1,9 +1,9 @@
 # Optional: text-to-speech for avatar CLI (--speak_text).
-# Install on top of requirements.txt.
+# Install on top of requirements.txt (pins aligned with requirements.txt).
 #
 # Qwen3-TTS: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 qwen-tts
-soundfile
+soundfile==0.13.1
 #
-# LongCat-AudioDiT (--tts_provider longcat_audiodit):
-#   pip install -r requirements-audiodit.txt
+# LongCat-AudioDiT (--tts_provider longcat_audiodit): use a separate venv if needed
+#   (requirements-audiodit.txt pulls transformers>=5.3 and conflicts with core 4.41.0).

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Скачивание весов LongCat-Video (meituan-longcat/LongCat-Video) с Hugging Face.
+Скачивание base video weights с Hugging Face (HF repo `meituan-longcat/LongCat-Video`) для ARACHNE-X / NULLXES training.
+
+Имя файла скрипта — историческое; логика — generic snapshot_download upstream bundle.
 
 Использование:
   set HF_TOKEN=your_token_here   # Windows
@@ -19,7 +21,7 @@ import os
 import sys
 
 def main():
-    parser = argparse.ArgumentParser(description="Download LongCat-Video from Hugging Face")
+    parser = argparse.ArgumentParser(description="Download base video HF bundle for ARACHNE-X (meituan-longcat/LongCat-Video)")
     parser.add_argument(
         "--local-dir",
         type=str,

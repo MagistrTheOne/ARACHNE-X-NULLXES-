@@ -1,35 +1,39 @@
-# ARACHNE-X GTM — стратегия замены VAE / tokenizer
+# ARACHNE-X-ULTRA V2 — «Ночная Фурия» — стратегия замены VAE / tokenizer (NULLXES)
 
-Цель: улучшить визуальное качество без «тихого» ломания чекпоинтов.
+Цель: улучшить визуальное качество **внутри собственной линейки весов** без «тихого» ломания чекпоинтов. Внешние модели и чужие веса **не рассматриваются** — только собственные переобучения и миграции артефактов.
 
-## Путь A — совместимый VAE (рекомендуемый для staged rollout)
+См. также: `GTM_VAE_ABI.md`, `GTM_DATA_EVAL.md` (E-VAE-REC).
 
-**Идея:** новый энкодер/декодер, но **тот же** `z_dim`, temporal/spatial compression, семантика латента.
+---
 
-**Плюсы:** минимальный retune DiT (LoRA или короткий full FT), существующие latent training shards остаются валидными при совпадении шейпов.
+## Путь A — совместимый VAE (рекомендуемый staged rollout)
 
-**Минусы:** архитектурно ограничены текущим bottleneck.
+**Идея:** новый энкодер/декодер NULLXES, но **тот же** латентный ABI (`z_dim`, temporal/spatial compression, семантика латента) — см. таблицу в `GTM_VAE_ABI.md`.
 
-**Шаги:** см. `GTM_VAE_ABI.md` → reconstruction gate → light DiT alignment → avatar head при необходимости.
+**Плюсы:** минимальный retune DiT (LoRA или короткий full FT); существующие latent training shards остаются валидными при совпадении тензорных шейпов.
 
-## Путь B — новый tokenizer / другой latent ABI
+**Минусы:** ограничение по ёмкости текущего bottleneck.
 
-**Идея:** другой `z_dim`, другие compression ratios, или discrete tokenizer (VQ) вместо KL-Gaussian.
+**Шаги:** reconstruction gate (E-VAE-REC) → лёгкое выравнивание DiT → при необходимости головка аватара.
 
-**Плюсы:** потенциально лучше качество/скорость sequence length.
+---
 
-**Минусы:** **breaking** — полный цикл: новый VAE pretrain/finetune → DiT с нуля или heavy FT → переэкспорт всех training latents → обновление inference/export/train.
+## Путь B — новый tokenizer / иной latent ABI (NULLXES)
 
-**Обязательные артефакты:** latent adapter (1×1 conv / linear bridge) *только как краткий мост* между старым и новым пространством — для production лучше end-to-end без adapter.
+**Идея:** иной `z_dim`, иные compression ratios, или дискретный tokenizer вместо текущего KL-Gaussian — **полностью внутренняя** спецификация NULLXES (отдельный дизайн-док на каждую версию ABI).
 
-## Внешние ориентиры (не привязка к лицензии без проверки)
+**Плюсы:** потенциально лучше качество или эффективность по длине последовательности.
 
-Для сравнения архитектур и API в экосистеме diffusers:
+**Минусы:** **breaking** — полный цикл: pretrain/finetune VAE → DiT с нуля или heavy FT → переэкспорт всех training latents → обновление inference / export / train.
 
-- **Wan / AutoencoderKLWan** — текущая база; см. документацию diffusers `AutoencoderKLWan`.
-- **CogVideoX** — `AutoencoderKLCogVideoX` (3D causal VAE, другой ABI).
-- **HunyuanVideo** — `AutoencoderKLHunyuanVideo`.
-- **NVIDIA Cosmos tokenizer** — continuous/discrete video tokenizers (другая парадигма; интеграция = путь B).
-- **Open-MAGVIT2 / MAGVIT** — discrete tokens; путь B + AR модель или hybrid.
+**Кратковременный мост:** latent adapter (1×1 / linear) **только** для миграции между версиями ABI; целевое production-состояние — **end-to-end без adapter**.
 
-Выбор: **Path A** до исчерпания качества; **Path B** когда нужен step-change и есть бюджет на полный retrain + новый data flywheel.
+---
+
+## Выбор пути
+
+**Path A** до исчерпания качества при фиксированном ABI. **Path B** при утверждённом бюджете на полный retrain и новый data flywheel NULLXES.
+
+---
+
+**NULLXES** · внутренний GTM-документ

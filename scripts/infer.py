@@ -29,13 +29,13 @@ def main():
         "--tts_provider",
         type=str,
         default="qwen",
-        help="TTS backend when using --speak_text (qwen | longcat_audiodit). See requirements-tts.txt / requirements-audiodit.txt",
+        help="TTS backend when using --speak_text (qwen | audiodit; legacy alias longcat_audiodit). See requirements-tts.txt / requirements-audiodit.txt",
     )
     parser.add_argument(
         "--tts_model",
         type=str,
         default=None,
-        help="HF id or local path (qwen default: Qwen3-TTS-CustomVoice; longcat_audiodit default: LongCat-AudioDiT-1B).",
+        help="HF id or local path (qwen default: Qwen3-TTS-CustomVoice; audiodit default: meituan-longcat/LongCat-AudioDiT-1B HF weights).",
     )
     parser.add_argument(
         "--tts_device_map",
@@ -52,37 +52,37 @@ def main():
         default=None,
         help='Attention impl for Qwen3TTSModel (e.g. flash_attention_2, sdpa). Default: auto.',
     )
-    parser.add_argument("--audiodit_nfe", type=int, default=16, help="LongCat-AudioDiT ODE steps (only longcat_audiodit).")
+    parser.add_argument("--audiodit_nfe", type=int, default=16, help="AudioDiT ODE steps (only audiodit / longcat_audiodit).")
     parser.add_argument(
         "--audiodit_guidance_strength",
         type=float,
         default=4.0,
-        help="LongCat-AudioDiT CFG/APG strength (only longcat_audiodit).",
+        help="AudioDiT CFG/APG strength (only audiodit / longcat_audiodit).",
     )
     parser.add_argument(
         "--audiodit_guidance_method",
         type=str,
         default="cfg",
         choices=["cfg", "apg"],
-        help="LongCat-AudioDiT guidance (only longcat_audiodit).",
+        help="AudioDiT guidance method (only audiodit / longcat_audiodit).",
     )
     parser.add_argument(
         "--audiodit_prompt_audio",
         type=str,
         default=None,
-        help="Optional reference WAV for voice cloning (only longcat_audiodit; requires --audiodit_prompt_text).",
+        help="Optional reference WAV for voice cloning (only audiodit / longcat_audiodit; requires --audiodit_prompt_text).",
     )
     parser.add_argument(
         "--audiodit_prompt_text",
         type=str,
         default=None,
-        help="Transcript of --audiodit_prompt_audio (only longcat_audiodit).",
+        help="Transcript of --audiodit_prompt_audio (only audiodit / longcat_audiodit).",
     )
     parser.add_argument(
         "--audiodit_seed",
         type=int,
         default=1024,
-        help="RNG seed for LongCat-AudioDiT (only longcat_audiodit).",
+        help="RNG seed for AudioDiT (only audiodit / longcat_audiodit).",
     )
     parser.add_argument(
         "--audio_chunk_sec",

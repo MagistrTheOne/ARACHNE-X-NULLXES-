@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Omit optional "engine" JSON field for NULLXES core path (and legacy client aliases).
+_CORE_AVATAR_ENGINES = frozenset({"", "arachne", "nullxes", "longcat", "core"})
+
 
 def _emotion_hint(vec: np.ndarray) -> str:
     if vec.size == 0:
@@ -65,7 +68,7 @@ async def stream_avatar_frames_from_audio(
     pcm16 = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
     pcm16 = (pcm16 * 32767.0).astype(np.int16)
     audio_b64 = base64.b64encode(pcm16.tobytes()).decode("ascii")
-    eng = (engine or "longcat").strip().lower()
+    eng = (engine or "arachne").strip().lower()
 
     http = app.get("avatar_http_session")
     base_ev = ws_event_base(session_id=nullxes_session_id)
@@ -85,7 +88,7 @@ async def stream_avatar_frames_from_audio(
             image_base64=str(img_b64),
             audio_pcm16_base64=audio_b64,
             resolution=str(resolution or "480p"),
-            engine=eng if eng != "longcat" else None,
+            engine=eng if eng not in _CORE_AVATAR_ENGINES else None,
         ):
             if cancel.is_set():
                 break

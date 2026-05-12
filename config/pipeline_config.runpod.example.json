@@ -3,7 +3,7 @@
   "deployment": {
     "target": "runpod_single_h200",
     "clone_hint": "https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git",
-    "weights": "Prefer local HF cache or HF_HOME; LongCat-Video + LongCat-Video-Avatar on the same GPU need scheduling (see job queue on longcat-worker)."
+    "weights": "Prefer local HF cache or HF_HOME; base + avatar checkpoints on one GPU require scheduling (see Inference Worker job queue)."
   },
   "vad": {
     "backend": "silero_onnx",
@@ -35,7 +35,8 @@
     "note": "arachne_x/tts/factory.py defaults to CustomVoice HF id; override model_id to match this Base checkpoint if your synthesizer supports it."
   },
   "avatar": {
-    "backend": "longcat_worker_http",
+    "backend": "nullxes_worker_http",
+    "backend_legacy_aliases": ["longcat_worker_http"],
     "inference_url_env": "NULLXES_AVATAR_INFERENCE_URL",
     "video_model_id": "meituan-longcat/LongCat-Video",
     "avatar_model_id": "meituan-longcat/LongCat-Video-Avatar",

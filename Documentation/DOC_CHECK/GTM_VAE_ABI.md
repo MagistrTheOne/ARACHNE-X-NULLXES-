@@ -1,8 +1,8 @@
-# ARACHNE-X GTM — VAE / latent ABI (контракт совместимости)
+# ARACHNE-X-ULTRA V2 — «Ночная Фурия» — VAE / latent ABI (NULLXES)
 
 Источник правды в коде: [`arachne_x/modules/autoencoder_kl_wan.py`](../../arachne_x/modules/autoencoder_kl_wan.py) (`AutoencoderKLWan`), [`vae/config.json`](../../vae/config.json) (часть полей), пайплайны [`arachne_x/pipeline_arachne_x_video_avatar.py`](../../arachne_x/pipeline_arachne_x_video_avatar.py) и [`arachne_x/pipeline_arachne_x_video.py`](../../arachne_x/pipeline_arachne_x_video.py).
 
-## Зафиксированный ABI (текущий Wan-style VAE)
+## Зафиксированный ABI (текущий VAE в `AutoencoderKLWan`)
 
 | Параметр | Значение | Где используется |
 |----------|----------|------------------|
@@ -11,7 +11,7 @@
 | `scale_factor_spatial` | **8** | `vae_scale_factor_spatial`, делимость H/W |
 | `latents_mean`, `latents_std` | длина **16** каждый | `normalize_latents` / `denormalize_latents` в пайплайнах |
 | RGB I/O | `in_channels=3`, `out_channels=3` | encode/decode видео |
-| `temperal_downsample` | `[false, true, true]` | конфиг энкодера (типичный Wan layout) |
+| `temperal_downsample` | `[false, true, true]` | конфиг энкодера (текущий layout в репозитории) |
 
 Любой новый VAE **должен** либо:
 
@@ -28,4 +28,4 @@
 
 ## Ссылка на реализацию
 
-- Нормализация латентов: `LongCatVideoAvatarPipeline.normalize_latents` / `denormalize_latents` (тот же паттерн в base pipeline).
+- Нормализация латентов: класс аватар-пайплайна в [`arachne_x/pipeline_arachne_x_video_avatar.py`](../../arachne_x/pipeline_arachne_x_video_avatar.py) — `normalize_latents` / `denormalize_latents` (тот же паттерн в базовом видео-пайплайне).

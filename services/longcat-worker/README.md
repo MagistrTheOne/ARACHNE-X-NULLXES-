@@ -1,126 +1,66 @@
-# LongCat-Video HTTP worker (GPU sidecar)
+# NULLXES Inference Worker (NIGHT FURY)
 
-ARACHNE-X вызывает **`POST /v1/longcat/generate`** и ожидает **тело ответа = MP4** (`video/mp4`) или JSON с **`videoBase64`**.
+Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 secondary, B200 experimental). Реализация: **in-process** CUDA — FastAPI вызывает общий runtime [`arachne_x/runtime/avatar_serving.py`](../../arachne_x/runtime/avatar_serving.py) через тонкий lazy-прокси [`gpu_avatar_runtime.py`](gpu_avatar_runtime.py) (uvicorn не импортирует тяжёлый стек до первого inference).
 
-Реализовано:
+## Endpoints
 
-1. **Полный inference** — `longcat_generate_once.py` повторяет трёхстадийный пайплайн из upstream ([`run_demo_text_to_video.py`](https://github.com/meituan-longcat/LongCat-Video/blob/main/run_demo_text_to_video.py), `run_demo_image_to_video.py`, `run_demo_video_continuation.py`): базовая генерация → distill (LoRA) → refinement (720p / 30 fps для refine).
-2. **Оркестрация** — `main.py` (FastAPI) пишет входы во временный каталог, вызывает **`torchrun`** через `longcat_subprocess.py`, отдаёт байты MP4.
+| Method | Path | Описание |
+|--------|------|----------|
+| GET | `/health` | Liveness; **не** грузит веса на GPU. |
+| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. |
+| POST | `/v1/arachne/generate` | Синхронный MP4 (`video/mp4`) для поддерживаемых audio-* задач. |
+| POST | `/v1/longcat/generate` | **Legacy alias** того же handler (не в OpenAPI schema). |
+| POST | `/v1/infer/jobs` | Async очередь MP4 → poll status → one-shot result. |
 
-## Зависимости (только для HTTP-слоя)
+## Обязательные переменные (prod)
+
+| Переменная | Назначение |
+|------------|------------|
+| `NULLXES_CHECKPOINT_DIR` или `ARACHNE_CHECKPOINT_DIR` | Каталог весов avatar (tokenizer, vae, dit, avatar_single, audio и т.д.). |
+
+## Аутентификация (опционально)
+
+Если задан один из ключей, клиент обязан передать заголовок **`X-NULLXES-Avatar-Inference-Key`**:
+
+1. `NULLXES_INFERENCE_SERVICE_KEY` (канон)
+2. `NULLXES_AVATAR_INFERENCE_SERVICE_KEY` (совместимость с aiohttp-клиентом в `src/server`)
+3. `LONGCAT_INFERENCE_SERVICE_KEY` (legacy имя env)
+
+## Зависимости HTTP-слоя
 
 ```bash
 cd services/longcat-worker
 pip install -r requirements.txt
 ```
 
-Сам **torch / flash-attn / longcat_video** ставятся в окружение [LongCat-Video](https://github.com/meituan-longcat/LongCat-Video) по их README и [модели](https://huggingface.co/meituan-longcat/LongCat-Video).
+Полный torch/flash-attn/ARACHNE-X stack — из корня репозитория: `requirements.txt`, `requirements_avatar.txt` (см. [`docker/Dockerfile.gpu`](../../docker/Dockerfile.gpu)).
 
-## Обязательные переменные для прода
+## Запуск
 
-| Переменная | Назначение |
-|------------|------------|
-| `LONGCAT_VIDEO_REPO` | Корень клонированного репозитория LongCat-Video (каталог, где лежит пакет `longcat_video`). |
-| `LONGCAT_CHECKPOINT_DIR` | Путь к весам, например `./weights/LongCat-Video` после `huggingface-cli download`. |
-
-Запуск API (лучше тот же Python/conda, где установлен LongCat и CUDA):
+Из корня репозитория (чтобы резолвились `arachne_x` и воркер):
 
 ```bash
-export LONGCAT_VIDEO_REPO=/workspace/LongCat-Video
-export LONGCAT_CHECKPOINT_DIR=/workspace/LongCat-Video/weights/LongCat-Video
+export NULLXES_CHECKPOINT_DIR=/path/to/avatar-weights
+export PYTHONPATH=/path/to/ARACHNE-X:/path/to/ARACHNE-X/services/longcat-worker
+cd services/longcat-worker
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
 
-В ARACHNE-X: `NULLXES_AVATAR_INFERENCE_URL=http://<gpu-host>:9090`.
+Оркестратор: `NULLXES_AVATAR_INFERENCE_URL=http://<host>:9090`, опционально `NULLXES_AVATAR_INFERENCE_PATH=/v1/arachne/generate` (по умолчанию в клиенте уже `/v1/arachne/generate`).
 
-## Опционально
+## Поле `engine` (NDJSON)
 
-| Переменная | По умолчанию | Смысл |
-|------------|--------------|--------|
-| `LONGCAT_NPROC` | `1` | `torchrun --nproc_per_node` |
-| `LONGCAT_CONTEXT_PARALLEL_SIZE` | = `LONGCAT_NPROC` | context parallel (как в upstream multi-GPU) |
-| `LONGCAT_ENABLE_COMPILE` | выкл. | `1` / `true` — `--enable_compile` (первый прогон дольше) |
-| `LONGCAT_TORCHRUN` | `torchrun` | Путь к `torchrun`, если не в `PATH` |
-| `LONGCAT_SUBPROCESS_TIMEOUT_SEC` | `7200` | Таймаут одного запроса |
-| `LONGCAT_INFERENCE_SERVICE_KEY` | пусто | Если задан — проверка заголовка `X-NULLXES-Avatar-Inference-Key` |
-| `LONGCAT_MOCK_MP4_PATH` | — | Dev без GPU: отдать готовый mp4 без torch |
-| `LONGCAT_MOCK_VIDEO_BASE64` | — | Ответ JSON `videoBase64` (редкие тесты) |
+Канонические core-значения: `arachne` (default в теле запроса), `nullxes`, пустая строка, legacy `longcat`, `core`. Значение `wan_s2v` отклоняется с понятной ошибкой, если не развёрнут отдельный сервис.
 
-## Dev без GPU
+## Очередь jobs
 
-```bash
-export LONGCAT_MOCK_MP4_PATH=/path/to/sample.mp4
-uvicorn main:app --host 127.0.0.1 --port 9090
-```
+`POST /v1/infer/jobs` → `GET /v1/infer/jobs/{jobId}` → один раз `GET /v1/infer/jobs/{jobId}/result` (MP4). Глубина: `INFERENCE_MAX_QUEUE` (по умолчанию 32).
 
-## Тело запроса `POST /v1/longcat/generate`
+## Dev / mock (только с явным флагом)
 
-```json
-{
-  "task": "text-to-video",
-  "prompt": "…",
-  "sessionId": "ui_sess_…",
-  "negative_prompt": "опционально",
-  "imageBase64": "<только для image-to-video>",
-  "continuationState": "<base64 mp4 для video-continuation>"
-}
-```
+Исторические переменные вида `LONGCAT_MOCK_MP4_PATH` не должны использоваться в prod без **`ALLOW_INFERENCE_DEV_MOCK=1`** (см. код воркера / политику в `GTM_PRE_RELEASE_AUDIT.md`).
 
-`task`: `text-to-video` | `image-to-video` | `video-continuation` — соответствует режимам из [карточки модели](https://huggingface.co/meituan-longcat/LongCat-Video).
+## Дополнительно
 
-## Команда torchrun (эквивалент ручного запуска)
-
-Один GPU:
-
-```bash
-cd "$LONGCAT_VIDEO_REPO"
-PYTHONPATH=. torchrun --standalone --nproc_per_node=1 \
-  /path/to/ARACHNE-X/services/longcat-worker/longcat_generate_once.py \
-  --checkpoint_dir "$LONGCAT_CHECKPOINT_DIR" \
-  --job_json /tmp/job.json \
-  --context_parallel_size 1
-```
-
-Два GPU (как в upstream):
-
-```bash
-export LONGCAT_NPROC=2
-export LONGCAT_CONTEXT_PARALLEL_SIZE=2
-```
-
-## Примечания
-
-- Один запрос = один полный прогон пайплайна; время — минуты, не миллисекунды.
-- Для продакшена обычно ставят **очередь** (Redis/Celery) и отдельный пул GPU-воркеров; этот сервис — минимальный синхронный HTTP фасад.
-- При ошибках CUDA / OOM клиент ARACHNE-X получит **502** с фрагментом stderr из subprocess.
-
-## ARACHNE-X ULTRA (MagistrTheOne / HF)
-
-Если заданы **`ARACHNE_VIDEO_REPO`** и **`ARACHNE_CHECKPOINT_DIR`**, воркер использует **`arachne_subprocess.py`**: `torchrun ... run_t2v.py` / `run_at2v.py` и `--input_json` (см. [ARACHNE-X-ULTRA](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA)).
-
-| Переменная | Смысл |
-|------------|--------|
-| `ARACHNE_VIDEO_REPO` | Корень репозитория с `run_t2v.py`, `run_at2v.py` |
-| `ARACHNE_CHECKPOINT_DIR` | Веса (например после `huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA`) |
-| `ARACHNE_SCRIPT_T2V` / `ARACHNE_SCRIPT_AT2V` | Имена скриптов (по умолчанию `run_t2v.py`, `run_at2v.py`) |
-| `ARACHNE_NPROC` | `torchrun --nproc_per_node` (по умолчанию 1) |
-| `ARACHNE_INPUT_JSON_OUTPUT_KEY` | Ключ в JSON для абсолютного пути выходного mp4 (по умолчанию `output_video`) |
-| `ARACHNE_IMAGE_TO_VIDEO_SCRIPT` | `t2v` или `at2v` — какой скрипт для `image-to-video` |
-
-**Задачи HTTP:** `text-to-video`, `image-to-video`, `video-continuation`, `audio-text-to-video`, `audio-image-to-video` (последние три только при пути ARACHNE).
-
-Поля: `audioBase64`, `numSegments`, `refImgIndex`, `inputJson` (доп. поля в `input_json`).
-
-**Моки:** `LONGCAT_MOCK_MP4_PATH` / `LONGCAT_MOCK_VIDEO_BASE64` работают **только** при **`ALLOW_INFERENCE_DEV_MOCK=1`**. Без этого и без репо+весов — **503**.
-
-## Очередь jobs (один GPU / один под H200)
-
-Сериальная очередь в памяти процесса: **`POST /v1/infer/jobs`** → `{"jobId","status":"queued"}` → **`GET /v1/infer/jobs/{jobId}`** до `status: done` → **`GET /v1/infer/jobs/{jobId}/result`** (один раз, `video/mp4`).
-
-| Env | По умолчанию | Смысл |
-|-----|--------------|--------|
-| `INFERENCE_MAX_QUEUE` | `32` | Макс. глубина очереди (ожидающих jobs) |
-
-Синхронный **`POST /v1/longcat/generate`** без изменений.
-
-На стороне ARACHNE-X aiohttp: **`NULLXES_AVATAR_INFERENCE_ASYNC=1`** — клиент использует job API; **`NULLXES_AVATAR_INFERENCE_JOBS_PATH`** (по умолчанию `/v1/infer/jobs`), **`NULLXES_AVATAR_INFERENCE_POLL_MS`** (по умолчанию `500`).
+- One-shot RunPod: [`Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md`](../../Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md)
+- Контракт HTTP ↔ job: [`Documentation/DOC_CHECK/GTM_SCHEMA_TRUTH_INFERENCE_HTTP.md`](../../Documentation/DOC_CHECK/GTM_SCHEMA_TRUTH_INFERENCE_HTTP.md)

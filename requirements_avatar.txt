@@ -2,8 +2,6 @@
 
 scikit-learn==1.6.1
 scikit-image==0.25.2
-librosa==0.11.0
-soundfile==0.13.1
 soxr==0.5.0.post1
 pyloudnorm==0.1.1
 audio-separator==0.30.2
@@ -11,14 +9,11 @@ audio-separator==0.30.2
 nvidia-ml-py==13.580.65
 tzdata==2025.2
 onnx==1.18.0
-onnxruntime==1.16.3
+onnxruntime==1.18.0
 
 openai==1.75.0
 cffi==2.0.0
 chardet==5.2.0
-faster-whisper==1.1.1
-aiohttp==3.12.15
 aiortc==1.10.1
 silero-vad==5.1.2
-av==13.1.0
 qwen-tts

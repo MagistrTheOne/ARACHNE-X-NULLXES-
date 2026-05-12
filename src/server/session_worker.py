@@ -56,7 +56,7 @@ class SessionWorker:
         self.out_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=max_frames)
         self._duplex_mode: bool = False
         self._video_audio_source: str = "tts"
-        self._avatar_inference_engine: str = "longcat"
+        self._avatar_inference_engine: str = "arachne"
         self._mic_asr_transcript_only: bool = True
         self._meeting_id: Optional[str] = None
         self._apply_session_config(record)
@@ -86,7 +86,7 @@ class SessionWorker:
         vas = cfg.get("video_audio_source") or cfg.get("videoAudioSource") or "tts"
         self._video_audio_source = str(vas).lower()
 
-        eng = cfg.get("avatar_inference_engine") or cfg.get("avatarInferenceEngine") or "longcat"
+        eng = cfg.get("avatar_inference_engine") or cfg.get("avatarInferenceEngine") or "arachne"
         self._avatar_inference_engine = str(eng).lower()
 
         mat = cfg.get("mic_asr_transcript_only")

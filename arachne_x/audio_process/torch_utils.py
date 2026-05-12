@@ -163,13 +163,22 @@ def get_audio_duration(audio_path):
     return float(info["format"]["duration"])
 
 
-def save_video_ffmpeg(gen_video_samples, save_path, audio_path=None, fps=25, quality=5, high_quality_save=False):
+def save_video_ffmpeg(
+    gen_video_samples,
+    save_path,
+    audio_path=None,
+    fps=25,
+    quality=5,
+    high_quality_save=False,
+    *,
+    quiet: bool = False,
+):
 
     def save_video(frames, save_path, fps, quality=9, ffmpeg_params=None):
         writer = imageio.get_writer(
             save_path, fps=fps, quality=quality, ffmpeg_params=ffmpeg_params
         )
-        for frame in tqdm(frames, desc="Saving video"):
+        for frame in tqdm(frames, desc="Saving video", disable=quiet):
             frame = np.array(frame)
             if frame.dtype != np.uint8:
                 frame = np.clip(frame, 0.0, 1.0) if frame.max() <= 1.0 else np.clip(frame, 0.0, 255.0)

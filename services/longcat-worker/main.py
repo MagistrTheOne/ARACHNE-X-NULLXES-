@@ -28,6 +28,22 @@ logger = logging.getLogger(__name__)
 
 EXPECTED_KEY_HEADER = "x-nullxes-avatar-inference-key"
 
+# Core vision engines (NULLXES DiT/VAE path). "longcat" retained as legacy client alias only.
+_CORE_VISION_ENGINES = frozenset({"", "arachne", "nullxes", "longcat", "core"})
+
+
+def _inference_service_key_expected() -> Optional[str]:
+    for env_name in (
+        "NULLXES_INFERENCE_SERVICE_KEY",
+        "NULLXES_AVATAR_INFERENCE_SERVICE_KEY",
+        "LONGCAT_INFERENCE_SERVICE_KEY",
+    ):
+        v = os.environ.get(env_name, "").strip()
+        if v:
+            return v
+    return None
+
+
 TaskLiteral = Literal[
     "text-to-video",
     "image-to-video",
@@ -50,6 +66,16 @@ class GenerateBody(BaseModel):
     refImgIndex: Optional[int] = Field(default=None, ge=0)
     negative_prompt: Optional[str] = Field(default=None, max_length=8000)
     inputJson: Optional[dict[str, Any]] = None
+    # NIGHT FURY: orchestration + mux (no DiT change)
+    speakText: Optional[str] = Field(default=None, max_length=16000)
+    ttsProvider: str = Field(default="qwen", max_length=64)
+    embedAudio: bool = Field(default=True)
+    outputMode: str = Field(default="mp4", max_length=32)
+    numInferenceSteps: int = Field(default=8, ge=1, le=64)
+    textGuidanceScale: float = Field(default=4.0)
+    audioGuidanceScale: float = Field(default=4.0)
+    resolution: str = Field(default="480p", max_length=16)
+    numFrames: int = Field(default=93, ge=1, le=256)
 
 
 class StreamFramesBody(BaseModel):
@@ -68,7 +94,7 @@ class StreamFramesBody(BaseModel):
     audioGuidanceScale: float = Field(default=4.0)
     resolution: str = Field(default="480p")
     numFrames: int = Field(default=93, ge=1, le=256)
-    engine: str = Field(default="longcat", max_length=64)
+    engine: str = Field(default="arachne", max_length=64)
 
 
 def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
@@ -78,14 +104,19 @@ def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid inference key")
 
 
+def _has_audio_or_speech(body: GenerateBody) -> bool:
+    return bool((body.audioBase64 or "").strip() or (body.speakText or "").strip())
+
+
 def _validate_body(body: GenerateBody) -> None:
     if body.task == "image-to-video" and not (body.imageBase64 or "").strip():
         raise ValueError("imageBase64 required for image-to-video")
-    if body.task == "audio-text-to-video" and not (body.audioBase64 or "").strip():
-        raise ValueError("audioBase64 required for audio-text-to-video")
+    if body.task == "audio-text-to-video":
+        if not _has_audio_or_speech(body):
+            raise ValueError("audioBase64 or speakText required for audio-text-to-video")
     if body.task == "audio-image-to-video":
-        if not (body.audioBase64 or "").strip():
-            raise ValueError("audioBase64 required for audio-image-to-video")
+        if not _has_audio_or_speech(body):
+            raise ValueError("audioBase64 or speakText required for audio-image-to-video")
         if not (body.imageBase64 or "").strip():
             raise ValueError("imageBase64 required for audio-image-to-video")
     if body.task == "video-continuation" and not (body.continuationState or "").strip():
@@ -105,6 +136,14 @@ def run_generate_sync(body: GenerateBody) -> bytes:
                 "task": task,
                 "prompt": body.prompt,
                 "output_mp4": out_mp4,
+                "embed_audio": body.embedAudio,
+                "output_mode": body.outputMode,
+                "num_inference_steps": body.numInferenceSteps,
+                "text_guidance_scale": body.textGuidanceScale,
+                "audio_guidance_scale": body.audioGuidanceScale,
+                "resolution": body.resolution,
+                "num_frames": body.numFrames,
+                "fps": 30,
             }
             if body.negative_prompt:
                 job["negative_prompt"] = body.negative_prompt
@@ -118,11 +157,24 @@ def run_generate_sync(body: GenerateBody) -> bytes:
                 ip = os.path.join(work, "neutral.png")
                 Image.new("RGB", (832, 480), (40, 40, 48)).save(ip, format="PNG")
                 job["image_path"] = ip
-            raw_a = base64.b64decode(body.audioBase64 or "")
-            ap = os.path.join(work, "in.wav")
-            with open(ap, "wb") as f:
-                f.write(raw_a)
-            job["audio_path"] = ap
+            if (body.audioBase64 or "").strip():
+                raw_a = base64.b64decode(body.audioBase64 or "")
+                ap = os.path.join(work, "in.wav")
+                with open(ap, "wb") as f:
+                    f.write(raw_a)
+                job["audio_path"] = ap
+            else:
+                from arachne_x.runtime.avatar_serving import synthesize_speak_text_to_wav
+
+                st = (body.speakText or "").strip()
+                if not st:
+                    raise ValueError("speakText is empty")
+                job["audio_path"] = synthesize_speak_text_to_wav(
+                    st,
+                    work_dir=work,
+                    tts_provider=body.ttsProvider,
+                    input_json=body.inputJson,
+                )
             return generate_mp4_bytes_from_job(job)
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -143,21 +195,24 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
     import numpy as np
     import time
 
-    engine = (body.engine or "longcat").strip().lower()
+    engine = (body.engine or "arachne").strip().lower()
     if engine == "wan_s2v":
         err = json.dumps(
             {
                 "error": (
                     "wan_s2v engine is not deployed on this worker "
-                    "(use engine=longcat or run a dedicated Wan S2V inference service)"
+                    "(use engine=arachne / omit engine, or run a dedicated Wan S2V inference service)"
                 )
             },
             ensure_ascii=False,
         )
         yield (err + "\n").encode("utf-8")
         return
-    if engine not in ("longcat", ""):
-        err = json.dumps({"error": f"unknown engine {engine!r}; supported: longcat"}, ensure_ascii=False)
+    if engine not in _CORE_VISION_ENGINES:
+        err = json.dumps(
+            {"error": f"unknown engine {engine!r}; supported core engines: arachne, nullxes (legacy alias: longcat)"},
+            ensure_ascii=False,
+        )
         yield (err + "\n").encode("utf-8")
         return
 
@@ -228,7 +283,7 @@ async def realtime_avatar_frames(
     body: StreamFramesBody,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
 ) -> StreamingResponse:
-    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     try:
         return StreamingResponse(
@@ -239,12 +294,13 @@ async def realtime_avatar_frames(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/v1/longcat/generate")
+@app.post("/v1/arachne/generate")
+@app.post("/v1/longcat/generate", include_in_schema=False)
 async def generate(
     body: GenerateBody,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
 ) -> Response:
-    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     try:
         data = await asyncio.to_thread(run_generate_sync, body)
@@ -263,14 +319,14 @@ async def create_infer_job(
     body: GenerateBody,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
 ) -> dict[str, Any]:
-    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     try:
         _validate_body(body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     try:
-        job_id = job_queue.enqueue(body.model_dump(mode="json"))
+        job_id = job_queue.enqueue(body.model_dump(mode="json", exclude_none=True))
     except RuntimeError as ex:
         if str(ex) == "queue_full":
             raise HTTPException(status_code=503, detail="inference queue full") from ex
@@ -283,7 +339,7 @@ async def get_infer_job(
     job_id: str,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
 ) -> dict[str, Any]:
-    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     rec = job_queue.get(job_id)
     if rec is None:
@@ -299,7 +355,7 @@ async def get_infer_job_result(
     job_id: str,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
 ) -> Response:
-    expected = os.environ.get("LONGCAT_INFERENCE_SERVICE_KEY", "").strip() or None
+    expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     rec = job_queue.get(job_id)
     if rec is None:
@@ -323,7 +379,8 @@ async def get_infer_job_result(
     return Response(content=data, media_type="video/mp4")
 
 
-@app.post("/v1/longcat/debug/decode-image")
+@app.post("/v1/arachne/debug/decode-image")
+@app.post("/v1/longcat/debug/decode-image", include_in_schema=False)
 async def debug_image(body: GenerateBody) -> dict[str, int]:
     if not body.imageBase64:
         raise HTTPException(400, "no imageBase64")

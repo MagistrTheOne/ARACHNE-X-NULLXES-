@@ -23,4 +23,4 @@ python -m pip install "huggingface_hub>=0.34,<1.0"
 
 echo "venv ready: $VENV"
 echo "Activate: source \"$VENV/bin/activate\""
-echo "Optional: export PYTHONPATH=\"\$PWD/services/longcat-worker:\$PWD\" (adjust for Wan/LTX trees)"
+echo "Optional: export PYTHONPATH=\"\$PWD:\$PWD/services/longcat-worker\" for local uvicorn imports."
