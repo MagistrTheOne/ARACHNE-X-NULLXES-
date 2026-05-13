@@ -429,6 +429,21 @@ NULLXES must be written exactly as NULLXES.
 Correct ASR mistakes such as Null Access, Nullexes, Nowx EES, Magnol.
 ```
 
+The semiautomatic ASR adapter also applies a Whisper initial prompt and deterministic post-normalization:
+
+```text
+Nolix's / Nullexes / Null Access / Nowx EES → NULLXES
+Foria it alone / Foria Eidolon / Fury Eidolon → FURIA-EIDOLON
+Magnol / Megan Null → Meg Null
+```
+
+For auditability, each audio turn writes:
+
+```text
+asr_raw.txt → raw Whisper transcript
+asr.txt     → brand-normalized transcript used by the planner
+```
+
 Smoke command:
 
 ```bash

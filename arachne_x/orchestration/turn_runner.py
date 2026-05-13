@@ -153,6 +153,7 @@ def _build_manifest(
         action_plan=plan.to_dict() if plan else {},
         artifacts={
             "asr_text": str(out_dir / "asr.txt") if input_audio else None,
+            "asr_raw_text": str(out_dir / "asr_raw.txt") if input_audio else None,
             "action_plan": str(action_plan_path) if action_plan_path else None,
             "reply_text": str(out_dir / "reply.txt") if plan else None,
             "tts_wav": tts_path,
