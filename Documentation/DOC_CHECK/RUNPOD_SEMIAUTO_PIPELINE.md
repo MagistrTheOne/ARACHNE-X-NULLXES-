@@ -1027,6 +1027,18 @@ python scripts/run_semiauto_turn.py \
   --out /workspace/ARACHNE-X/output/planner_lora_smoke
 ```
 
+Prompt-defined employee override is supported. If the user text includes name, role, organization, and optional visual description, EIDOLON updates `action_plan.employee`, `action_plan.character`, and the video prompt instead of silently falling back to Megan:
+
+```bash
+python scripts/run_semiauto_turn.py \
+  --stage plan_only \
+  --text "Employee name: Iris. Role: research assistant. Organization: Arachne Labs. Visual: elegant woman in a black suit, glasses, quiet research office. Task: confirm readiness." \
+  --character megan \
+  --planner-lora /workspace/ARACHNE-X/output/qwen_planner_lora/furia_eidolon_synth_r16 \
+  --out /workspace/ARACHNE-X/output/planner_lora_employee_iris \
+  --attn flash_attention_2
+```
+
 For job runner JSON, use:
 
 ```json

@@ -68,8 +68,17 @@ class SafetyPlan:
 
 
 @dataclass
+class EmployeePlan:
+    name: str = ""
+    role: str = ""
+    organization: str = ""
+    visual_description: str = ""
+
+
+@dataclass
 class ActionPlan:
     character: str = "megan"
+    employee: EmployeePlan = field(default_factory=EmployeePlan)
     normalized_user_text: str = ""
     reply_text: str = ""
     video: VideoPlan = field(default_factory=VideoPlan)
@@ -83,14 +92,23 @@ class ActionPlan:
         video = data.get("video") or {}
         tts = data.get("tts") or {}
         safety = data.get("safety") or {}
+        employee = data.get("employee") or {}
         if not isinstance(video, dict):
             video = {}
         if not isinstance(tts, dict):
             tts = {}
         if not isinstance(safety, dict):
             safety = {}
+        if not isinstance(employee, dict):
+            employee = {}
         return cls(
             character=str(data.get("character") or "megan"),
+            employee=EmployeePlan(
+                name=str(employee.get("name") or ""),
+                role=str(employee.get("role") or ""),
+                organization=str(employee.get("organization") or ""),
+                visual_description=str(employee.get("visual_description") or ""),
+            ),
             normalized_user_text=str(data.get("normalized_user_text") or ""),
             reply_text=str(data.get("reply_text") or ""),
             video=VideoPlan(
@@ -121,6 +139,8 @@ class ActionPlan:
         errors: List[str] = []
         if not self.character.strip():
             errors.append("character is required")
+        if self.employee.name and not self.employee.role.strip():
+            errors.append("employee.role is required when employee.name is provided")
         if self.safety.mode not in VALID_SAFETY_MODES:
             errors.append(f"safety.mode must be one of {sorted(VALID_SAFETY_MODES)}")
         if self.video.enabled:

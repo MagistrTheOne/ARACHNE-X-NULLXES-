@@ -126,6 +126,12 @@ def _plan(
         notes.append("blocked unsafe explicit request")
     return {
         "character": name.lower(),
+        "employee": {
+            "name": name,
+            "role": title,
+            "organization": org,
+            "visual_description": "professional business appearance, premium tailored business suit, calm closed-mouth expression",
+        },
         "normalized_user_text": f"{name} / {title} / {org}: {intent}",
         "reply_text": reply,
         "video": {

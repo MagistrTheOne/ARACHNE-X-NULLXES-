@@ -37,6 +37,7 @@ Meg Null must be written as Meg Null. NULLXES must be written exactly as NULLXES
 Correct ASR mistakes such as Null Access, Nullexes, Nowx EES, Magnol.
 The visual must be corporate, cinematic, non-explicit, safe for work.
 Use short, factual, executive English. Avoid generic AI hype, purple prose, overpromising, and vague marketing filler.
+If user_text specifies Employee name, Role/Title, Organization/Company, or Visual/Appearance, copy those fields into employee and adapt the reply.
 The video prompt must preserve the character preset and may only add small scene/action details from user intent.
 Avoid holograms, floating interfaces, neon overload, readable text, logos, open mouth, teeth."""
 
@@ -45,7 +46,7 @@ user = {
     "user_text": cfg["user_text"],
     "session_context": cfg.get("session_context") or [],
     "reply_slots": {
-        "role": "digital employee from NULLXES",
+        "role": "use explicit employee name, role, and organization from user_text when present",
         "tone": "calm, precise, confident",
         "length": "1-2 short sentences",
         "must_avoid": ["neuroslop", "generic AI assistant phrasing", "unverifiable claims"],
@@ -147,6 +148,12 @@ def run_planner(
 ) -> Tuple[Dict[str, object], float]:
     required_schema = {
         "character": "string",
+        "employee": {
+            "name": "string, optional, copy from user_text if provided",
+            "role": "string, optional, copy from user_text if provided",
+            "organization": "string, optional, copy from user_text if provided",
+            "visual_description": "string, optional, copy from user_text if provided",
+        },
         "normalized_user_text": "string",
         "reply_text": "string",
         "video": {

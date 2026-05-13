@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,7 +16,7 @@ from .adapters.video import run_video
 from .policy import apply_policy
 from .presets import VIDEO_PROFILES, get_character_preset
 from .qa import check_turn_artifacts
-from .schemas import ActionPlan, TurnInput, TurnManifest
+from .schemas import ActionPlan, EmployeePlan, TurnInput, TurnManifest
 from .subprocess_utils import SubprocessRunError, default_python, read_json, write_json
 
 
@@ -52,16 +53,92 @@ def _detect_stage3_attn(stage3_python: str, repo_root: Path) -> str:
         return "sdpa"
 
 
+def _slug(value: str) -> str:
+    safe = re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+    return safe.strip("_") or "employee"
+
+
+def _extract_field(text: str, labels: tuple[str, ...]) -> str:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:{label_pattern})\s*[:=]\s*(.+?)(?=\n|\.|;|(?:\s+(?:Employee name|Name|Role|Title|Organization|Org|Company|Visual|Appearance|Task)\s*[:=])|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip(" .;\n\t") if match else ""
+
+
+def _extract_employee_override(user_text: str) -> EmployeePlan:
+    text = user_text or ""
+    name = _extract_field(text, ("Employee name", "Name"))
+    role = _extract_field(text, ("Role", "Title"))
+    organization = _extract_field(text, ("Organization", "Org", "Company"))
+    visual = _extract_field(text, ("Visual", "Appearance"))
+
+    if not name:
+        match = re.search(r"\b(?:digital\s+employee|employee)\s+named\s+([A-Z][A-Za-z0-9_-]{1,40})\b", text)
+        if match:
+            name = match.group(1)
+    if not role and name:
+        match = re.search(rf"\b{re.escape(name)}\b\s+is\s+(?:an?\s+)?(.+?)\s+for\s+([A-Z][A-Za-z0-9 _-]+)", text)
+        if match:
+            role = match.group(1).strip(" .;")
+            organization = organization or match.group(2).strip(" .;")
+    if not organization and name:
+        match = re.search(r"\bfor\s+([A-Z][A-Za-z0-9 _-]+?)(?:\.|;|,|$)", text)
+        if match:
+            organization = match.group(1).strip(" .;")
+
+    if not name:
+        return EmployeePlan()
+    return EmployeePlan(name=name, role=role or "digital employee", organization=organization, visual_description=visual)
+
+
+def _employee_positive_prompt(employee: EmployeePlan) -> str:
+    org_part = f" for {employee.organization}" if employee.organization else ""
+    visual = (
+        employee.visual_description
+        or "professional business appearance, premium tailored business suit, calm closed-mouth expression"
+    )
+    return (
+        f"Photorealistic corporate video of {employee.name}, {employee.role}{org_part}, {visual}, "
+        "inside a premium modern office, cinematic warm lighting, restrained executive posture, "
+        "direct focused eye contact, realistic skin texture, natural hair detail, minimal luxury interior, "
+        "no readable text, no logos, smooth natural motion, high facial consistency, shallow depth of field"
+    )
+
+
+def _apply_employee_override(plan: ActionPlan, user_text: str) -> None:
+    override = _extract_employee_override(user_text)
+    if not override.name:
+        return
+    plan.employee = override
+    plan.character = _slug(override.name)
+    if not plan.normalized_user_text.strip():
+        plan.normalized_user_text = user_text
+    if not plan.reply_text.strip():
+        org = f" for {override.organization}" if override.organization else ""
+        plan.reply_text = f"I am {override.name}, {override.role}{org}. I am ready to proceed."
+    # If a dynamic employee is requested, the visual should not silently fall back to Megan.
+    plan.video.positive_prompt = _employee_positive_prompt(override)
+
+
 def _ensure_prompts(plan: ActionPlan, character: str) -> None:
     preset = get_character_preset(character)
     if not plan.video.positive_prompt.strip():
-        plan.video.positive_prompt = preset["positive_prompt"]
+        plan.video.positive_prompt = (
+            _employee_positive_prompt(plan.employee) if plan.employee.name else preset["positive_prompt"]
+        )
     if not plan.video.negative_prompt.strip():
         plan.video.negative_prompt = preset["negative_prompt"]
     if not plan.reply_text.strip():
-        plan.reply_text = (
-            "Hello. I am Megan from NULLXES, and I am ready to coordinate the next phase with calm precision."
-        )
+        if plan.employee.name:
+            org = f" for {plan.employee.organization}" if plan.employee.organization else ""
+            plan.reply_text = f"I am {plan.employee.name}, {plan.employee.role}{org}. I am ready to proceed."
+        else:
+            plan.reply_text = (
+                "Hello. I am Megan from NULLXES, and I am ready to coordinate the next phase with calm precision."
+            )
     if not plan.tts.speaker.strip():
         plan.tts.speaker = preset["speaker"]
     if not plan.tts.instruct.strip():
@@ -325,6 +402,7 @@ def run_turn(
 
     plan.tts.enabled = plan.tts.enabled and turn.enable_tts
     plan.video.enabled = plan.video.enabled and turn.enable_video
+    _apply_employee_override(plan, user_text)
     _ensure_prompts(plan, turn.character)
     plan = apply_policy(plan, turn.safety_mode)
     validation_notes = plan.validate(allowed_video_profiles=sorted(VIDEO_PROFILES))
