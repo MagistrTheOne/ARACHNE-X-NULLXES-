@@ -31,13 +31,25 @@ Return only valid JSON. No markdown. No comments.
 Meg Null must be written as Meg Null. NULLXES must be written exactly as NULLXES.
 Correct ASR mistakes such as Null Access, Nullexes, Nowx EES, Magnol.
 The visual must be corporate, cinematic, non-explicit, safe for work.
+Use short, factual, executive English. Avoid generic AI hype, purple prose, overpromising, and vague marketing filler.
+The video prompt must preserve the character preset and may only add small scene/action details from user intent.
 Avoid holograms, floating interfaces, neon overload, readable text, logos, open mouth, teeth."""
 
 user = {
     "character": cfg["character"],
     "user_text": cfg["user_text"],
-    "reply_requirement": "Write one concise natural English response for TTS.",
-    "video_prompt_requirement": "Write a photorealistic text-to-video prompt using the character preset.",
+    "session_context": cfg.get("session_context") or [],
+    "reply_slots": {
+        "role": "digital employee from NULLXES",
+        "tone": "calm, precise, confident",
+        "length": "1-2 short sentences",
+        "must_avoid": ["neuroslop", "generic AI assistant phrasing", "unverifiable claims"],
+    },
+    "video_slots": {
+        "base_visual_source": "character_preset",
+        "allowed_variation": "subtle posture, camera, lighting, or prop details only",
+        "must_avoid": ["holograms", "floating screens", "readable text", "logos", "open mouth", "teeth"],
+    },
     "character_preset": cfg["character_preset"],
     "video_profile": cfg["video_profile"],
     "required_schema": cfg["required_schema"],
@@ -123,6 +135,9 @@ def run_planner(
     enable_video: bool,
     safety_mode: str,
     attn_implementation: str,
+    session_context: list[str] | None = None,
+    timeout_sec: float | None = None,
+    retries: int = 0,
 ) -> Tuple[Dict[str, object], float]:
     required_schema = {
         "character": "string",
@@ -165,9 +180,12 @@ def run_planner(
                 "character_preset": get_character_preset(character),
                 "required_schema": required_schema,
                 "attn_implementation": attn_implementation,
+                "session_context": session_context or [],
             },
             work_dir=work_dir,
             name="planner",
+            timeout_sec=timeout_sec,
+            retries=retries,
         )
         plan = result.get("plan")
         if not isinstance(plan, dict):

@@ -21,13 +21,20 @@ def _default_out(character: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="NULLXES FURIA-EIDOLON local semiautomatic turn runner")
-    src = parser.add_mutually_exclusive_group(required=True)
+    src = parser.add_mutually_exclusive_group(required=False)
     src.add_argument("--text", type=str, help="User text input. If omitted, use --audio.")
     src.add_argument("--audio", type=str, help="Input audio path for ASR.")
     parser.add_argument("--character", type=str, default="megan")
     parser.add_argument("--out", type=str, default=None, help="Turn output directory.")
     parser.add_argument("--safety", type=str, default="prod", choices=["prod", "redteam"])
     parser.add_argument("--video-profile", type=str, default="fast_distill_9x16")
+    parser.add_argument("--job-id", type=str, default=None)
+    parser.add_argument("--session-id", type=str, default=None)
+    parser.add_argument("--session-store", type=str, default=None)
+    parser.add_argument("--stage", type=str, default="execute", choices=["execute", "plan_only", "execute_plan"])
+    parser.add_argument("--approved-action-plan", type=str, default=None)
+    parser.add_argument("--approved-by", type=str, default=None)
+    parser.add_argument("--approved-at", type=str, default=None)
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--no-tts", action="store_true")
     parser.add_argument("--repo-root", type=str, default=str(ROOT))
@@ -42,7 +49,11 @@ def main() -> None:
     )
     parser.add_argument("--video-checkpoint", type=str, default="/workspace/ARACHNE-X/weights/ARACHNE-X-ULTRA-VIDEO")
     parser.add_argument("--attn", type=str, default="auto", choices=["auto", "flash_attention_2", "sdpa"])
+    parser.add_argument("--timeout-sec", type=float, default=None)
+    parser.add_argument("--retries", type=int, default=0)
     args = parser.parse_args()
+    if args.stage != "execute_plan" and not (args.text or args.audio):
+        parser.error("--text or --audio is required unless --stage execute_plan is used")
 
     turn = TurnInput(
         text=args.text,
@@ -53,6 +64,8 @@ def main() -> None:
         video_profile=args.video_profile,
         enable_tts=not args.no_tts,
         enable_video=not args.no_video,
+        job_id=args.job_id,
+        session_id=args.session_id,
     )
     manifest = run_turn(
         turn,
@@ -64,6 +77,13 @@ def main() -> None:
         tts_model=args.tts_model,
         video_checkpoint=args.video_checkpoint,
         attn_implementation=args.attn,
+        stage=args.stage,
+        approved_action_plan_path=args.approved_action_plan,
+        approved_by=args.approved_by,
+        approved_at=args.approved_at,
+        timeout_sec=args.timeout_sec,
+        retries=args.retries,
+        session_store_dir=args.session_store,
     )
     print(json.dumps(manifest.to_dict(), indent=2, ensure_ascii=False))
 

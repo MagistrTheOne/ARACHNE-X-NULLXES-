@@ -31,6 +31,12 @@ CHARACTER_PRESETS: Dict[str, Dict[str, str]] = {
         "tts_instruct": MEGAN_TTS_INSTRUCT,
         "positive_prompt": MEGAN_POSITIVE_PROMPT,
         "negative_prompt": MEGAN_NEGATIVE_PROMPT,
+        "default_video_profile": "fast_distill_9x16",
+        "identity_loras": [],
+        "style_rules": (
+            "Keep Megan photorealistic, closed-mouth, corporate, restrained, and premium. "
+            "Do not add holograms, floating UI, readable brand text, neon overload, or exaggerated expression."
+        ),
     }
 }
 
@@ -46,6 +52,19 @@ VIDEO_PROFILES: Dict[str, Dict[str, object]] = {
         "crf": "18",
         "lora_key": "cfg_step_lora",
         "lora_file": "lora/cfg_step_lora.safetensors",
+    },
+    "megan_identity_fast_9x16": {
+        "height": 832,
+        "width": 480,
+        "num_frames": 93,
+        "num_inference_steps": 16,
+        "guidance_scale": 1.0,
+        "use_distill": True,
+        "fps": 30,
+        "crf": "18",
+        "loras": [
+            {"file": "lora/cfg_step_lora.safetensors", "key": "cfg_step_lora"},
+        ],
     },
     "quality_480p_9x16": {
         "height": 832,

@@ -833,7 +833,7 @@ Future local runner must write one `manifest.json` per turn.
 
 ## 15. Next Code Step: Local Turn Runner
 
-No worker. No HTTP. The next productionizing step is a local CLI:
+No worker. No HTTP. The productionizing step is a local CLI:
 
 ```bash
 python scripts/run_semiauto_turn.py \
@@ -858,7 +858,108 @@ This preserves the current no-worker constraint while converting the validated s
 
 ---
 
-## 16. Current Production Position
+## 16. RunPod Job Runner and HITL Contract
+
+The local runner now supports three execution stages:
+
+```text
+execute      → plan + TTS + VIDEO in one call
+plan_only    → ASR/LLM/policy only; writes action_plan.json and manifest status pending_approval
+execute_plan → execute TTS/VIDEO from an approved action_plan.json
+```
+
+### Lightweight healthcheck
+
+```bash
+cd /workspace/ARACHNE-X
+source .venv/bin/activate
+python scripts/run_semiauto_job.py --health
+```
+
+### Full auto single job
+
+Create a JSON job under `/workspace/ARACHNE-X/jobs/incoming/megan_001.json`:
+
+```json
+{
+  "job_id": "megan_001",
+  "stage": "execute",
+  "text": "Introduce yourself as Megan from NULLXES in one precise line.",
+  "character": "megan",
+  "safety": "prod",
+  "video_profile": "fast_distill_9x16",
+  "enable_tts": true,
+  "enable_video": true,
+  "session_id": "megan_default",
+  "retries": 1
+}
+```
+
+Run once:
+
+```bash
+python scripts/run_semiauto_job.py \
+  --job /workspace/ARACHNE-X/jobs/incoming/megan_001.json
+```
+
+Watch a folder:
+
+```bash
+python scripts/run_semiauto_job.py \
+  --jobs-dir /workspace/ARACHNE-X/jobs/incoming \
+  --watch \
+  --poll-sec 5
+```
+
+The runner writes sidecar markers:
+
+```text
+job.json.running  → job currently executing
+job.json.done     → manifest copy for a completed/partial/blocked job
+job.json.failed   → manifest copy for a failed job
+```
+
+### Human-in-the-loop approval
+
+Step 1: plan only.
+
+```bash
+python scripts/run_semiauto_turn.py \
+  --stage plan_only \
+  --text "Megan should greet the NULLXES team and confirm she is online." \
+  --character megan \
+  --out /workspace/ARACHNE-X/output/hitl_megan_001
+```
+
+Human reviews and edits:
+
+```text
+/workspace/ARACHNE-X/output/hitl_megan_001/action_plan.json
+```
+
+Step 2: execute the approved plan.
+
+```bash
+python scripts/run_semiauto_turn.py \
+  --stage execute_plan \
+  --approved-action-plan /workspace/ARACHNE-X/output/hitl_megan_001/action_plan.json \
+  --approved-by operator \
+  --out /workspace/ARACHNE-X/output/hitl_megan_001
+```
+
+The manifest now includes:
+
+```text
+status              → completed / partial / failed / blocked / pending_approval
+validation_notes    → schema/profile/prompt contract issues
+errors              → subprocess failure payloads with stdout/stderr log paths
+lifecycle           → stage, approval metadata, job/session metadata
+qa                  → basic generated artifact checks
+```
+
+---
+
+## 17. Current Production Position
 
 **ARACHNE X ULTRA V2 / Project Fury** is not yet a hosted worker system in this playbook. It is a validated local RunPod semiautomatic pipeline:
 

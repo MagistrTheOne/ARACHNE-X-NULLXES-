@@ -45,6 +45,8 @@ def run_asr(
     audio_path: str,
     model_path: str,
     language: str = "english",
+    timeout_sec: float | None = None,
+    retries: int = 0,
 ) -> Tuple[Dict[str, object], float]:
     text_path = str(Path(work_dir) / "asr.txt")
     return run_python_script(
@@ -58,4 +60,6 @@ def run_asr(
         },
         work_dir=work_dir,
         name="asr",
+        timeout_sec=timeout_sec,
+        retries=retries,
     )

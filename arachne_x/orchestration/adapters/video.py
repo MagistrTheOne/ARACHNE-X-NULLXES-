@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from ..presets import get_video_profile
 from ..subprocess_utils import run_python_script
@@ -20,10 +20,29 @@ cfg = json.load(open(sys.argv[1], encoding="utf-8"))
 profile = cfg["profile"]
 pipe = load_base_pipeline(cfg["checkpoint_dir"], device="cuda", torch_dtype=torch.bfloat16)
 
+active_loras = []
+profile_loras = list(profile.get("loras") or [])
 if profile.get("lora_file"):
-    lora_path = os.path.join(cfg["checkpoint_dir"], profile["lora_file"])
-    pipe.dit.load_lora(lora_path, profile.get("lora_key", "cfg_step_lora"))
-    pipe.dit.enable_loras([profile.get("lora_key", "cfg_step_lora")])
+    profile_loras.append({
+        "file": profile["lora_file"],
+        "key": profile.get("lora_key", "cfg_step_lora"),
+    })
+for item in profile_loras + list(cfg.get("identity_loras") or []):
+    lora_file = item.get("file") or item.get("path")
+    if not lora_file:
+        continue
+    lora_path = lora_file if os.path.isabs(lora_file) else os.path.join(cfg["checkpoint_dir"], lora_file)
+    key = item.get("key") or os.path.splitext(os.path.basename(lora_file))[0]
+    pipe.dit.load_lora(
+        lora_path,
+        key,
+        multiplier=float(item.get("multiplier", 1.0)),
+        lora_network_dim=int(item.get("rank", 128)),
+        lora_network_alpha=int(item.get("alpha", 64)),
+    )
+    active_loras.append(key)
+if active_loras:
+    pipe.dit.enable_loras(active_loras)
 
 g = torch.Generator(device="cuda").manual_seed(int(cfg.get("seed", 778)))
 out = pipe.generate_t2v(
@@ -60,6 +79,9 @@ def run_video(
     negative_prompt: str,
     profile_name: str,
     seed: int,
+    identity_loras: List[Dict[str, object]] | None = None,
+    timeout_sec: float | None = None,
+    retries: int = 0,
 ) -> Tuple[Dict[str, object], float]:
     work = Path(work_dir)
     output_path = str(work / "video.mp4")
@@ -73,9 +95,12 @@ def run_video(
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "profile": get_video_profile(profile_name),
+            "identity_loras": identity_loras or [],
             "seed": seed,
             "output_path": output_path,
         },
         work_dir=work,
         name="video",
+        timeout_sec=timeout_sec,
+        retries=retries,
     )

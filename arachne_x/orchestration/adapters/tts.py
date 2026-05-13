@@ -44,6 +44,8 @@ def run_tts(
     language: str,
     instruct: str,
     attn_implementation: str,
+    timeout_sec: float | None = None,
+    retries: int = 0,
 ) -> Tuple[Dict[str, object], float]:
     output_path = str(Path(work_dir) / "tts.wav")
     Path(work_dir).mkdir(parents=True, exist_ok=True)
@@ -62,4 +64,6 @@ def run_tts(
         },
         work_dir=work_dir,
         name="tts",
+        timeout_sec=timeout_sec,
+        retries=retries,
     )
