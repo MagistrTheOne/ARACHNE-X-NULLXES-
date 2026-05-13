@@ -974,7 +974,70 @@ qa                  → basic generated artifact checks
 
 ---
 
-## 17. Current Production Position
+## 17. Qwen Planner LoRA MVP
+
+The planner can be adapted with a small PEFT LoRA trained from synthetic `ActionPlan` examples.
+
+Build a starter dataset:
+
+```bash
+cd /workspace/ARACHNE-X
+source .venv_stage3/bin/activate
+export PYTHONPATH=/workspace/ARACHNE-X
+
+python scripts/build_qwen_sft_synthetic.py \
+  --out /workspace/ARACHNE-X/datasets/qwen_sft/furia_eidolon_synthetic \
+  --positive 200 \
+  --negative 50 \
+  --eval-size 25
+```
+
+Install training dependency in `.venv_stage3`:
+
+```bash
+pip install peft==0.14.0
+```
+
+Train a fast LoRA:
+
+```bash
+python scripts/train_qwen_planner_lora.py \
+  --model-path /workspace/ARACHNE-X/weights/Qwen3-4B-Instruct-2507 \
+  --train-jsonl /workspace/ARACHNE-X/datasets/qwen_sft/furia_eidolon_synthetic/train.jsonl \
+  --eval-jsonl /workspace/ARACHNE-X/datasets/qwen_sft/furia_eidolon_synthetic/eval.jsonl \
+  --output-dir /workspace/ARACHNE-X/output/qwen_planner_lora/furia_eidolon_synth_r16 \
+  --rank 16 \
+  --alpha 32 \
+  --epochs 2 \
+  --batch-size 1 \
+  --grad-accum 8 \
+  --lr 1e-4 \
+  --max-length 2048 \
+  --attn flash_attention_2
+```
+
+Use the adapter in a turn:
+
+```bash
+python scripts/run_semiauto_turn.py \
+  --stage plan_only \
+  --text "Megan is online. Confirm readiness without hype." \
+  --character megan \
+  --planner-lora /workspace/ARACHNE-X/output/qwen_planner_lora/furia_eidolon_synth_r16 \
+  --out /workspace/ARACHNE-X/output/planner_lora_smoke
+```
+
+For job runner JSON, use:
+
+```json
+{
+  "planner_lora": "/workspace/ARACHNE-X/output/qwen_planner_lora/furia_eidolon_synth_r16"
+}
+```
+
+---
+
+## 18. Current Production Position
 
 **ARACHNE X ULTRA V2 / Project Fury** is not yet a hosted worker system in this playbook. It is a validated local RunPod semiautomatic pipeline:
 

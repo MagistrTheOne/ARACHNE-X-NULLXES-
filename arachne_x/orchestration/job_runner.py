@@ -84,6 +84,7 @@ def run_job(
         tts_model=str(job.get("tts_model") or weights["tts_model"]),
         video_checkpoint=str(job.get("video_checkpoint") or weights["video_checkpoint"]),
         attn_implementation=str(job.get("attn") or "auto"),
+        planner_lora_path=job.get("planner_lora") or job.get("planner_lora_path"),
         stage=str(job.get("stage") or "execute"),
         approved_action_plan_path=job.get("approved_action_plan") or job.get("approved_action_plan_path"),
         approved_by=job.get("approved_by"),

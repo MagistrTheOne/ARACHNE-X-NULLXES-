@@ -25,6 +25,11 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="cuda:0" if torch.cuda.is_available() else "cpu",
     attn_implementation=attn,
 )
+planner_lora_path = (cfg.get("planner_lora_path") or "").strip()
+if planner_lora_path:
+    from peft import PeftModel
+    model = PeftModel.from_pretrained(model, planner_lora_path)
+    model.eval()
 
 system = """You are the NULLXES FURIA-EIDOLON local orchestrator planner.
 Return only valid JSON. No markdown. No comments.
@@ -136,6 +141,7 @@ def run_planner(
     safety_mode: str,
     attn_implementation: str,
     session_context: list[str] | None = None,
+    planner_lora_path: str | None = None,
     timeout_sec: float | None = None,
     retries: int = 0,
 ) -> Tuple[Dict[str, object], float]:
@@ -181,6 +187,7 @@ def run_planner(
                 "required_schema": required_schema,
                 "attn_implementation": attn_implementation,
                 "session_context": session_context or [],
+                "planner_lora_path": planner_lora_path or "",
             },
             work_dir=work_dir,
             name="planner",

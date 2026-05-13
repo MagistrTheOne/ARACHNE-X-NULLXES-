@@ -49,6 +49,7 @@ def main() -> None:
     )
     parser.add_argument("--video-checkpoint", type=str, default="/workspace/ARACHNE-X/weights/ARACHNE-X-ULTRA-VIDEO")
     parser.add_argument("--attn", type=str, default="auto", choices=["auto", "flash_attention_2", "sdpa"])
+    parser.add_argument("--planner-lora", type=str, default=None, help="Optional PEFT LoRA adapter for the Qwen planner.")
     parser.add_argument("--timeout-sec", type=float, default=None)
     parser.add_argument("--retries", type=int, default=0)
     args = parser.parse_args()
@@ -77,6 +78,7 @@ def main() -> None:
         tts_model=args.tts_model,
         video_checkpoint=args.video_checkpoint,
         attn_implementation=args.attn,
+        planner_lora_path=args.planner_lora,
         stage=args.stage,
         approved_action_plan_path=args.approved_action_plan,
         approved_by=args.approved_by,

@@ -190,6 +190,7 @@ def run_turn(
     tts_model: str = "/workspace/ARACHNE-X/weights/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     video_checkpoint: str = "/workspace/ARACHNE-X/weights/ARACHNE-X-ULTRA-VIDEO",
     attn_implementation: str = "auto",
+    planner_lora_path: Optional[str] = None,
     stage: str = "execute",
     approved_action_plan_path: Optional[str] = None,
     approved_by: Optional[str] = None,
@@ -293,6 +294,7 @@ def run_turn(
                 safety_mode=turn.safety_mode,
                 attn_implementation=attn,
                 session_context=session_context,
+                planner_lora_path=planner_lora_path,
                 timeout_sec=timeout_sec,
                 retries=retries,
             )
