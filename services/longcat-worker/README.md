@@ -7,10 +7,16 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 | Method | Path | Описание |
 |--------|------|----------|
 | GET | `/health` | Liveness; **не** грузит веса на GPU. |
-| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. |
+| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. JSON body: `engine` — `arachne` (core), `arachne_ultra_avatar` / `arachne_ultra_video` (aliases to core, NULLXES HR AI), `nullxes` / `longcat` / `core` / `""`. |
 | POST | `/v1/arachne/generate` | Синхронный MP4 (`video/mp4`) для поддерживаемых audio-* задач. |
 | POST | `/v1/longcat/generate` | **Legacy alias** того же handler (не в OpenAPI schema). |
 | POST | `/v1/infer/jobs` | Async очередь MP4 → poll status → one-shot result. |
+
+## Канонические модули DiT (библиотека `arachne_x`)
+
+Инференс грузит веса через `arachne_x.loader` из **`arachne_x/modules/arachne_video_dit.py`** (базовое видео) и **`arachne_x/modules/avatar/arachne_avatar_dit.py`** (аватар). Файлы `longcat_video_dit*.py` — **thin shim** для обратной совместимости импортов; публичные имена классов (`LongCatVideoTransformer3DModel`, …) не менялись (ABI чекпоинтов).
+
+Скрипт **`longcat_generate_once.py`** в этом каталоге — **deprecated**: ориентирован на внешний пакет `longcat_video.*`, не на `arachne_x`; **не** использовать в RunPod / `GTM_ONE_SHOT_DEPLOY` (см. docstring в файле).
 
 ## Обязательные переменные (prod)
 

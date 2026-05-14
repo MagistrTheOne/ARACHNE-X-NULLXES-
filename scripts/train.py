@@ -11,8 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from arachne_x.modules.longcat_video_dit import LongCatVideoTransformer3DModel
-from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.modules.arachne_video_dit import LongCatVideoTransformer3DModel
+from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel
 from arachne_x.training_latent_common import (
     collate_latent_samples,
     normalize_prompt_embeds_batch,

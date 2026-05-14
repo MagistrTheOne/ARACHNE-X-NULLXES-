@@ -94,7 +94,53 @@ curl -fsS http://127.0.0.1:9090/health
 
 Используйте `scripts/gpu/smoke_avatar_frames.sh` или минимальный `curl` с валидным `imageBase64` и аудио PCM16. Ожидание: `200`, `Content-Type: application/x-ndjson`, строки JSON с полями `seq`, `frameBase64` / rgb payload.
 
-Переменная `NULLXES_SMOKE_ENGINE` по умолчанию `arachne` (алиасы `longcat` / пустое — core engine).
+Переменная `NULLXES_SMOKE_ENGINE` по умолчанию `arachne`. Допустимы те же значения, что и поле `engine` у `POST /v1/realtime/avatar_frames` (включая `arachne_ultra_video` / `arachne_ultra_avatar` как алиасы к core — см. ниже). Алиасы `longcat` / пустое — core engine.
+
+### Поле `engine` в `POST /v1/realtime/avatar_frames`
+
+Тело запроса соответствует `StreamFramesBody` в [`services/longcat-worker/main.py`](../../services/longcat-worker/main.py) (camelCase в JSON). Реализация DiT на стороне библиотеки: [`arachne_x/modules/arachne_video_dit.py`](../../arachne_x/modules/arachne_video_dit.py) и [`arachne_x/modules/avatar/arachne_avatar_dit.py`](../../arachne_x/modules/avatar/arachne_avatar_dit.py) (импорт-шимы `longcat_video_dit*.py` сохранены для совместимости).
+
+| Значение `engine` | Поведение |
+|-------------------|-----------|
+| `arachne`, `""`, `core`, `nullxes`, `longcat` | Аудио-условленный avatar, NDJSON `rgb24_base64`. |
+| `arachne_ultra_avatar`, `arachne_ultra_video` | **Алиасы к тому же пайплайну, что и `arachne`** — нужны для NULLXES HR AI: `VIDEO_ENGINE` / `resolveArachnePodEngine()` отдаёт эти строки в теле к воркеру. |
+| `wan_s2v` | Ответ с ошибкой (на этом воркере не развёрнут). |
+| иное | Первая строка NDJSON: `{"error": "..."}`. |
+
+Имена полей: `sessionId`, `imageBase64`, `audioPcm16Base64` (предпочтительно, PCM16 mono 16 kHz) или `audioFloat32Base64`, опционально `prompt`, `negativePrompt`, `numInferenceSteps`, `textGuidanceScale`, `audioGuidanceScale`, `resolution`, `numFrames`.
+
+---
+
+## NULLXES HR AI — плашка аватара и RunPod (чеклист)
+
+Realtime «плашка» в HR идёт через **realtime-gateway**: TTS PCM → HTTP NDJSON к Inference Worker → кадры → публикация в SFU (GetStream или LiveKit — см. конфиг gateway). Полный smoke **на GPU-поде** (локальная машина без CUDA bundle обычно не подходит).
+
+**На RunPod (Inference Worker):**
+
+1. Задать `NULLXES_CHECKPOINT_DIR` (layout ULTRA-AVATAR).
+2. Запустить uvicorn (см. [Startup order](#startup-order)); публичный URL прокси RunPod — base для HR.
+3. Если включён секрет: один и тот же ключ в `NULLXES_INFERENCE_SERVICE_KEY` (или алиас) на поде и в HR.
+4. `curl -fsS …/health` → `{"status":"ok"}`.
+5. Опционально: `NULLXES_URL=https://… NULLXES_SMOKE_ENGINE=arachne_ultra_video bash scripts/gpu/smoke_avatar_frames.sh` — проверка HR-алиаса `engine`.
+
+**В HR realtime-gateway (`.env`, минимум):**
+
+| Переменная | Назначение |
+|------------|------------|
+| `AVATAR_VIDEO_ENABLED` | `true` |
+| `VIDEO_ENGINE` или `VIDEO_MODEL` | `arachne`, `arachne_ultra_avatar` или `arachne_ultra_video` (на воркере все три сходятся в core avatar NDJSON) |
+| `AVATAR_POD_URL` | Base URL воркера без завершающего `/` |
+| `AVATAR_FRAMES_PATH` | Обычно `/v1/realtime/avatar_frames` (дефолт в gateway) |
+| `NULLXES_AVATAR_INFERENCE_SERVICE_KEY` (или `NULLXES_INFERENCE_SERVICE_KEY`) | Совпадает с ключом на поде, если ключ задан |
+
+---
+
+## HR плашка: ULTRA-VIDEO и FURIA-EIDOLON (вне realtime NDJSON)
+
+Текущая плашка заточена под **низколатентный** поток `avatar_frames`. **ARACHNE-X-ULTRA-VIDEO** и полуавтомат **FURIA-EIDOLON** ([`scripts/run_semiauto_turn.py`](../../scripts/run_semiauto_turn.py), job_runner) — **отдельные** продуктовые линии (другая латентность, MP4, HITL).
+
+- **Преролл / фон (MP4):** короткий ролик через `POST /v1/arachne/generate` или async `/v1/infer/jobs` — отдельный UI-слой на HR, без замены NDJSON-потока.
+- **Мост EIDOLON → плашка:** потребовал бы нового HTTP-адаптера в репозитории и смены источника видео на gateway (файл/HLS вместо NDJSON) — отдельный эпик по латентности и буферизации.
 
 ---
 

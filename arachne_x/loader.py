@@ -7,8 +7,8 @@ from transformers import AutoTokenizer, UMT5EncoderModel, Wav2Vec2FeatureExtract
 
 from .modules.autoencoder_kl_wan import AutoencoderKLWan
 from .modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from .modules.longcat_video_dit import LongCatVideoTransformer3DModel
-from .modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from .modules.arachne_video_dit import LongCatVideoTransformer3DModel
+from .modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel
 from .audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from .pipeline_arachne_x_video import ArachneXVideoPipeline
 from .pipeline_arachne_x_video_avatar import ArachneXVideoAvatarPipeline

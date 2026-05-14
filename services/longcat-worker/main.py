@@ -30,6 +30,16 @@ EXPECTED_KEY_HEADER = "x-nullxes-avatar-inference-key"
 
 # Core vision engines (NULLXES DiT/VAE path). "longcat" retained as legacy client alias only.
 _CORE_VISION_ENGINES = frozenset({"", "arachne", "nullxes", "longcat", "core"})
+# NULLXES HR AI gateway (`resolveArachnePodEngine`) sends these when VIDEO_ENGINE is ultra-branded;
+# realtime NDJSON still uses the same audio-driven avatar pipeline as `arachne`.
+_ULTRA_AVATAR_FRAME_ALIASES = frozenset({"arachne_ultra_avatar", "arachne_ultra_video"})
+
+
+def _normalize_avatar_frames_engine(raw: str) -> str:
+    e = (raw or "").strip().lower()
+    if e in _ULTRA_AVATAR_FRAME_ALIASES:
+        return "arachne"
+    return e
 
 
 def _inference_service_key_expected() -> Optional[str]:
@@ -195,8 +205,8 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
     import numpy as np
     import time
 
-    engine = (body.engine or "arachne").strip().lower()
-    if engine == "wan_s2v":
+    raw_engine = (body.engine or "arachne").strip().lower()
+    if raw_engine == "wan_s2v":
         err = json.dumps(
             {
                 "error": (
@@ -208,9 +218,15 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
         )
         yield (err + "\n").encode("utf-8")
         return
+    engine = _normalize_avatar_frames_engine(raw_engine)
     if engine not in _CORE_VISION_ENGINES:
         err = json.dumps(
-            {"error": f"unknown engine {engine!r}; supported core engines: arachne, nullxes (legacy alias: longcat)"},
+            {
+                "error": (
+                    f"unknown engine {raw_engine!r}; supported: arachne, nullxes, "
+                    "core, longcat (legacy), arachne_ultra_avatar, arachne_ultra_video (HR aliases → arachne)"
+                )
+            },
             ensure_ascii=False,
         )
         yield (err + "\n").encode("utf-8")

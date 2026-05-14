@@ -2,6 +2,7 @@
 # NDJSON smoke test for POST /v1/realtime/avatar_frames (NULLXES Inference Worker or compatible).
 # Usage: NULLXES_URL=http://127.0.0.1:8080 scripts/gpu/smoke_avatar_frames.sh
 # Optional: X_NULLXES_KEY=... if worker enforces NULLXES_INFERENCE_SERVICE_KEY (or legacy LONGCAT_*).
+# Optional: NULLXES_SMOKE_ENGINE — default arachne; arachne_ultra_video / arachne_ultra_avatar match HR gateway resolveArachnePodEngine().
 set -euo pipefail
 
 BASE="${NULLXES_URL:-http://127.0.0.1:8080}"

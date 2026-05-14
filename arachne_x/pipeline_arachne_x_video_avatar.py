@@ -19,7 +19,7 @@ from transformers import AutoTokenizer, UMT5EncoderModel
 
 from arachne_x.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from arachne_x.modules.autoencoder_kl_wan import AutoencoderKLWan
-from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel
 from arachne_x.context_parallel import context_parallel_util
 from arachne_x.utils.bukcet_config import get_bucket_config
 

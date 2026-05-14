@@ -82,7 +82,7 @@ def _run_toy() -> None:
 
 
 def _run_real_checkpoint(checkpoint_dir: str) -> None:
-    from arachne_x.modules.avatar.longcat_video_dit_avatar import (
+    from arachne_x.modules.avatar.arachne_avatar_dit import (
         LongCatVideoAvatarTransformer3DModel,
     )
 

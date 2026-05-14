@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
 """
+.. deprecated::
+    **Do not use for NULLXES / ARACHNE-X production deployments.**
+
+    This script targets the upstream ``longcat_video`` Python package layout
+    (``from longcat_video.modules...``), not the in-repo ``arachne_x`` modules.
+    Canonical GPU HTTP serving is ``main.py`` (Inference Worker) →
+    ``arachne_x.runtime.avatar_serving``.
+
+    Kept only for historical reference or one-off experiments if you vendor a
+    parallel ``longcat_video`` tree; it is **not** part of the supported
+    RunPod / ``GTM_ONE_SHOT_DEPLOY`` path.
+
+---------------------------------------------------------------------------
+
 Single-job LongCat-Video inference (text / image / video-continuation).
 
 Run only via torchrun (upstream uses torch.distributed), e.g.:

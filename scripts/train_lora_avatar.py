@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
 
 from safetensors.torch import save_file
 
-from arachne_x.modules.avatar.longcat_video_dit_avatar import LongCatVideoAvatarTransformer3DModel
+from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel
 from arachne_x.training_latent_common import (
     collate_latent_samples,
     normalize_prompt_embeds_batch,

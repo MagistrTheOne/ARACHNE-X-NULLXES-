@@ -45,8 +45,8 @@
 | Runtime | `runtime/inference_engine.py` | Программный инференс (контракт CLI без дублирования). |
 | Пайплайны | `pipeline_arachne_x_video.py`, `pipeline_arachne_x_video_avatar.py` | Базовое видео (T2V/I2V/VC) и аватар (ai2v/at2v/avc, streaming). |
 | Стриминг | `streaming_inference.py`, `config_realtime.py` | KV-cache, буферы, real-time параметры. |
-| 3D DiT (видео) | `modules/*video_dit*.py`, `attention.py`, `blocks.py`, `rope_3d.py` | Трансформер 3D + внимание. |
-| Аватар DiT | `modules/avatar/*`, `modules/avatar_losses.py` | Аудио-условие, anchors, потери. |
+| 3D DiT (видео) | `modules/arachne_video_dit.py` (legacy shim: `longcat_video_dit.py`), `attention.py`, `blocks.py`, `rope_3d.py` | Трансформер 3D + внимание. Класс публичного ABI: `LongCatVideoTransformer3DModel` (имя сохранено для чекпоинтов). |
+| Аватар DiT | `modules/avatar/arachne_avatar_dit.py` (legacy shim: `longcat_video_dit_avatar.py`), `modules/avatar_losses.py` | Аудио-условие, anchors, потери. ABI: `LongCatVideoAvatarTransformer3DModel`. |
 | VAE / scheduler | `modules/autoencoder_kl_wan.py`, `modules/scheduling_flow_match_euler_discrete.py` | Латенты, шаги диффузии. |
 | Аудио | `audio_process/*`, `inference_audio.py` | Реальный пайплайн: **librosa → Wav2Vec2 → embedding**; при `speak_text`: **TTS → WAV → тот же пайплайн**; допустим fallback single-stream и отключение optional веток при ошибках. |
 | Параллелизм | `context_parallel/*`, `block_sparse_attention/*` | CP, sparse attention. |
