@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 import logging
 import warnings
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 import collections
 import threading
 import queue

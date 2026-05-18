@@ -1,0 +1,14 @@
+{
+  "prompt": "KAIRA NULLXES, executive operational digital human of NULLXES, realistic close-up portrait, black hair in a high bun, white and black NULLXES tactical corporate suit, speaking naturally straight to camera, subtle jaw and lip motion synchronized with speech, minimal head movement, dark luxury operations room, high detail, stable identity, cinematic low-key lighting",
+  "cond_image": "assets/avatar/single/kaira/kaira.png",
+  "_arachne_x_infer": {
+    "mode": "ai2v",
+    "checkpoint_dir": "/workspace/weights/arachne-avatar-runtime",
+    "resolution": "480p",
+    "num_frames": 17,
+    "num_inference_steps": 2,
+    "text_guidance_scale": 3.0,
+    "audio_guidance_scale": 3.0,
+    "note": "Light RunPod realtime smoke preset. Runtime audio is supplied by ElevenLabs/OpenAI as PCM16 mono 16 kHz."
+  }
+}
