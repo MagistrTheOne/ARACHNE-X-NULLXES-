@@ -47,37 +47,59 @@ git fetch origin
 
 Корень далее: `ARACHNE_ROOT=/workspace/ARACHNE-X`.
 
----
+### 1.1 Виртуальное окружение + Hugging Face (только в `.venv`)
 
-## 2. Hugging Face — токен и CLI
-
-При `401/403` или rate limit:
+**Сразу после клона** создаём один venv в корне репозитория. Токен HF и CLI ставим **только туда**, не в system Python pod'а — так не смешиваются версии `pip`/`huggingface_hub` с образом RunPod.
 
 ```bash
+export ARACHNE_ROOT=/workspace/ARACHNE-X
+cd "$ARACHNE_ROOT"
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip setuptools wheel
+```
+
+Дальше **все** команды документа (`pip`, `huggingface-cli`, `python scripts/infer.py`, `uvicorn`) — только с `source .venv/bin/activate`.
+
+Токен и CLI (при `401/403` или rate limit на HF):
+
+```bash
+# всё ещё внутри активированного .venv
 export HF_TOKEN=hf_xxxxxxxx
 pip install -U "huggingface_hub[cli]>=0.34,<1.0"
 huggingface-cli login --token "$HF_TOKEN"
 ```
 
-Ускорение (опционально):
+Ускорение скачивания (опционально, тоже в `.venv`):
 
 ```bash
 pip install hf_transfer
 export HF_HUB_ENABLE_HF_TRANSFER=1
 ```
 
+Проверка:
+
+```bash
+which python    # должен указывать на .../ARACHNE-X/.venv/bin/python
+which huggingface-cli
+huggingface-cli whoami
+```
+
 ---
 
-## 3. Скачивание весов (HF Hub API / CLI)
+## 2. Скачивание весов (HF Hub API / CLI)
 
-### 3.1 Каталоги
+**Перед командами:** `cd "$ARACHNE_ROOT" && source .venv/bin/activate` (§1.1).
+
+### 2.1 Каталоги
 
 ```bash
 export ARACHNE_ROOT=/workspace/ARACHNE-X
 mkdir -p "$ARACHNE_ROOT/weights"
 ```
 
-### 3.2 VIDEO (обязателен для полного layout `tokenizer/`, `vae/`, `dit/`)
+### 2.2 VIDEO (обязателен для полного layout `tokenizer/`, `vae/`, `dit/`)
 
 ```bash
 huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA-VIDEO \
@@ -97,7 +119,7 @@ weights/ARACHNE-X-ULTRA-VIDEO/
   lora/          # опционально для T2V distill
 ```
 
-### 3.3 AVATAR (avatar DiT + audio conditioning)
+### 2.3 AVATAR (avatar DiT + audio conditioning)
 
 ```bash
 huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA-AVATAR \
@@ -115,7 +137,7 @@ weights/ARACHNE-X-ULTRA-AVATAR/
   chinese-wav2vec2-base/  # legacy path на части snapshot
 ```
 
-### 3.4 Единый runtime bundle для воркера (`NULLXES_CHECKPOINT_DIR`)
+### 2.4 Единый runtime bundle для воркера (`NULLXES_CHECKPOINT_DIR`)
 
 `arachne_x.loader` требует **один** каталог с `tokenizer/`, `vae/`, `scheduler/`, `text_encoder/`, `avatar_single/`, `audio/wav2vec2/`.
 
@@ -125,7 +147,7 @@ weights/ARACHNE-X-ULTRA-AVATAR/
 export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
 ```
 
-Иначе соберите **merged runtime** (VIDEO base + AVATAR avatar/audio):
+Иначе соберите **merged runtime** (VIDEO base + AVATAR avatar/audio) — §2.4:
 
 ```bash
 export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
@@ -152,7 +174,7 @@ if [ -d "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/chinese-wav2vec2-base" ] \
 fi
 ```
 
-### 3.5 Проверка layout (обязательно)
+### 2.5 Проверка layout (обязательно)
 
 ```bash
 cd "$ARACHNE_ROOT"
@@ -187,18 +209,16 @@ PY
 
 ---
 
-## 4. Python venv и зависимости
+## 3. Зависимости inference (тот же `.venv`)
 
-Один venv для **avatar + worker** на H200 (не смешивать с `.venv_stage3` Qwen — см. semiauto doc).
+Доставляем torch/flash-attn и стек ARACHNE-X в **уже созданный** `.venv` из §1.1. Новый venv не создаём. Не смешивать с `.venv_stage3` Qwen — см. semiauto doc.
 
 ```bash
 cd "$ARACHNE_ROOT"
-python3 -m venv .venv
 source .venv/bin/activate
-pip install -U pip setuptools wheel
 ```
 
-### 4.1 PyTorch (CUDA 12.4)
+### 3.1 PyTorch (CUDA 12.4)
 
 ```bash
 pip install --no-cache-dir \
@@ -206,20 +226,20 @@ pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu124
 ```
 
-### 4.2 Core + avatar extras
+### 3.2 Core + avatar extras
 
 ```bash
 pip install --no-cache-dir -r requirements.txt
 pip install --no-cache-dir -r requirements_avatar.txt
 ```
 
-### 4.3 FlashAttention (Linux H200)
+### 3.3 FlashAttention (Linux H200)
 
 ```bash
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
-### 4.4 HTTP worker (тонкий слой)
+### 3.4 HTTP worker (тонкий слой)
 
 ```bash
 pip install -r services/arachnex-worker/requirements.txt
@@ -242,17 +262,17 @@ PY
 
 ---
 
-## 5. Оцифровка аватара (CLI) — режим `ai2v`
+## 4. Оцифровка аватара (CLI) — режим `ai2v`
 
 **Вход:** reference image + WAV/PCM audio + text prompt.  
 **Выход:** MP4.
 
-### 5.1 Пресет KAIRA (в репо)
+### 4.1 Пресет KAIRA (в репо)
 
 Файл: [`assets/avatar/single/kaira/kaira.json`](../../assets/avatar/single/kaira/kaira.json)  
 Изображение: `assets/avatar/single/kaira/kaira.png`
 
-### 5.2 Пример: свой image + audio + prompt
+### 4.2 Пример: свой image + audio + prompt
 
 ```bash
 cd "$ARACHNE_ROOT"
@@ -297,7 +317,7 @@ python scripts/infer.py \
 
 ---
 
-## 6. Запуск `arachnex-worker` (HTTP, realtime NDJSON)
+## 5. Запуск `arachnex-worker` (HTTP, realtime NDJSON)
 
 ```bash
 cd "$ARACHNE_ROOT"
@@ -313,13 +333,13 @@ cd services/arachnex-worker
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
 
-### 6.1 Health
+### 5.1 Health
 
 ```bash
 curl -fsS http://127.0.0.1:9090/health
 ```
 
-### 6.2 Warmup + NDJSON smoke
+### 5.2 Warmup + NDJSON smoke
 
 ```bash
 export NULLXES_URL=http://127.0.0.1:9090
@@ -333,24 +353,26 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 
 ---
 
-## 7. Чеклист «готово»
+## 6. Чеклист «готово»
 
 | # | Проверка | OK |
 |---|----------|-----|
 | 1 | `nvidia-smi` → H200 | ☐ |
 | 2 | Оба HF snapshot на диске | ☐ |
 | 3 | `NULLXES_CHECKPOINT_DIR` — layout без `missing` | ☐ |
-| 4 | `torch` + `flash_attn` import | ☐ |
-| 5 | `scripts/infer.py --mode ai2v` → MP4 | ☐ |
-| 6 | `/health` + `smoke_avatar_frames.sh` → NDJSON | ☐ |
+| 4 | `.venv` активен, `huggingface-cli whoami` | ☐ |
+| 5 | `torch` + `flash_attn` import | ☐ |
+| 6 | `scripts/infer.py --mode ai2v` → MP4 | ☐ |
+| 7 | `/health` + `smoke_avatar_frames.sh` → NDJSON | ☐ |
 
 ---
 
-## 8. Типовые ошибки
+## 7. Типовые ошибки
 
 | Симптом | Действие |
 |---------|----------|
-| `missing tokenizer/ or vae/` | Соберите merged runtime (§3.4) или скачайте полный AVATAR bundle |
+| `missing tokenizer/ or vae/` | Соберите merged runtime (§2.4) или скачайте полный AVATAR bundle |
+| `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1) |
 | `flash_attn` build fail | Используйте prebuilt wheel под CUDA 12.4 / образ RunPod с готовым flash-attn |
 | OOM на H200 | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps` |
 | Worker 401 | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
@@ -358,7 +380,7 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 
 ---
 
-## 9. Переменные окружения (кратко)
+## 8. Переменные окружения (кратко)
 
 | Переменная | Назначение |
 |------------|------------|
