@@ -1,7 +1,7 @@
 {
   "prompt": "ELENA, ultra realistic executive woman, professional digital human, realistic close-up portrait speaking naturally straight to camera, cinematic low-key lighting, stable identity, realistic facial motion, precise lipsync, sharp face details, corporate interview framing, subtle blinking, photorealistic skin texture, minimal head movement, high temporal consistency",
   "negative_prompt": "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text",
-  "cond_image": "assets/avatar/single/elena/face.jpg",
+  "cond_image": "assets/avatar/single/elena/image.jpg",
   "cond_audio": "assets/avatar/single/elena/audio.wav",
   "_arachne_x_infer": {
     "mode": "ai2v",
@@ -11,7 +11,7 @@
     "num_inference_steps": 30,
     "text_guidance_scale": 4.0,
     "audio_guidance_scale": 5.0,
-    "note": "Production digitization preset. Square face.jpg maps to ~960x960 at 720p. num_frames=181 is 4n+1 for VAE; at 30fps mux ≈6.03s — match audio length (ffprobe) or recompute frames. Audio: mono 16kHz WAV (ffmpeg -ar 16000 -ac 1). Smoke: resolution 480p, num_frames 17, num_inference_steps 2, guidance 3/3."
+    "note": "Production digitization preset. Square image.jpg maps to ~960x960 at 720p. num_frames=181 is 4n+1 for VAE; at 30fps mux ≈6.03s — match audio length (ffprobe) or recompute frames. Audio: mono 16kHz WAV (ffmpeg -ar 16000 -ac 1). Smoke: resolution 480p, num_frames 17, num_inference_steps 2, guidance 3/3."
   },
   "_arachne_x_infer_smoke": {
     "resolution": "480p",
