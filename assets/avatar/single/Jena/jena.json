@@ -1,8 +1,14 @@
 {
-    "prompt": "A realistic close-up of a young man speaking directly to camera in a clean studio setup, natural facial expression, precise lip movements synchronized with speech, subtle head motion, stable identity, soft cinematic lighting, high facial detail",
-    "cond_image": "assets/avatar/single/Jena/photo.jpg",
-    "cond_audio": {
-      "person1": "assets/avatar/single/Jena/voice.mp3"
-    }
+  "prompt": "JENA NULLXES, professional digital human, realistic close-up portrait, speaking naturally straight to camera, precise lip movements synchronized with speech, subtle head motion, stable identity, neutral studio background, soft diffused lighting, high facial detail",
+  "cond_image": "assets/avatar/single/Jena/photo.jpg",
+  "_arachne_x_infer": {
+    "mode": "ai2v",
+    "checkpoint_dir": "/workspace/ARACHNE-X/weights/arachne-avatar-runtime",
+    "resolution": "480p",
+    "num_frames": 17,
+    "num_inference_steps": 2,
+    "text_guidance_scale": 3.0,
+    "audio_guidance_scale": 3.0,
+    "note": "Optional bundled audio: assets/avatar/single/Jena/voice.mp3. Prefer /workspace/input/speech.wav for smoke."
   }
-  
+}

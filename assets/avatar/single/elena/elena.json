@@ -1,0 +1,14 @@
+{
+  "prompt": "ELENA NULLXES, professional digital human, realistic close-up portrait, speaking naturally straight to camera, subtle jaw and lip motion synchronized with speech, minimal head movement, clean corporate studio background, high facial detail, stable identity, soft cinematic lighting",
+  "cond_image": "assets/avatar/single/elena/face.jpg",
+  "_arachne_x_infer": {
+    "mode": "ai2v",
+    "checkpoint_dir": "/workspace/ARACHNE-X/weights/arachne-avatar-runtime",
+    "resolution": "480p",
+    "num_frames": 17,
+    "num_inference_steps": 2,
+    "text_guidance_scale": 3.0,
+    "audio_guidance_scale": 3.0,
+    "note": "Light RunPod smoke preset. Audio: /workspace/input/speech.wav (mono 16 kHz) or --speak_text."
+  }
+}
