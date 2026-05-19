@@ -731,20 +731,28 @@ mkdir -p output
 
 Пресет в репо: [`assets/avatar/single/kaira/kaira.json`](assets/avatar/single/kaira/kaira.json) — поле `prompt` + `_arachne_x_infer` (steps/frames для smoke).
 
-| Профиль | resolution | num_frames | steps | text CFG | audio CFG | Длительность @30fps |
-| ------- | ---------- | ---------- | ----- | -------- | --------- | ------------------- |
-| smoke | `480p` (~640²) | 17 | 2 | 3.0 | 3.0 | ~0.57 s (если аудио короткое) |
-| **cinematic** | **`720p`** (~960²) | **165+** (4n+1) | **35** | **4.0** | **5.0** | ~5.5 s при 165f |
+| Профиль | resolution | frames | steps | text CFG | audio CFG | Длительность @30fps |
+| ------- | ---------- | ------ | ----- | -------- | --------- | ------------------- |
+| smoke | `480p` | 17 | 2 | 3.0 | 3.0 | ~0.5 s |
+| **sync** | `720p` | `--num_frames_mode sync` (~97 для 6.24s WAV) | 35 | 4.0 | 5.0 | ~3.2 s, **стабильный lipsync** |
+| **cinematic** | `720p` | `--num_frames_mode duration` (~185) | 35 | 4.0 | 5.0 | ~6 s (хвост может деградировать без `--embedding_fps_auto`) |
+| cinematic_id | `720p` | duration + identity bank | 35 | 4.0 | 5.0 | как cinematic |
+| stream_turn | `720p` | 49 (`streaming_ai2v`) | 20 | 4.0 | 5.0 | **не** полная длина WAV — см. §4.1.5 |
 
-**Важно:** `num_frames` режет длительность видео. Если `ffprobe` аудио = 0.57 s, smoke даст ~17 кадров — это норма. Для cinematic нужен **длинный** `audio.wav` или пересчёт кадров (ниже).
+Пресеты в [`elena.json`](assets/avatar/single/elena/elena.json): `_arachne_x_infer_smoke`, `_arachne_x_infer_sync`, `_arachne_x_infer`, `_arachne_x_infer_cinematic_id`, `_arachne_x_infer_stream_turn`.
+
+**Важно:** `num_frames` режет длительность видео. Для lipsync на всём клипе используйте **`--num_frames_mode sync`**. Для полной длины аудио — **`duration`** + опционально **`--embedding_fps_auto`**.
 
 ### 4.1.2 Системные зависимости на pod (до infer)
 
 ```bash
 apt-get update
-apt-get install -y ffmpeg jq
+apt-get install -y ffmpeg jq tmux
 ffmpeg -version && ffprobe -version
+tmux -V
 ```
+
+Долгие прогоны (35 steps, 720p): `tmux new -s elena` → команда infer → **Ctrl+B**, **D** (отсоединиться). Вернуться: `tmux attach -t elena`.
 
 ### 4.1.3 Подогнать `num_frames` под длину аудио (4n+1)
 
@@ -764,6 +772,79 @@ print(f"duration_sec={dur:.3f}")
 print(f"use --num_frames {n}  ({n/30:.2f}s @ 30fps mux)")
 PY
 ```
+
+Или автоматически через CLI (рекомендуется):
+
+```bash
+# sync: max lipsync window (~97f для 6.24s @ embedding fps 64)
+--num_frames_mode sync
+
+# duration: длина ≈ аудио @ 30fps (~185f для 6.24s)
+--num_frames_mode duration
+
+# длинный клип + меньше clamp хвоста
+--num_frames_mode duration --embedding_fps_auto
+```
+
+CLI печатает строку `[frame-budget] mode=... sync_max=... chosen=...` и пишет `<output>.run.json` (sidecar метаданных).
+
+### 4.1.4 Quality CLI flags (без смены весов)
+
+| Флаг | Назначение |
+| ---- | ---------- |
+| `--num_frames_mode` | `explicit` \| `sync` \| `duration` \| `min` |
+| `--embedding_fps_auto` | поднять fps embedding для длинных `duration` |
+| `--audio_embedding_fps` | явный fps (default 64) |
+| `--identity_bank_path` + `--identity_id` | стабильность лица |
+| `--mouth_mask` | hybrid mouth (нужен PNG маски) |
+| `--hybrid_mouth_strength` | 0.25–0.4 (с маской) |
+| `--skip_audio_noise_floor` | чистый студийный WAV |
+| `--export_crf 18` | лучше H.264 mux |
+| `--use_cfg_zero` | experimental CFG-zero на text branch |
+| `--preset_hint elena_sync` | метка в run.json |
+
+### 4.1.5 `streaming_ai2v` vs `ai2v` (важно)
+
+| | `ai2v` | `streaming_ai2v` (CLI из файла) |
+|---|--------|--------------------------------|
+| Назначение | **полный ролик** cinematic | latency / decode benchmark |
+| Длина MP4 | ≈ `num_frames` @ 30fps | ≈ **`num_frames/4`** кадров после VAE stream-decode (напр. 49f → ~13 кадров ≈ 0.4 s) |
+| Denoise | один проход на весь WAV | один проход (чанки только для сборки audio) |
+| Для 6 s Elena | **да** | **нет** |
+
+Worker HTTP (§5) позже; defaults worker сейчас **8 steps / 480p** — не cinematic.
+
+### 4.1.6 Mouth mask (hybrid renderer)
+
+Без `--mouth_mask` hybrid renderer **не активен** (код включён, маски нет).
+
+1. Создайте `assets/avatar/single/elena/mouth_mask.png` — grayscale, белый = зона рта/нижняя половина лица, под квадратный портрет.
+2. Smoke:
+
+```bash
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --mouth_mask assets/avatar/single/elena/mouth_mask.png \
+  --hybrid_mouth_strength 0.28 \
+  --num_frames_mode sync \
+  --num_inference_steps 35 \
+  --resolution 720p \
+  --output output/elena_sync_mask.mp4
+```
+
+Маску **не коммитить** в git, если она бинарная — только путь в доке.
+
+### 4.1.7 A/B checklist (Elena)
+
+| # | Прогон | Артефакт | ffprobe ожидание |
+| - | ------ | -------- | ---------------- |
+| A | cinematic 185f | `elena_ai2v_cinematic.mp4` | 960×960, ~6 s |
+| B | sync + identity (`--num_frames_mode sync`) | `elena_ai2v_sync97.mp4` | 960×960, ~3.2 s, ровнее губы |
+| C | cinematic_id + `--embedding_fps_auto` | `elena_ai2v_cinematic_id.mp4` | ~6 s, меньше хвоста |
+| D | sync + mouth_mask | `elena_sync_mask.mp4` | как B, чётче рот |
 
 ### 4.2 `ai2v` — image + audio + prompt (основной, Elena)
 
@@ -844,6 +925,34 @@ python scripts/infer.py \
   --output output/elena_ai2v_cinematic.mp4
 
 ffprobe -hide_banner output/elena_ai2v_cinematic.mp4 2>&1 | head -20
+```
+
+### 4.2.2 ELENA sync + identity (`--num_frames_mode sync`)
+
+```bash
+PRESET=assets/avatar/single/elena/elena.json
+ffmpeg -y -i "$(jq -r .cond_audio "$PRESET")" -ar 16000 -ac 1 output/elena_16k.wav
+
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --prompt "$(jq -r .prompt "$PRESET")" \
+  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
+  --image "$(jq -r .cond_image "$PRESET")" \
+  --audio output/elena_16k.wav \
+  --resolution 720p \
+  --num_frames_mode sync \
+  --num_inference_steps 35 \
+  --text_guidance_scale 4.0 \
+  --audio_guidance_scale 5.0 \
+  --identity_bank_path output/elena_identity_bank.pt \
+  --identity_id 1 \
+  --identity_strength 1.0 \
+  --export_crf 18 \
+  --preset_hint elena_sync \
+  --output output/elena_ai2v_sync97.mp4
+
+ffprobe -hide_banner output/elena_ai2v_sync97.mp4 2>&1 | head -15
 ```
 
 С `jq` (если установлен):
@@ -1089,6 +1198,9 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | layout `missing: all`                | §2.4 merged runtime не собран — веса не скачаны / нет symlink      |
 | `ffmpeg` / `ffprobe` not found       | `apt-get install -y ffmpeg` (§4.1.2)                             |
 | Видео 640×608, 0.57 s                | smoke 17f + короткий audio — запускайте §4.2.1 cinematic         |
+| Дёрганье губ после ~3 s на 6 s       | `--num_frames_mode sync` или `duration` + `--embedding_fps_auto` |
+| streaming MP4 ~0.4 s                 | Норма для `streaming_ai2v`; для 6 s используйте `ai2v` §4.1.5   |
+| `bash: --num_frames: command not found` | Нужен полный `python scripts/infer.py \` … не отдельные строки `--flag` |
 | `face.png` path invalid              | Используйте `assets/avatar/single/elena/image.jpg`               |
 | `Unsupported attention operations`   | §3.3–3.4: flash-attn не установлен / не импортируется              |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |

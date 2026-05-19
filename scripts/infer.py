@@ -94,6 +94,30 @@ def main():
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=832)
     parser.add_argument("--num_frames", type=int, default=93)
+    parser.add_argument(
+        "--num_frames_mode",
+        type=str,
+        default="explicit",
+        choices=["explicit", "sync", "duration", "min"],
+        help="Avatar: explicit=use --num_frames; sync=max lipsync window; duration=match audio @ mux_fps; min=min(sync,duration).",
+    )
+    parser.add_argument(
+        "--mux_fps",
+        type=int,
+        default=30,
+        help="Mux FPS for avatar MP4 export and duration frame budget.",
+    )
+    parser.add_argument(
+        "--audio_embedding_fps",
+        type=float,
+        default=None,
+        help="Wav2Vec embedding temporal fps (default 16*vae_stride, typically 64).",
+    )
+    parser.add_argument(
+        "--embedding_fps_auto",
+        action="store_true",
+        help="Raise embedding fps when num_frames exceeds sync cap (long clips, no retrain).",
+    )
     parser.add_argument("--num_cond_frames", type=int, default=13)
     parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--text_guidance_scale", type=float, default=4.0)
@@ -110,8 +134,63 @@ def main():
     parser.add_argument("--emotion_intensity", type=float, default=0.0)
     parser.add_argument("--emotion_guidance_scale", type=float, default=0.0)
     parser.add_argument("--mouth_mask", type=str, default=None)
+    parser.add_argument(
+        "--hybrid_mouth_strength",
+        type=float,
+        default=None,
+        help="Hybrid mouth renderer strength (default pipe 0.35). Requires --mouth_mask.",
+    )
+    parser.add_argument(
+        "--hybrid_temporal_alpha",
+        type=float,
+        default=None,
+        help="Hybrid seam temporal blend alpha (default pipe 0.70).",
+    )
+    parser.add_argument(
+        "--no_hybrid_renderer",
+        action="store_true",
+        help="Disable hybrid mouth postprocess even if --mouth_mask is set.",
+    )
     parser.add_argument("--disable_phoneme_conditioning", action="store_true")
     parser.add_argument("--phoneme_stream_scale", type=float, default=None)
+    parser.add_argument(
+        "--skip_audio_noise_floor",
+        action="store_true",
+        help="Skip synthetic noise floor in get_audio_embedding (clean studio WAV).",
+    )
+    parser.add_argument(
+        "--use_cfg_zero",
+        action="store_true",
+        help="CFG-zero style scale on text branch in generate_ai2v (experimental A/B).",
+    )
+    parser.add_argument(
+        "--export_crf",
+        type=int,
+        default=None,
+        help="Final ffmpeg libx264 CRF for avatar MP4 mux (e.g. 18).",
+    )
+    parser.add_argument(
+        "--high_quality_save",
+        action="store_true",
+        help="Lossless-ish final mux (libx264 crf 0, veryslow).",
+    )
+    parser.add_argument(
+        "--run_metadata_json",
+        type=str,
+        default=None,
+        help="Write run metadata JSON (default: <output>.run.json).",
+    )
+    parser.add_argument(
+        "--no_run_metadata",
+        action="store_true",
+        help="Do not write run metadata sidecar.",
+    )
+    parser.add_argument(
+        "--preset_hint",
+        type=str,
+        default=None,
+        help="Optional label stored in run metadata (e.g. elena_sync).",
+    )
     parser.add_argument("--output", type=str, default="output.mp4")
     parser.add_argument(
         "--lora_path",

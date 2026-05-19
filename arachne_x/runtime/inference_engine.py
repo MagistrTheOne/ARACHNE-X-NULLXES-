@@ -11,7 +11,8 @@ import argparse
 import json
 import os
 import tempfile
-from typing import Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -21,7 +22,12 @@ from diffusers.utils import load_image, load_video
 
 from arachne_x.loader import load_avatar_pipeline, load_base_pipeline
 from arachne_x.audio_process.torch_utils import save_video_ffmpeg
-from arachne_x.inference_audio import build_avatar_windowed_audio_emb
+from arachne_x.inference_audio import build_avatar_windowed_audio_emb, default_embedding_fps
+from arachne_x.inference_frames import (
+    audio_duration_sec,
+    resolve_num_frames,
+    suggest_embedding_fps,
+)
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 from arachne_x.tts import create_speech_synthesizer
 from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
@@ -49,8 +55,146 @@ def get_hw_for_resolution(resolution: str, height: int, width: int) -> tuple[int
     return (height, width)
 
 
-def build_audio_emb(pipe, audio_path: str, num_frames: int, device: str, sample_rate: int = 16000) -> torch.Tensor:
-    return build_avatar_windowed_audio_emb(pipe, audio_path, num_frames, device, sample_rate)
+def build_audio_emb(
+    pipe,
+    audio_path: str,
+    num_frames: int,
+    device: str,
+    sample_rate: int = 16000,
+    embedding_fps: Optional[float] = None,
+) -> torch.Tensor:
+    return build_avatar_windowed_audio_emb(
+        pipe, audio_path, num_frames, device, sample_rate, embedding_fps=embedding_fps
+    )
+
+
+def configure_avatar_pipe(pipe, args: argparse.Namespace) -> None:
+    if hasattr(pipe, "phoneme_enabled"):
+        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
+    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
+        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
+    pipe.skip_audio_noise_floor = bool(getattr(args, "skip_audio_noise_floor", False))
+    if getattr(args, "no_hybrid_renderer", False):
+        pipe.hybrid_renderer_enabled = False
+    if getattr(args, "hybrid_mouth_strength", None) is not None:
+        pipe.hybrid_renderer_mouth_strength = float(args.hybrid_mouth_strength)
+    if getattr(args, "hybrid_temporal_alpha", None) is not None:
+        pipe.hybrid_renderer_temporal_alpha = float(args.hybrid_temporal_alpha)
+
+
+def apply_avatar_frame_budget(
+    args: argparse.Namespace, pipe, wav_path: Optional[str]
+) -> Dict[str, Any]:
+    """Resolve ``args.num_frames`` and embedding fps from audio duration (avatar modes)."""
+    if not wav_path or not os.path.isfile(wav_path):
+        return {}
+    mode = getattr(args, "num_frames_mode", "explicit") or "explicit"
+    mux_fps = float(getattr(args, "mux_fps", 30))
+    base_fps = getattr(args, "audio_embedding_fps", None)
+    base_fps = float(base_fps) if base_fps is not None else default_embedding_fps(pipe)
+    dur = audio_duration_sec(wav_path)
+
+    if mode == "explicit":
+        _, info = resolve_num_frames("explicit", dur, base_fps, explicit=args.num_frames, mux_fps=mux_fps)
+        info["chosen"] = int(args.num_frames)
+        chosen = int(args.num_frames)
+    else:
+        chosen, info = resolve_num_frames(
+            mode, dur, base_fps, explicit=args.num_frames, mux_fps=mux_fps
+        )
+        args.num_frames = chosen
+
+    embedding_fps = base_fps
+    if getattr(args, "embedding_fps_auto", False) or (
+        mode == "duration" and chosen > info.get("sync_max_frames", chosen)
+    ):
+        embedding_fps = suggest_embedding_fps(dur, chosen, base_fps)
+
+    if chosen > info.get("sync_max_frames", chosen) and embedding_fps <= base_fps:
+        print(
+            f"[frame-budget] warning: num_frames={chosen} exceeds sync_max={info.get('sync_max_frames')} "
+            f"at embedding_fps={base_fps:.1f}; tail may clamp (try --embedding_fps_auto)"
+        )
+
+    info["embedding_fps_final"] = embedding_fps
+    info["chosen"] = chosen
+    pipe.inference_embedding_fps = embedding_fps
+    args._resolved_embedding_fps = embedding_fps
+
+    print(
+        "[frame-budget] "
+        f"mode={mode} duration_sec={dur:.3f} sync_max={info.get('sync_max_frames')} "
+        f"duration_frames={info.get('duration_frames')} chosen={chosen} embedding_fps={embedding_fps:.1f}"
+    )
+    return info
+
+
+def resolved_embedding_fps(args: argparse.Namespace, pipe) -> Optional[float]:
+    fps = getattr(args, "_resolved_embedding_fps", None)
+    if fps is not None:
+        return float(fps)
+    if getattr(args, "audio_embedding_fps", None) is not None:
+        return float(args.audio_embedding_fps)
+    return getattr(pipe, "inference_embedding_fps", None)
+
+
+def save_avatar_mp4(
+    frames,
+    output_path: str,
+    wav_path: Optional[str],
+    args: argparse.Namespace,
+) -> None:
+    fps = int(getattr(args, "mux_fps", 30))
+    export_crf = getattr(args, "export_crf", None)
+    save_video_ffmpeg(
+        frames,
+        output_path,
+        wav_path,
+        fps=fps,
+        high_quality_save=bool(getattr(args, "high_quality_save", False)),
+        export_crf=export_crf,
+    )
+
+
+def write_run_metadata(
+    args: argparse.Namespace,
+    frame_budget: Optional[Dict[str, Any]] = None,
+) -> None:
+    if getattr(args, "no_run_metadata", False):
+        return
+    path = getattr(args, "run_metadata_json", None)
+    if not path:
+        base, _ = os.path.splitext(args.output)
+        path = base + ".run.json"
+    payload: Dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": args.mode,
+        "output": os.path.abspath(args.output),
+        "resolution": args.resolution,
+        "num_frames": args.num_frames,
+        "num_frames_mode": getattr(args, "num_frames_mode", "explicit"),
+        "mux_fps": getattr(args, "mux_fps", 30),
+        "num_inference_steps": args.num_inference_steps,
+        "text_guidance_scale": args.text_guidance_scale,
+        "audio_guidance_scale": args.audio_guidance_scale,
+        "embedding_fps": getattr(args, "_resolved_embedding_fps", None),
+        "audio_embedding_fps_cli": getattr(args, "audio_embedding_fps", None),
+        "embedding_fps_auto": bool(getattr(args, "embedding_fps_auto", False)),
+        "identity_id": args.identity_id,
+        "identity_strength": args.identity_strength,
+        "identity_bank_path": args.identity_bank_path,
+        "use_cfg_zero": bool(getattr(args, "use_cfg_zero", False)),
+        "export_crf": getattr(args, "export_crf", None),
+        "high_quality_save": bool(getattr(args, "high_quality_save", False)),
+        "mouth_mask": args.mouth_mask,
+        "preset_hint": getattr(args, "preset_hint", None),
+    }
+    if frame_budget:
+        payload["frame_budget"] = frame_budget
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[run-metadata] wrote {path}")
 
 
 def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
@@ -233,10 +377,7 @@ def execute_infer(args: argparse.Namespace) -> None:
         torch_dtype=torch_dtype,
     )
     maybe_load_avatar_lora(pipe, args)
-    if hasattr(pipe, "phoneme_enabled"):
-        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
-    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
-        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
+    configure_avatar_pipe(pipe, args)
 
     if args.identity_bank_path and os.path.exists(args.identity_bank_path):
         loaded = pipe.load_identity_bank(
@@ -280,7 +421,10 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.image:
             raise ValueError("--image is required for ai2v / streaming_ai2v")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         image = load_image(args.image)
+        use_cfg_zero = bool(getattr(args, "use_cfg_zero", False))
         try:
             if args.mode == "ai2v":
                 audio_emb = build_audio_emb(
@@ -288,6 +432,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                     audio_path=wav_path,
                     num_frames=args.num_frames,
                     device=device,
+                    embedding_fps=emb_fps,
                 )
                 out = pipe.generate_ai2v(
                     image=image,
@@ -308,8 +453,10 @@ def execute_infer(args: argparse.Namespace) -> None:
                     emotion_intensity=args.emotion_intensity,
                     emotion_guidance_scale=args.emotion_guidance_scale,
                     mouth_zone_masks=mouth_mask_tensor,
+                    use_cfg_zero=use_cfg_zero,
                 )[0]
-                save_video_ffmpeg(out, args.output, wav_path, fps=30)
+                save_avatar_mp4(out, args.output, wav_path, args)
+                write_run_metadata(args, frame_budget)
                 if args.identity_update_bank:
                     save_path = args.identity_bank_save_path or args.identity_bank_path
                     if save_path:
@@ -338,9 +485,11 @@ def execute_infer(args: argparse.Namespace) -> None:
                     emotion_intensity=args.emotion_intensity,
                     emotion_guidance_scale=args.emotion_guidance_scale,
                     mouth_zone_masks=mouth_mask_tensor,
+                    use_cfg_zero=use_cfg_zero,
                 ):
                     frames.append(frame)
-                save_video_ffmpeg(np.stack(frames, axis=0), args.output, wav_path, fps=30)
+                save_avatar_mp4(np.stack(frames, axis=0), args.output, wav_path, args)
+                write_run_metadata(args, frame_budget)
                 if args.identity_bank_save_path:
                     pipe.save_identity_bank(args.identity_bank_save_path)
                     print(f"[identity-bank] saved to {args.identity_bank_save_path}")
@@ -351,12 +500,15 @@ def execute_infer(args: argparse.Namespace) -> None:
 
     if args.mode == "at2v":
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         try:
             audio_emb = build_audio_emb(
                 pipe,
                 audio_path=wav_path,
                 num_frames=args.num_frames,
                 device=device,
+                embedding_fps=emb_fps,
             )
             out = pipe.generate_at2v(
                 prompt=args.prompt,
@@ -376,7 +528,8 @@ def execute_infer(args: argparse.Namespace) -> None:
                 emotion_guidance_scale=args.emotion_guidance_scale,
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
-            save_video_ffmpeg(out, args.output, wav_path, fps=30)
+            save_avatar_mp4(out, args.output, wav_path, args)
+            write_run_metadata(args, frame_budget)
         finally:
             if wav_is_temp:
                 maybe_unlink(wav_path)
@@ -386,6 +539,8 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.video:
             raise ValueError("--video is required for avc")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         try:
             video = load_video(args.video)
             audio_emb = build_audio_emb(
@@ -393,6 +548,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 audio_path=wav_path,
                 num_frames=args.num_frames,
                 device=device,
+                embedding_fps=emb_fps,
             )
             video_latent = build_video_latent(
                 pipe,
@@ -425,7 +581,8 @@ def execute_infer(args: argparse.Namespace) -> None:
                 emotion_guidance_scale=args.emotion_guidance_scale,
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
-            save_video_ffmpeg(out, args.output, wav_path, fps=30)
+            save_avatar_mp4(out, args.output, wav_path, args)
+            write_run_metadata(args, frame_budget)
             if args.identity_update_bank:
                 save_path = args.identity_bank_save_path or args.identity_bank_path
                 if save_path:

@@ -1606,7 +1606,8 @@ class LongCatVideoAvatarPipeline:
 
         # speech preprocess
         speech_array = self._loudness_norm(speech_array, sample_rate)
-        speech_array = self._add_noise_floor(speech_array)
+        if not getattr(self, "skip_audio_noise_floor", False):
+            speech_array = self._add_noise_floor(speech_array)
         speech_array = self._smooth_transients(speech_array)
 
         # wav2vec_feature_extractor
@@ -2135,6 +2136,7 @@ class LongCatVideoAvatarPipeline:
         emotion_intensity: float = 0.0,
         emotion_guidance_scale: float = 0.0,
         mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
     ):
         r"""
         Generates video frames from an input image and text prompt using diffusion process.
@@ -2443,6 +2445,17 @@ class LongCatVideoAvatarPipeline:
                             + audio_guidance_scale * (noise_pred_audio - noise_pred_text)
                             + self.emotion_guidance_scale * (noise_pred_cond - noise_pred_audio)
                         )
+                    elif use_cfg_zero:
+                        b = noise_pred_text.shape[0]
+                        st_star = self.optimized_scale(
+                            noise_pred_text.reshape(b, -1),
+                            noise_pred_uncond.reshape(b, -1),
+                        ).view(b, 1, 1, 1)
+                        noise_pred = (
+                            noise_pred_uncond * st_star
+                            + text_guidance_scale * (noise_pred_text - noise_pred_uncond * st_star)
+                            + audio_guidance_scale * (noise_pred_cond - noise_pred_text)
+                        )
                     else:
                         noise_pred = (
                             noise_pred_uncond
@@ -2482,9 +2495,9 @@ class LongCatVideoAvatarPipeline:
 
         if output_type == 'both':
             return (output_video, latents_)
-        else: 
+        else:
             return output_video
-
+    
 
     @torch.no_grad()
     def generate_avc(
@@ -2974,6 +2987,7 @@ class LongCatVideoAvatarPipeline:
         emotion_intensity: float = 0.0,
         emotion_guidance_scale: float = 0.0,
         mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
     ):
         r"""
         Streaming-like video generation (Image-to-Video).
@@ -3032,9 +3046,14 @@ class LongCatVideoAvatarPipeline:
 
             full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
             audio_stride = max(int(self.vae_scale_factor_temporal), 1)
+            emb_fps = getattr(self, "inference_embedding_fps", None)
+            if emb_fps is None:
+                emb_fps = 16 * audio_stride
+            else:
+                emb_fps = float(emb_fps)
             full_audio_emb = self.get_audio_embedding(
                 full_audio,
-                fps=16 * audio_stride,
+                fps=emb_fps,
                 device=device,
                 sample_rate=sample_rate,
             )
@@ -3075,6 +3094,7 @@ class LongCatVideoAvatarPipeline:
             emotion_intensity=emotion_intensity,
             emotion_guidance_scale=emotion_guidance_scale,
             mouth_zone_masks=mouth_zone_masks,
+            use_cfg_zero=use_cfg_zero,
         )
         
         # 3. Stream decode: denormalize, decode frame-by-frame, yield
