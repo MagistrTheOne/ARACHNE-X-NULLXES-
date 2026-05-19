@@ -35,7 +35,7 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 ## Зависимости HTTP-слоя
 
 ```bash
-cd services/longcat-worker
+cd services/arachnex-worker
 pip install -r requirements.txt
 ```
 
@@ -47,10 +47,12 @@ pip install -r requirements.txt
 
 ```bash
 export NULLXES_CHECKPOINT_DIR=/path/to/avatar-weights
-export PYTHONPATH=/path/to/ARACHNE-X:/path/to/ARACHNE-X/services/longcat-worker
-cd services/longcat-worker
+export PYTHONPATH=/path/to/ARACHNE-X:/path/to/ARACHNE-X/services/arachnex-worker
+cd services/arachnex-worker
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
+
+**RunPod H200 (clone → HF weights → venv → ai2v → worker):** [`RUNPOD_H200_AVATAR_SETUP.md`](./RUNPOD_H200_AVATAR_SETUP.md)
 
 Оркестратор: `NULLXES_AVATAR_INFERENCE_URL=http://<host>:9090`, опционально `NULLXES_AVATAR_INFERENCE_PATH=/v1/arachne/generate` (по умолчанию в клиенте уже `/v1/arachne/generate`).
 
