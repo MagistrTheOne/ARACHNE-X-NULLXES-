@@ -1,16 +1,18 @@
 # RunPod H200 — ARACHNE-X AVATAR (оцифровка: картинка + аудио + промпт)
 
-Пошаговый playbook для поднятия **NULLXES Inference Worker** ([`arachnex-worker`](./)) на **RunPod GPU H200** (H100 — те же шаги, медленнее).
+Пошаговый playbook для поднятия **NULLXES Inference Worker** (`[arachnex-worker](./)`) на **RunPod GPU H200** (H100 — те же шаги, медленнее).
 
-| Артефакт | URL |
-|----------|-----|
-| Исходники | [github.com/MagistrTheOne/ARACHNE-X-NULLXES-](https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git) |
-| Веса AVATAR | [MagistrTheOne/ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR) |
-| Веса VIDEO (база tokenizer/vae/dit + T2V) | [MagistrTheOne/ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) |
 
-Режим оцифровки: **`ai2v`** (audio + image + prompt) → MP4 или NDJSON realtime через HTTP.
+| Артефакт                                  | URL                                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Исходники                                 | [github.com/MagistrTheOne/ARACHNE-X-NULLXES-](https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git) |
+| Веса AVATAR                               | [MagistrTheOne/ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR)    |
+| Веса VIDEO (база tokenizer/vae/dit + T2V) | [MagistrTheOne/ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO)      |
 
-Связанные документы: [`GTM_ONE_SHOT_DEPLOY.md`](../../Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md), [`RUNPOD_SEMIAUTO_PIPELINE.md`](../../Documentation/DOC_CHECK/RUNPOD_SEMIAUTO_PIPELINE.md).
+
+Режим оцифровки: `**ai2v`** (audio + image + prompt) → MP4 или NDJSON realtime через HTTP.
+
+Связанные документы: `[GTM_ONE_SHOT_DEPLOY.md](../../Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md)`, `[RUNPOD_SEMIAUTO_PIPELINE.md](../../Documentation/DOC_CHECK/RUNPOD_SEMIAUTO_PIPELINE.md)`.
 
 ---
 
@@ -18,12 +20,14 @@
 
 Рекомендации:
 
-| Параметр | Значение |
-|----------|----------|
-| GPU | **H200** (80GB+ VRAM) |
-| Disk | **≥ 200 GB** (оба HF snapshot + venv + cache) |
-| Image | PyTorch 2.6 + CUDA 12.4 (например `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`) |
-| Workspace | `/workspace` |
+
+| Параметр  | Значение                                                                           |
+| --------- | ---------------------------------------------------------------------------------- |
+| GPU       | **H200** (80GB+ VRAM)                                                              |
+| Disk      | **≥ 200 GB** (оба HF snapshot + venv + cache)                                      |
+| Image     | PyTorch 2.6 + CUDA 12.4 (например `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`) |
+| Workspace | `/workspace`                                                                       |
+
 
 После старта pod:
 
@@ -66,9 +70,11 @@ pip install -U pip setuptools wheel
 
 ```bash
 # всё ещё внутри активированного .venv
-export HF_TOKEN=hf_xxxxxxxx
+# Токен только из секретов RunPod / env — не коммитьте в git
+export HF_TOKEN="${HF_TOKEN:?set HF_TOKEN in pod env or: export HF_TOKEN=hf_...}"
 pip install -U "huggingface_hub[cli]>=0.34,<1.0"
 huggingface-cli login --token "$HF_TOKEN"
+# или: hf auth login --token "$HF_TOKEN"
 ```
 
 Ускорение скачивания (опционально, тоже в `.venv`):
@@ -92,6 +98,16 @@ huggingface-cli whoami
 
 **Перед командами:** `cd "$ARACHNE_ROOT" && source .venv/bin/activate` (§1.1).
 
+**Рекомендуемый порядок:** §2.3 AVATAR → §2.3.1 проверка → §2.2 VIDEO → §2.3.2 symlink wav2vec → §2.4 merged runtime → §2.5 layout. Только после `missing: none` в §2.5 переходите к §3.
+
+**CLI:** `huggingface-cli download` помечен deprecated — эквивалент:
+
+```bash
+hf download <repo_id> --local-dir <path>
+```
+
+Предупреждения при скачивании (норма): `local-dir-use-symlinks` ignored; `Still waiting to acquire lock` на `.gitignore.lock`; наложение progress-bar’ов.
+
 ### 2.1 Каталоги
 
 ```bash
@@ -99,12 +115,22 @@ export ARACHNE_ROOT=/workspace/ARACHNE-X
 mkdir -p "$ARACHNE_ROOT/weights"
 ```
 
-### 2.2 VIDEO (обязателен для полного layout `tokenizer/`, `vae/`, `dit/`)
+### 2.2 VIDEO (обязателен для `tokenizer/`, `vae/`, `text_encoder/`, `scheduler/`)
+
+Скачивать **после** AVATAR (§2.3) и его проверки (§2.3.1), **до** merged runtime (§2.4).
 
 ```bash
-huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA-VIDEO \
-  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO" \
-  --local-dir-use-symlinks False
+hf download MagistrTheOne/ARACHNE-X-ULTRA-VIDEO \
+  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO"
+```
+
+Проверка после VIDEO:
+
+```bash
+du -sh "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO"
+find "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO" -name '*.incomplete' 2>/dev/null | wc -l   # 0
+ls "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO"
+# ожидаете: tokenizer  text_encoder  vae  scheduler  dit  [lora]
 ```
 
 Ожидаемая структура:
@@ -122,9 +148,8 @@ weights/ARACHNE-X-ULTRA-VIDEO/
 ### 2.3 AVATAR (avatar DiT + audio conditioning)
 
 ```bash
-huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA-AVATAR \
-  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR" \
-  --local-dir-use-symlinks False
+hf download MagistrTheOne/ARACHNE-X-ULTRA-AVATAR \
+  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
 ```
 
 Ожидаемая структура (карточка HF):
@@ -133,9 +158,83 @@ huggingface-cli download MagistrTheOne/ARACHNE-X-ULTRA-AVATAR \
 weights/ARACHNE-X-ULTRA-AVATAR/
   avatar_single/
   avatar_multi/
-  audio/                 # wav2vec2, vocal_separator (см. loader WeightsLayout)
-  chinese-wav2vec2-base/  # legacy path на части snapshot
+  chinese-wav2vec2-base/   # wav2vec (в loader — audio/wav2vec2, см. §2.3.2)
+  vocal_separator/
+  assets/
 ```
+
+В логе успешного завершения: `Fetching 34 files: 100%` и `34/34`.
+
+#### 2.3.1 Проверка, что AVATAR докачался
+
+```bash
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
+
+# нет зависших incomplete
+find "$NULLXES_CHECKPOINT_DIR" -name '*.incomplete' 2>/dev/null | wc -l
+# ожидание: 0
+
+# размер и верхний уровень
+du -sh "$NULLXES_CHECKPOINT_DIR"
+ls -la "$NULLXES_CHECKPOINT_DIR"
+
+# 34 файла в репо (без .cache)
+find "$NULLXES_CHECKPOINT_DIR" -type f ! -path '*/.cache/*' | wc -l
+# ожидание: 34
+
+for d in avatar_single avatar_multi chinese-wav2vec2-base vocal_separator assets; do
+  [ -d "$NULLXES_CHECKPOINT_DIR/$d" ] && echo "OK  $d" || echo "MISSING $d"
+done
+
+# 6 шардов single DiT
+ls "$NULLXES_CHECKPOINT_DIR/avatar_single"/diffusion_pytorch_model-*.safetensors 2>/dev/null | wc -l
+# ожидание: 6
+ls -lh "$NULLXES_CHECKPOINT_DIR/avatar_single/diffusion_pytorch_model.safetensors.index.json"
+```
+
+Ориентиры при успехе:
+
+| Метрика | Ожидание |
+|---------|----------|
+| Размер `ARACHNE-X-ULTRA-AVATAR` | ~**120G** |
+| `.incomplete` | **0** |
+| Файлов без `.cache` | **34** |
+| Шардов `avatar_single` | **6** |
+
+Проверка layout **только на AVATAR** (до VIDEO) — ожидаемо покажет отсутствие базы:
+
+```bash
+export PYTHONPATH="$ARACHNE_ROOT"
+python - <<'PY'
+from pathlib import Path
+import os
+root = Path(os.environ["NULLXES_CHECKPOINT_DIR"])
+need = ["tokenizer", "vae", "text_encoder", "scheduler", "avatar_single"]
+missing = [p for p in need if not (root / p).is_dir()]
+wav2v_alt = root / "chinese-wav2vec2-base"
+if not (root / "audio" / "wav2vec2").is_dir() and not wav2v_alt.is_dir():
+    missing.append("audio/wav2vec2 or chinese-wav2vec2-base")
+print("checkpoint:", root)
+print("missing:", missing or "none")
+if missing == ["tokenizer", "vae", "text_encoder", "scheduler"]:
+    print("OK — AVATAR полный; дальше §2.2 VIDEO + §2.4 merged runtime")
+if wav2v_alt.is_dir() and not (root / "audio" / "wav2vec2").is_dir():
+    print("note: сделайте §2.3.2 symlink перед inference")
+PY
+```
+
+#### 2.3.2 Symlink `audio/wav2vec2` (после AVATAR)
+
+`loader` ищет `audio/wav2vec2`; в snapshot wav2vec лежит в `chinese-wav2vec2-base/`:
+
+```bash
+CKPT="$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
+mkdir -p "$CKPT/audio"
+ln -sfn "$CKPT/chinese-wav2vec2-base" "$CKPT/audio/wav2vec2"
+ls -la "$CKPT/audio/wav2vec2"
+```
+
+Тот же symlink повторится в merged runtime (§2.4).
 
 ### 2.4 Единый runtime bundle для воркера (`NULLXES_CHECKPOINT_DIR`)
 
@@ -147,7 +246,7 @@ weights/ARACHNE-X-ULTRA-AVATAR/
 export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
 ```
 
-Иначе соберите **merged runtime** (VIDEO base + AVATAR avatar/audio) — §2.4:
+Иначе (типичный случай после §2.2 + §2.3) соберите **merged runtime**:
 
 ```bash
 export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
@@ -159,39 +258,40 @@ for d in tokenizer text_encoder vae scheduler; do
 done
 
 # avatar DiT + audio из AVATAR
-for d in avatar_single avatar_multi audio; do
+for d in avatar_single avatar_multi vocal_separator; do
   if [ -d "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/$d" ]; then
     ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/$d" "$NULLXES_CHECKPOINT_DIR/$d"
   fi
 done
 
-# если wav2vec лежит в chinese-wav2vec2-base:
-if [ -d "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/chinese-wav2vec2-base" ] \
-   && [ ! -d "$NULLXES_CHECKPOINT_DIR/audio/wav2vec2" ]; then
-  mkdir -p "$NULLXES_CHECKPOINT_DIR/audio"
-  ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/chinese-wav2vec2-base" \
-    "$NULLXES_CHECKPOINT_DIR/audio/wav2vec2"
-fi
+# wav2vec из chinese-wav2vec2-base
+mkdir -p "$NULLXES_CHECKPOINT_DIR/audio"
+ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/chinese-wav2vec2-base" \
+  "$NULLXES_CHECKPOINT_DIR/audio/wav2vec2"
 ```
 
-### 2.5 Проверка layout (обязательно)
+Для всех следующих шагов (§3–§5) экспортируйте merged path:
+
+```bash
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+```
+
+### 2.5 Проверка layout merged bundle (обязательно перед §3)
 
 ```bash
 cd "$ARACHNE_ROOT"
-source .venv/bin/activate 2>/dev/null || true
+source .venv/bin/activate
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
 export PYTHONPATH="$ARACHNE_ROOT"
 
 python - <<'PY'
 from pathlib import Path
 import os
 root = Path(os.environ["NULLXES_CHECKPOINT_DIR"])
-need = ["tokenizer", "vae", "text_encoder", "scheduler", "avatar_single"]
-missing = [p for p in need if not (root / p).is_dir()]
-audio_w2v = root / "audio" / "wav2vec2"
-if not audio_w2v.is_dir():
-    missing.append("audio/wav2vec2")
+need = ["tokenizer", "vae", "text_encoder", "scheduler", "avatar_single", "audio/wav2vec2"]
+missing = [p for p in need if not (root / p).exists()]
 print("checkpoint:", root)
-print("missing:", missing or "none — OK")
+print("missing:", missing or "none — OK, можно §3 torch + infer")
 PY
 ```
 
@@ -269,7 +369,7 @@ PY
 
 ### 4.1 Пресет KAIRA (в репо)
 
-Файл: [`assets/avatar/single/kaira/kaira.json`](../../assets/avatar/single/kaira/kaira.json)  
+Файл: `[assets/avatar/single/kaira/kaira.json](../../assets/avatar/single/kaira/kaira.json)`  
 Изображение: `assets/avatar/single/kaira/kaira.png`
 
 ### 4.2 Пример: свой image + audio + prompt
@@ -299,7 +399,7 @@ python scripts/infer.py \
   --output /workspace/ARACHNE-X/output/avatar_ai2v_smoke.mp4
 ```
 
-Режимы avatar (полный список CLI): `ai2v`, `at2v`, `avc`, `streaming_ai2v` — для **картинка+аудио+промпт** используйте **`ai2v`**.
+Режимы avatar (полный список CLI): `ai2v`, `at2v`, `avc`, `streaming_ai2v` — для **картинка+аудио+промпт** используйте `**ai2v`**.
 
 Лёгкий smoke (мало шагов, быстрее на H200):
 
@@ -355,41 +455,50 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 
 ## 6. Чеклист «готово»
 
-| # | Проверка | OK |
-|---|----------|-----|
-| 1 | `nvidia-smi` → H200 | ☐ |
-| 2 | Оба HF snapshot на диске | ☐ |
-| 3 | `NULLXES_CHECKPOINT_DIR` — layout без `missing` | ☐ |
-| 4 | `.venv` активен, `huggingface-cli whoami` | ☐ |
-| 5 | `torch` + `flash_attn` import | ☐ |
-| 6 | `scripts/infer.py --mode ai2v` → MP4 | ☐ |
-| 7 | `/health` + `smoke_avatar_frames.sh` → NDJSON | ☐ |
+
+| #   | Проверка                                                    | OK  |
+| --- | ----------------------------------------------------------- | --- |
+| 1   | `nvidia-smi` → H200                                         | ☐   |
+| 2   | AVATAR: ~120G, 34 files, 0 incomplete (§2.3.1)                | ☐   |
+| 3   | VIDEO скачан, `tokenizer/` + `vae/` (§2.2)                  | ☐   |
+| 4   | `arachne-avatar-runtime` merged, §2.5 `missing: none`         | ☐   |
+| 5   | `.venv` активен, `hf auth whoami` / `huggingface-cli whoami` | ☐   |
+| 6   | `torch` + `flash_attn` import (§3)                          | ☐   |
+| 7   | `scripts/infer.py --mode ai2v` → MP4 (§4)                   | ☐   |
+| 8   | `/health` + `smoke_avatar_frames.sh` → NDJSON (§5)          | ☐   |
+
 
 ---
 
 ## 7. Типовые ошибки
 
-| Симптом | Действие |
-|---------|----------|
-| `missing tokenizer/ or vae/` | Соберите merged runtime (§2.4) или скачайте полный AVATAR bundle |
-| `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1) |
-| `flash_attn` build fail | Используйте prebuilt wheel под CUDA 12.4 / образ RunPod с готовым flash-attn |
-| OOM на H200 | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps` |
-| Worker 401 | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
-| Первый запрос 60–180 s | Норма: lazy load pipeline на GPU |
+
+| Симптом                              | Действие                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `missing tokenizer,vae,...` на **только AVATAR** | Норма — §2.2 VIDEO + §2.4 merged runtime                         |
+| `missing ...` на **merged** после §2.4 | Проверьте symlink’и VIDEO/AVATAR, §2.3.2 wav2vec                  |
+| `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1); используйте `hf download`                |
+| Lock / `.incomplete` при download    | Дождаться; не запускать два `hf download` в один `--local-dir`               |
+| `flash_attn` build fail              | Используйте prebuilt wheel под CUDA 12.4 / образ RunPod с готовым flash-attn |
+| OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
+| Worker 401                           | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
+| Первый запрос 60–180 s               | Норма: lazy load pipeline на GPU                                             |
+
 
 ---
 
 ## 8. Переменные окружения (кратко)
 
-| Переменная | Назначение |
-|------------|------------|
-| `HF_TOKEN` | Доступ к private/gated HF repos |
-| `NULLXES_CHECKPOINT_DIR` | Корень весов для avatar pipeline |
-| `ARACHNE_CHECKPOINT_DIR` | Алиас |
-| `PYTHONPATH` | `$ARACHNE_ROOT` + `services/arachnex-worker` |
-| `NULLXES_INFERENCE_SERVICE_KEY` | Опциональный секрет HTTP |
-| `NULLXES_URL` | Base URL для smoke script |
+
+| Переменная                      | Назначение                                   |
+| ------------------------------- | -------------------------------------------- |
+| `HF_TOKEN`                      | Доступ к private/gated HF repos              |
+| `NULLXES_CHECKPOINT_DIR`        | Корень весов для avatar pipeline             |
+| `ARACHNE_CHECKPOINT_DIR`        | Алиас                                        |
+| `PYTHONPATH`                    | `$ARACHNE_ROOT` + `services/arachnex-worker` |
+| `NULLXES_INFERENCE_SERVICE_KEY` | Опциональный секрет HTTP                     |
+| `NULLXES_URL`                   | Base URL для smoke script                    |
+
 
 ---
 
