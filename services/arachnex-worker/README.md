@@ -52,7 +52,7 @@ cd services/arachnex-worker
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
 
-**RunPod H200 (clone → HF weights → venv → ai2v → worker):** [`RUNPOD_H200_AVATAR_SETUP.md`](./RUNPOD_H200_AVATAR_SETUP.md)
+**RunPod H200 (clone → weights → CLI `ai2v` / режимы; worker опционально):** [`RUNPOD_H200_AVATAR_SETUP.md`](../../RUNPOD_H200_AVATAR_SETUP.md)
 
 Оркестратор: `NULLXES_AVATAR_INFERENCE_URL=http://<host>:9090`, опционально `NULLXES_AVATAR_INFERENCE_PATH=/v1/arachne/generate` (по умолчанию в клиенте уже `/v1/arachne/generate`).
 

@@ -487,20 +487,43 @@ python scripts/infer.py \
   --output output/kaira_ai2v_smoke.mp4
 ```
 
-ELENA smoke (текущий пресет, `face.jpg` + внешний WAV):
+ELENA — production (из `elena.json` → `_arachne_x_infer`: 720p, 181f, 30 steps):
 
 ```bash
+PRESET=assets/avatar/single/elena/elena.json
+ffmpeg -y -i "$(jq -r .cond_audio "$PRESET")" -ar 16000 -ac 1 /workspace/input/elena_16k.wav
+
 python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode ai2v \
-  --prompt "$(jq -r .prompt assets/avatar/single/elena/elena.json)" \
-  --negative_prompt "anime, cartoon, blurry, distorted face, mismatched lip sync, frozen mouth" \
-  --image assets/avatar/single/elena/face.jpg \
+  --prompt "$(jq -r .prompt "$PRESET")" \
+  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
+  --image "$(jq -r .cond_image "$PRESET")" \
+  --audio /workspace/input/elena_16k.wav \
+  --resolution "$(jq -r '._arachne_x_infer.resolution' "$PRESET")" \
+  --num_frames "$(jq -r '._arachne_x_infer.num_frames' "$PRESET")" \
+  --num_inference_steps "$(jq -r '._arachne_x_infer.num_inference_steps' "$PRESET")" \
+  --text_guidance_scale "$(jq -r '._arachne_x_infer.text_guidance_scale' "$PRESET")" \
+  --audio_guidance_scale "$(jq -r '._arachne_x_infer.audio_guidance_scale' "$PRESET")" \
+  --output output/elena_ai2v_production.mp4
+```
+
+ELENA smoke (`_arachne_x_infer_smoke` в том же JSON):
+
+```bash
+PRESET=assets/avatar/single/elena/elena.json
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --prompt "$(jq -r .prompt "$PRESET")" \
+  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
+  --image "$(jq -r .cond_image "$PRESET")" \
   --audio /workspace/input/speech.wav \
-  --num_frames 17 \
-  --num_inference_steps 2 \
-  --text_guidance_scale 3.0 \
-  --audio_guidance_scale 3.0 \
+  --resolution "$(jq -r '._arachne_x_infer_smoke.resolution' "$PRESET")" \
+  --num_frames "$(jq -r '._arachne_x_infer_smoke.num_frames' "$PRESET")" \
+  --num_inference_steps "$(jq -r '._arachne_x_infer_smoke.num_inference_steps' "$PRESET")" \
+  --text_guidance_scale "$(jq -r '._arachne_x_infer_smoke.text_guidance_scale' "$PRESET")" \
+  --audio_guidance_scale "$(jq -r '._arachne_x_infer_smoke.audio_guidance_scale' "$PRESET")" \
   --output output/elena_ai2v_smoke.mp4
 ```
 
