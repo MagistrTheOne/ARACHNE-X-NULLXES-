@@ -69,6 +69,78 @@ flowchart TB
 
 Пресеты: `assets/avatar/single/<name>/*.json` (например **Elena**: `face.jpg` + `audio.wav`).
 
+### Механика оцифровки Elena (для Денчика: face.jpg + audio.wav → фронт / LoRA)
+
+**Оцифровка ≠ обучение модели с нуля.** Мы берём уже обученные NULLXES-чекпоинты (HF) и одним прогоном `ai2v` «оживляем» лицо под запись голоса.
+
+```mermaid
+flowchart LR
+  subgraph inputs [Входы на pod]
+    F[face.jpg\ncond_image]
+    A[audio.wav\ncond_audio mono 16kHz]
+    J[elena.json\nprompt + negative + steps]
+  end
+  subgraph runtime [RunPod CLI]
+    W[arachne-avatar-runtime\nVIDEO+AVATAR symlinks]
+    WV[wav2vec2\nchinese-wav2vec2-base]
+    DIT[avatar_single DiT]
+    F --> ENC[image encode]
+    A --> WV --> AEM[audio_emb]
+    J --> TXT[prompt embed]
+    ENC --> GEN[generate_ai2v]
+    AEM --> GEN
+    TXT --> GEN
+    W --> DIT
+    DIT --> GEN
+    GEN --> MP4[elena_ai2v_production.mp4]
+  end
+```
+
+**Внутри `ai2v` (упрощённо):**
+
+```mermaid
+sequenceDiagram
+  participant Op as Оператор
+  participant CLI as infer.py
+  participant W as Weights merged
+  participant P as Pipeline GPU
+
+  Op->>CLI: face.jpg + audio.wav + prompt
+  CLI->>W: load tokenizer vae avatar_single wav2vec
+  CLI->>P: build_audio_emb WAV 16kHz
+  CLI->>P: generate_ai2v image + audio_emb + text
+  P-->>CLI: frames
+  CLI-->>Op: MP4 mux 30fps + audio
+```
+
+| Шаг | Кто | Что | Артефакт |
+| --- | --- | --- | -------- |
+| 1. Пресет | репо / дизайн | `elena.json`: промпт, 720p, 181f, guidance | JSON |
+| 2. Ассеты | контент | `face.jpg`, `audio.wav` рядом с JSON | файлы на pod |
+| 3. Веса | ML ops | §2 HF + merged `arachne-avatar-runtime` | ~120G + VIDEO |
+| 4. Оцифровка | RunPod H200 | `python scripts/infer.py --mode ai2v ...` | MP4 |
+| 5. LoRA (опц.) | train GPU | клипы → `train_lora_avatar.py` | `lora.safetensors` |
+| 6. Infer с LoRA | RunPod | тот же `ai2v` + `--lora_path` | MP4 точнее под лицо |
+| 7. Прод HR | backend + фронт | gateway → worker **или** RTMP без DiT | стрим / интервью |
+
+**Подключение к фронту (позже, не текущий этап на pod):**
+
+```mermaid
+flowchart TB
+  U[Кандидат / HR UI\njobaidemo] --> GW[realtime-gateway]
+  GW --> OAI[OpenAI Realtime\nречь ассистента]
+  OAI -->|PCM| GW
+  GW -->|path A RTMP| RTMP[ffmpeg → LiveKit\nбез ARACHNE видео]
+  GW -->|path B arachne*| POD[RunPod arachnex-worker]
+  POD -->|imageBase64 + audio PCM + prompt| AR[ai2v / streaming_ai2v]
+  AR -->|NDJSON кадры| GW --> U
+  LORA[lora.safetensors] -.->|опц. на pod| AR
+  PRESET[elena.json prompt] -.->|конфиг| GW
+  F2[face.jpg URL/base64] -.-> POD
+```
+
+Сейчас на pod: **шаги 1–4** (deps §3 уже OK у вас → осталось **§2 веса** + **§4 infer**).
+
 ### Все режимы CLI (`scripts/infer.py`)
 
 | `--mode` | Checkpoint | Входы | Выход | Продуктовый смысл |
@@ -469,6 +541,8 @@ source .venv/bin/activate
 | `pip install -U triton` | Ломает связку torch ↔ flash-attn |
 | `pip install xformers` | Не нужен; FA2 достаточно |
 | `flash-attn` **до** torch | Сборка упадёт без `torch` |
+| `pip install -r requirements.txt` для flash-attn | Изолированный build-env **не видит** torch → ложный `No module named 'torch'` |
+| `pip install torchaudio` с PyPI без index | Тянет 2.11 + `libcudart.so.13` — **ломает** cu124 стек |
 
 ---
 
@@ -498,6 +572,8 @@ True
 
 ### 3.3 FlashAttention (только после §3.2)
 
+**Только так** (проверено на H200 pod): флаг `--no-build-isolation` обязателен — иначе pip создаёт изолированный env без torch и падает на `Getting requirements to build wheel`.
+
 ```bash
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
@@ -508,6 +584,8 @@ pip install flash-attn==2.7.4.post1 --no-build-isolation
 MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
+**Не ставить flash-attn через** `pip install -r requirements.txt` **до** успешной §3.3 — та же ошибка. После `FLASH OK` повторный `pip install -r requirements.txt` обычно видит `flash-attn` как уже установленный.
+
 ### 3.4 Проверка flash-attn
 
 ```bash
@@ -515,6 +593,22 @@ python -c "import flash_attn; print('FLASH OK', flash_attn.__version__)"
 ```
 
 Без `FLASH OK` infer упадёт с `Unsupported attention operations`.
+
+Расширенная проверка GPU (как на pod):
+
+```bash
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda:", torch.version.cuda)
+print("available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("gpu:", torch.cuda.get_device_name(0))
+    print("vram_gb:", round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2))
+import flash_attn
+print("flash_attn:", flash_attn.__version__, "FLASH OK")
+PY
+```
 
 ---
 
@@ -528,7 +622,7 @@ pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn res
 
 ### 3.6 ML-стек (пины, без переустановки torch)
 
-**Не** делайте слепой `pip install -r requirements.txt` до проверки §3.2 — PyPI может подтянуть другой `torch`. Пины вручную:
+Порядок на pod (после §3.4): librosa → diffusers-пины → extras → avatar-only пакеты.
 
 ```bash
 pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
@@ -536,10 +630,34 @@ pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
   loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 \
   scipy==1.15.3 tqdm==4.66.1
 pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
-pip install --no-cache-dir -r requirements_avatar.txt
 ```
 
+Avatar extras (подмножество `requirements_avatar.txt` — **без** повторной сборки flash-attn):
+
+```bash
+pip install \
+  scikit-learn==1.6.1 scikit-image==0.25.2 soxr==0.5.0.post1 pyloudnorm==0.1.1 \
+  audio-separator==0.30.2 nvidia-ml-py==13.580.65 tzdata==2025.2 \
+  onnx==1.18.0 onnxruntime==1.18.0 openai==1.75.0 chardet==5.2.0 \
+  aiortc==1.10.1 silero-vad==5.1.2
+pip install numpy==1.26.4
+```
+
+`requirements_avatar.txt` тянет `-r requirements.txt` и снова может дернуть flash-attn — если §3.3 уже `FLASH OK`, обычно пропускает; при ошибке ставьте пакеты блоком выше.
+
 Опционально TTS: `pip install -r requirements-tts.txt`.
+
+### 3.6.1 torchaudio (только если нужен silero / torchaudio)
+
+`silero-vad` может подтянуть **torchaudio 2.11** → `libcudart.so.13`. Выравнивание под torch 2.6 cu124:
+
+```bash
+pip uninstall -y torchaudio
+pip install torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch, torchaudio; print(torch.__version__, torchaudio.__version__)"
+```
+
+Для Elena `ai2v` с файлом `audio.wav` torchaudio **не обязателен** (достаточно librosa/soundfile).
 
 ### 3.7 HTTP worker — **не на текущем этапе**
 
@@ -872,7 +990,10 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1); используйте `hf download`                |
 | Lock / `.incomplete` при download    | Дождаться; не запускать два `hf download` в один `--local-dir`               |
 | `No module named 'torch'`            | §3.1–3.2: torch cu124 **до** flash-attn и до infer                 |
-| `flash_attn` build fail              | §3.2 OK? затем §3.3; `MAX_JOBS=4`; образ CUDA 12.4                 |
+| `No module named 'torch'` при flash build | Используйте §3.3 с `--no-build-isolation`, не `pip install -r requirements.txt` |
+| `libcudart.so.13` / torchaudio       | §3.6.1: `torchaudio==2.6.0` с cu124 index, не 2.11 с PyPI          |
+| `flash_attn` build fail              | §3.2 OK? затем §3.3 `MAX_JOBS=4 --no-build-isolation`             |
+| layout `missing: all`                | §2.4 merged runtime не собран — веса не скачаны / нет symlink      |
 | `Unsupported attention operations`   | §3.3–3.4: flash-attn не установлен / не импортируется              |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
 | Worker 401                           | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
@@ -911,9 +1032,8 @@ pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 \
   --index-url https://download.pytorch.org/whl/cu124
 python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
 
-# 2) Flash-attn (только после torch OK)
-pip install flash-attn==2.7.4.post1 --no-build-isolation
-# MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation
+# 2) Flash-attn — ТОЛЬКО --no-build-isolation (не через requirements.txt)
+MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation
 python -c "import flash_attn; print('FLASH OK', flash_attn.__version__)"
 
 # 3) Остальное (не трогать torch / triton / xformers)
@@ -922,7 +1042,7 @@ pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
   huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
   loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 scipy==1.15.3 tqdm==4.66.1
 pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
-pip install -r requirements_avatar.txt
+# avatar extras — см. §3.6 блок scikit-learn / audio-separator (или requirements_avatar после FLASH OK)
 
 # HF (токен только из env RunPod — не в git)
 export HF_TOKEN="${HF_TOKEN:?set in pod secrets}"
