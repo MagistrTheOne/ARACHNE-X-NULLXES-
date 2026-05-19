@@ -103,7 +103,9 @@ DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает back
 4. **xFormers** — только если явно включён и пакет установлен.
 5. Иначе — `RuntimeError: Unsupported attention operations`.
 
-Для прод-инференса на Linux **обязательно** §3.5: без `flash_attn` импорт attention упадёт. SDPAttn «из коробки PyTorch» в этом стеке **не** используется как fallback.
+Для прод-инференса на Linux **обязательно** §3.3–3.4: без `flash_attn` импорт attention упадёт. SDPAttn «из коробки PyTorch» в этом стеке **не** используется как fallback.
+
+**Порядок установки критичен:** сначала `torch` (cu124), проверка, **только потом** `flash-attn`. Иначе `ModuleNotFoundError: No module named 'torch'` при сборке FA.
 
 ---
 
@@ -117,7 +119,7 @@ DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает back
 | 2 | §2.3.2 — symlink `audio/wav2vec2` в AVATAR | `ls` symlink OK |
 | 3 | §2.4 — собрать `weights/arachne-avatar-runtime` | symlinks созданы |
 | 4 | §2.5 — layout merged | `missing: none` |
-| 5 | §3.1–3.3 (+ 3.5 sanity) — torch, deps, flash-attn | import CUDA OK |
+| 5 | §3 — **сначала torch → flash-attn**, потом ML/audio (§3.5+) | `torch` + `FLASH OK` |
 | 6 | §4 — тесты режимов (сначала **4.2 `ai2v` smoke**, потом остальные по желанию) | MP4 на диске |
 | 7 | §5 — **пропустить**, пока не нужен HTTP/realtime для NULLXES HR | — |
 
@@ -450,14 +452,27 @@ PY
 
 ## 3. Зависимости inference (тот же `.venv`)
 
-Доставляем torch/flash-attn и стек ARACHNE-X в **уже созданный** `.venv` из §1.1. Новый venv не создаём. Не смешивать с `.venv_stage3` Qwen — см. semiauto doc.
+Доставляем зависимости в **уже созданный** `.venv` из §1.1. Не смешивать с `.venv_stage3` Qwen — см. semiauto doc.
+
+**Build tools / CUDA 12.4** на образе RunPod обычно уже есть. Если `python -c "import torch"` → `ModuleNotFoundError` — torch ещё не ставили: начинайте с §3.1.
 
 ```bash
-cd "$ARACHNE_ROOT"
+cd /workspace/ARACHNE-X
 source .venv/bin/activate
 ```
 
-### 3.1 PyTorch (CUDA 12.4)
+### Запреты на этом этапе (CUDA-ад не нужен)
+
+| Не делать | Почему |
+| --------- | ------ |
+| `pip install -U torch` / `pip install torch` без cu124 index | Снесёт сборку `+cu124` |
+| `pip install -U triton` | Ломает связку torch ↔ flash-attn |
+| `pip install xformers` | Не нужен; FA2 достаточно |
+| `flash-attn` **до** torch | Сборка упадёт без `torch` |
+
+---
+
+### 3.1 PyTorch CUDA 12.4 (первым)
 
 ```bash
 pip install --no-cache-dir \
@@ -465,79 +480,87 @@ pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu124
 ```
 
-### 3.2 Аудио-стек (librosa / resample) — перед infer
+### 3.2 Проверка torch (обязательно перед flash-attn)
 
-Нужен для Wav2Vec2-цепочки и mux. Проверенный набор на pod:
+```bash
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+```
+
+Ожидаемо:
+
+```text
+2.6.0+cu124
+12.4
+True
+```
+
+Если `False` или нет `+cu124` — **не** ставьте flash-attn; разберитесь с CUDA/драйвером (`nvidia-smi`).
+
+### 3.3 FlashAttention (только после §3.2)
+
+```bash
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+```
+
+Сборка 5–15 мин. Если жрёт все ядра/RAM:
+
+```bash
+MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation
+```
+
+### 3.4 Проверка flash-attn
+
+```bash
+python -c "import flash_attn; print('FLASH OK', flash_attn.__version__)"
+```
+
+Без `FLASH OK` infer упадёт с `Unsupported attention operations`.
+
+---
+
+### 3.5 Аудио-стек (после torch + flash)
+
+Нужен для Wav2Vec2 и mux:
 
 ```bash
 pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn resampy pooch soxr
 ```
 
-### 3.3 ML-стек (пины как в `requirements.txt`)
+### 3.6 ML-стек (пины, без переустановки torch)
 
-Если `pip install -r requirements.txt` падает или тянет несовместимые версии — **явный пин** (рабочий блок с H200 pod):
+**Не** делайте слепой `pip install -r requirements.txt` до проверки §3.2 — PyPI может подтянуть другой `torch`. Пины вручную:
 
 ```bash
 pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
   huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
   loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 \
   scipy==1.15.3 tqdm==4.66.1
-```
-
-Доп. утилиты (экспорт, визуализация, WDS — по необходимости):
-
-```bash
 pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
-```
-
-### 3.4 Core + avatar extras (из репо)
-
-```bash
-pip install --no-cache-dir -r requirements.txt
 pip install --no-cache-dir -r requirements_avatar.txt
 ```
 
-Опционально TTS для `--speak_text`: `pip install -r requirements-tts.txt`.
+Опционально TTS: `pip install -r requirements-tts.txt`.
 
-### 3.5 FlashAttention (Linux H200) — обязательно для attention
+### 3.7 HTTP worker — **не на текущем этапе**
 
-```bash
-pip install flash-attn==2.7.4.post1 --no-build-isolation
-```
+Только перед §5: `pip install -r services/arachnex-worker/requirements.txt`
 
-Сборка 5–15 мин; нужен CUDA 12.4 + gcc. Без этого DiT attention → `Unsupported attention operations`.
-
-### 3.6 HTTP worker — **не на текущем этапе** (опционально)
-
-Ставить только перед §5:
-
-```bash
-pip install -r services/arachnex-worker/requirements.txt
-```
-
-### 3.7 Sanity: CUDA + flash_attn + diffusers
+### 3.8 Финальная sanity (перед §4 infer)
 
 ```bash
 python - <<'PY'
 import torch
-print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("device", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NO GPU")
-try:
-    import flash_attn
-    print("flash_attn OK", flash_attn.__version__)
-except Exception as e:
-    print("flash_attn FAIL:", e)
+print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available())
+import flash_attn
+print("flash_attn OK", flash_attn.__version__)
 import diffusers, transformers
 print("diffusers", diffusers.__version__, "transformers", transformers.__version__)
-try:
-    import librosa
-    print("librosa", librosa.__version__)
-except Exception as e:
-    print("librosa:", e)
+import librosa
+print("librosa", librosa.__version__)
 PY
 ```
 
-### 3.8 Проверка attention-backend (опционально)
+### 3.9 Проверка attention-backend (опционально)
 
 ```bash
 python - <<'PY'
@@ -545,7 +568,7 @@ from arachne_x.modules.avatar.attention import Attention
 import inspect
 src = inspect.getsource(Attention._process_attn)
 assert "flash_attn_func" in src
-print("Attention module loads; expect flash_attn2 path when enable_flashattn2=True in model config")
+print("Attention module OK — flash_attn2 path when enabled in model config")
 PY
 ```
 
@@ -848,8 +871,9 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | `missing ...` на **merged** после §2.4 | Проверьте symlink’и VIDEO/AVATAR, §2.3.2 wav2vec                  |
 | `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1); используйте `hf download`                |
 | Lock / `.incomplete` при download    | Дождаться; не запускать два `hf download` в один `--local-dir`               |
-| `flash_attn` build fail              | §3.5: wheel под CUDA 12.4; образ `pytorch:2.6.0-cuda12.4` |
-| `Unsupported attention operations`   | Не установлен `flash-attn` — §3.5 обязателен на Linux infer      |
+| `No module named 'torch'`            | §3.1–3.2: torch cu124 **до** flash-attn и до infer                 |
+| `flash_attn` build fail              | §3.2 OK? затем §3.3; `MAX_JOBS=4`; образ CUDA 12.4                 |
+| `Unsupported attention operations`   | §3.3–3.4: flash-attn не установлен / не импортируется              |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
 | Worker 401                           | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
 | Первый запрос 60–180 s               | Норма: lazy load pipeline на GPU                                             |
@@ -874,7 +898,7 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 
 ---
 
-## 9. Шпаргалка pip (полный порядок на чистом pod)
+## 9. Шпаргалка pip (строгий порядок на чистом pod)
 
 ```bash
 export ARACHNE_ROOT=/workspace/ARACHNE-X
@@ -882,22 +906,23 @@ cd "$ARACHNE_ROOT"
 python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip setuptools wheel
 
-# torch
+# 1) Torch cu124
 pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 \
   --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
 
-# audio
+# 2) Flash-attn (только после torch OK)
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+# MAX_JOBS=4 pip install flash-attn==2.7.4.post1 --no-build-isolation
+python -c "import flash_attn; print('FLASH OK', flash_attn.__version__)"
+
+# 3) Остальное (не трогать torch / triton / xformers)
 pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn resampy pooch soxr
-
-# ML pins
 pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
   huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
   loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 scipy==1.15.3 tqdm==4.66.1
 pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
-
-# repo + flash-attn
-pip install -r requirements.txt -r requirements_avatar.txt
-pip install flash-attn==2.7.4.post1 --no-build-isolation
+pip install -r requirements_avatar.txt
 
 # HF (токен только из env RunPod — не в git)
 export HF_TOKEN="${HF_TOKEN:?set in pod secrets}"
