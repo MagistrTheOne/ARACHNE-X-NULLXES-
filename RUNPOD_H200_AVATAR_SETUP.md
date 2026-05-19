@@ -14,7 +14,96 @@ Playbook для **RunPod GPU H200** (H100 — те же шаги, медленн
 
 Основной режим оцифровки: **`ai2v`** (image + audio + prompt) → MP4. Остальные режимы — §4.
 
-Связанные документы: [`GTM_ONE_SHOT_DEPLOY.md`](Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md), [`RUNPOD_SEMIAUTO_PIPELINE.md`](Documentation/DOC_CHECK/RUNPOD_SEMIAUTO_PIPELINE.md), воркер: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md).
+Связанные документы: [`GTM_ONE_SHOT_DEPLOY.md`](Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md), [`GTM_PRODUCTION_CONTRACT.md`](Documentation/DOC_CHECK/GTM_PRODUCTION_CONTRACT.md), [`RUNPOD_SEMIAUTO_PIPELINE.md`](Documentation/DOC_CHECK/RUNPOD_SEMIAUTO_PIPELINE.md), воркер: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md).
+
+---
+
+## Обзор ARACHNE-X (возможности, режимы, развёртывание)
+
+### Продукт в одном абзаце
+
+**ARACHNE-X** — proprietary video/avatar diffusion stack (DiT + Wan VAE + UMT5 text + Wav2Vec2 audio). **Оцифровка** = inference на frozen чекпоинтах HF (`ULTRA-VIDEO` + `ULTRA-AVATAR`). **Персонализация** = LoRA (`train_lora_avatar.py`) и/или identity bank (`enroll_identity`). **Прод HR** может идти двумя путями: **RTMP** (голос OpenAI → LiveKit, без DiT) или **GPU worker** (кадры `streaming_ai2v` / NDJSON).
+
+### Две линейки весов
+
+| Repo HF | Роль | Нужен для |
+| ------- | ---- | --------- |
+| [ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) | tokenizer, VAE, scheduler, text_encoder, base DiT | `t2v`, `i2v`, `vc` + **база** merged avatar |
+| [ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR) | avatar_single/multi, wav2vec, vocal_separator | `ai2v`, `at2v`, `avc`, `streaming_ai2v` |
+
+**Merged runtime** (`weights/arachne-avatar-runtime`) — symlink-bundle для всех avatar-режимов (§2.4).
+
+### Оцифровка vs обучение (механика для команды)
+
+```mermaid
+flowchart TB
+  subgraph infer [Оцифровка — сейчас на RunPod]
+    IMG[face.jpg] --> AI2V[ai2v infer.py]
+    AUD[audio.wav 16kHz] --> AI2V
+    PR[prompt JSON] --> AI2V
+    W[merged weights] --> AI2V
+    AI2V --> MP4[MP4]
+  end
+  subgraph train [Обучение — отдельный контур]
+    CLIPS[Клипы + аудио] --> LAT[export latents]
+    LAT --> LORA[train_lora_avatar.py]
+    LORA --> SAF[lora.safetensors]
+    SAF --> AI2V
+  end
+  subgraph serve [Прод NULLXES HR]
+  FE[Frontend] --> GW[realtime-gateway]
+  GW --> OAI[OpenAI Realtime]
+  GW -->|VIDEO_ENGINE=arachne*| POD[arachnex-worker]
+  POD --> AI2V
+  GW -->|RTMP CHTZ-3| LK[LiveKit без DiT]
+  end
+```
+
+| Этап | Что делает | Артефакт |
+| ---- | ---------- | -------- |
+| Оцифровка | `ai2v` на общих ULTRA-весах | MP4 QA / демо |
+| LoRA | дообучение адаптера на латентах | `.safetensors` → `--lora_path` |
+| Identity | `enroll_identity` с одного фото | `identity_bank.pt` |
+| Realtime HR | gateway → worker `avatar_frames` | NDJSON RGB |
+| Interview RTMP | PCM → ffmpeg → LiveKit | аудио-бот без ARACHNE-кадров |
+
+Пресеты: `assets/avatar/single/<name>/*.json` (например **Elena**: `face.jpg` + `audio.wav`).
+
+### Все режимы CLI (`scripts/infer.py`)
+
+| `--mode` | Checkpoint | Входы | Выход | Продуктовый смысл |
+| -------- | ------------ | ----- | ----- | ----------------- |
+| **`ai2v`** | merged avatar | image + audio + prompt | MP4 | **Оцифровка** (главный) |
+| `streaming_ai2v` | merged | image + audio stream | MP4 / кадры | Realtime micro-turn |
+| `at2v` | merged | audio + prompt | MP4 | Говорящий аватар без ref-фото |
+| `avc` | merged | video + audio + prompt | MP4 | Континуэйшн / замена речи |
+| `enroll_identity` | merged | image + identity_id | bank file | Слот лица для guided infer |
+| `t2v` | VIDEO only | prompt | MP4 | Базовое текст→видео |
+| `i2v` | VIDEO | image + prompt | MP4 | Картинка→видео |
+| `vc` | VIDEO | video + prompt | MP4 | Video continuation |
+
+Параметры качества для `ai2v`: только `--resolution` `480p`|`720p` (не произвольные 768×768), `--num_frames` (правило **4n+1**), `--num_inference_steps`, `--text_guidance_scale`, `--audio_guidance_scale`. **`--seed` / `--fps` в CLI нет**; mux FPS = **30** (пост `ffmpeg -filter:v fps=24` при необходимости).
+
+### Схема развёртывания
+
+| Слой | Где | Когда |
+| ---- | --- | ----- |
+| **RunPod CLI** (этот док) | H200, `infer.py` | Оцифровка, тесты режимов, LoRA smoke |
+| **arachnex-worker** | FastAPI :9090 | NDJSON `/v1/realtime/avatar_frames`, MP4 jobs |
+| **realtime-gateway** | Droplet / cloud | OpenAI + маршрутизация на pod / RTMP |
+| **frontend jobaidemo** | Vercel | LiveKit, studio, proxy `/api/gateway/*` |
+
+### Attention на H200 (нормальный путь)
+
+DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает backend **в порядке**:
+
+1. **Block-sparse (BSA)** — если `enable_bsa` и multi-frame (обычно train, не smoke infer).
+2. **FlashAttention 3** — если установлен `flash_attn_interface`.
+3. **FlashAttention 2** — **`flash-attn==2.7.4.post1`** ← **целевой для RunPod H200**.
+4. **xFormers** — только если явно включён и пакет установлен.
+5. Иначе — `RuntimeError: Unsupported attention operations`.
+
+Для прод-инференса на Linux **обязательно** §3.5: без `flash_attn` импорт attention упадёт. SDPAttn «из коробки PyTorch» в этом стеке **не** используется как fallback.
 
 ---
 
@@ -36,8 +125,9 @@ Playbook для **RunPod GPU H200** (H100 — те же шаги, медленн
 
 ```bash
 mkdir -p /workspace/input /workspace/ARACHNE-X/output
-# face.png — reference лицо
-# speech.wav — mono 16 kHz (или 24 kHz, runtime ресемплит)
+# Elena (канон): assets/avatar/single/elena/face.jpg + audio.wav
+# При необходости 16 kHz:
+# ffmpeg -y -i assets/avatar/single/elena/audio.wav -ar 16000 -ac 1 /workspace/input/elena_16k.wav
 ```
 
 ---
@@ -59,7 +149,7 @@ mkdir -p /workspace/input /workspace/ARACHNE-X/output
 
 ```bash
 nvidia-smi
-python3 --version   # 3.10.x
+python3 --version   # 3.10+ / 3.11 OK (на pod часто 3.11.x)
 ```
 
 ---
@@ -375,20 +465,49 @@ pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu124
 ```
 
-### 3.2 Core + avatar extras
+### 3.2 Аудио-стек (librosa / resample) — перед infer
+
+Нужен для Wav2Vec2-цепочки и mux. Проверенный набор на pod:
+
+```bash
+pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn resampy pooch soxr
+```
+
+### 3.3 ML-стек (пины как в `requirements.txt`)
+
+Если `pip install -r requirements.txt` падает или тянет несовместимые версии — **явный пин** (рабочий блок с H200 pod):
+
+```bash
+pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
+  huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
+  loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 \
+  scipy==1.15.3 tqdm==4.66.1
+```
+
+Доп. утилиты (экспорт, визуализация, WDS — по необходимости):
+
+```bash
+pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
+```
+
+### 3.4 Core + avatar extras (из репо)
 
 ```bash
 pip install --no-cache-dir -r requirements.txt
 pip install --no-cache-dir -r requirements_avatar.txt
 ```
 
-### 3.3 FlashAttention (Linux H200)
+Опционально TTS для `--speak_text`: `pip install -r requirements-tts.txt`.
+
+### 3.5 FlashAttention (Linux H200) — обязательно для attention
 
 ```bash
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
-### 3.4 HTTP worker — **не на текущем этапе** (опционально)
+Сборка 5–15 мин; нужен CUDA 12.4 + gcc. Без этого DiT attention → `Unsupported attention operations`.
+
+### 3.6 HTTP worker — **не на текущем этапе** (опционально)
 
 Ставить только перед §5:
 
@@ -396,7 +515,7 @@ pip install flash-attn==2.7.4.post1 --no-build-isolation
 pip install -r services/arachnex-worker/requirements.txt
 ```
 
-### 3.5 Sanity CUDA
+### 3.7 Sanity: CUDA + flash_attn + diffusers
 
 ```bash
 python - <<'PY'
@@ -405,9 +524,28 @@ print("torch", torch.__version__, "cuda", torch.version.cuda)
 print("device", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NO GPU")
 try:
     import flash_attn
-    print("flash_attn", flash_attn.__version__)
+    print("flash_attn OK", flash_attn.__version__)
 except Exception as e:
-    print("flash_attn:", e)
+    print("flash_attn FAIL:", e)
+import diffusers, transformers
+print("diffusers", diffusers.__version__, "transformers", transformers.__version__)
+try:
+    import librosa
+    print("librosa", librosa.__version__)
+except Exception as e:
+    print("librosa:", e)
+PY
+```
+
+### 3.8 Проверка attention-backend (опционально)
+
+```bash
+python - <<'PY'
+from arachne_x.modules.avatar.attention import Attention
+import inspect
+src = inspect.getsource(Attention._process_attn)
+assert "flash_attn_func" in src
+print("Attention module loads; expect flash_attn2 path when enable_flashattn2=True in model config")
 PY
 ```
 
@@ -454,25 +592,28 @@ mkdir -p output
 
 Smoke-параметры (быстро на H200): `--num_frames 17`, `--num_inference_steps 2`, `--text_guidance_scale 3`, `--audio_guidance_scale 3`. Качество: steps 25–50, frames 93, resolution `480p`/`720p`.
 
-### 4.2 `ai2v` — image + audio + prompt (основной)
+### 4.2 `ai2v` — image + audio + prompt (основной, Elena)
+
+Канонические пути: `assets/avatar/single/elena/face.jpg` + `audio.wav` (см. `elena.json` → `cond_image` / `cond_audio`).
 
 ```bash
+PRESET=assets/avatar/single/elena/elena.json
 python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode ai2v \
-  --prompt "Executive digital human speaking naturally to camera, stable identity, cinematic office lighting, photorealistic." \
-  --negative_prompt "anime, cartoon, blurry, distorted face, extra fingers, open mouth teeth artifact" \
-  --image /workspace/input/face.png \
-  --audio /workspace/input/speech.wav \
-  --height 480 --width 480 \
+  --prompt "$(jq -r .prompt "$PRESET")" \
+  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
+  --image "$(jq -r .cond_image "$PRESET")" \
+  --audio "$(jq -r .cond_audio "$PRESET")" \
+  --resolution 480p \
   --num_frames 17 \
   --num_inference_steps 2 \
   --text_guidance_scale 3.0 \
   --audio_guidance_scale 3.0 \
-  --output output/avatar_ai2v_smoke.mp4
+  --output output/elena_ai2v_smoke.mp4
 ```
 
-KAIRA smoke (промпт из JSON):
+KAIRA smoke (другой портрет; аудио — тот же `elena/audio.wav` или свой WAV):
 
 ```bash
 python scripts/infer.py \
@@ -481,7 +622,8 @@ python scripts/infer.py \
   --prompt "$(jq -r .prompt assets/avatar/single/kaira/kaira.json)" \
   --negative_prompt "anime, cartoon, blurry, distorted face" \
   --image assets/avatar/single/kaira/kaira.png \
-  --audio /workspace/input/speech.wav \
+  --audio assets/avatar/single/elena/audio.wav \
+  --resolution 480p \
   --num_frames 17 \
   --num_inference_steps 2 \
   --output output/kaira_ai2v_smoke.mp4
@@ -518,7 +660,7 @@ python scripts/infer.py \
   --prompt "$(jq -r .prompt "$PRESET")" \
   --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
   --image "$(jq -r .cond_image "$PRESET")" \
-  --audio /workspace/input/speech.wav \
+  --audio "$(jq -r .cond_audio "$PRESET")" \
   --resolution "$(jq -r '._arachne_x_infer_smoke.resolution' "$PRESET")" \
   --num_frames "$(jq -r '._arachne_x_infer_smoke.num_frames' "$PRESET")" \
   --num_inference_steps "$(jq -r '._arachne_x_infer_smoke.num_inference_steps' "$PRESET")" \
@@ -552,7 +694,7 @@ python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode streaming_ai2v \
   --image /workspace/input/face.png \
-  --audio /workspace/input/speech_long.wav \
+  --audio assets/avatar/single/elena/audio.wav \
   --prompt "Speaking naturally to camera, stable identity." \
   --audio_chunk_sec 2.0 \
   --num_frames 17 \
@@ -566,9 +708,9 @@ python scripts/infer.py \
 python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode at2v \
-  --audio /workspace/input/speech.wav \
+  --audio assets/avatar/single/elena/audio.wav \
   --prompt "Professional presenter, neutral background, speaking to camera." \
-  --height 480 --width 832 \
+  --resolution 480p \
   --num_frames 17 --num_inference_steps 2 \
   --output output/avatar_at2v_smoke.mp4
 ```
@@ -580,7 +722,7 @@ python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode avc \
   --video /workspace/input/reference_clip.mp4 \
-  --audio /workspace/input/speech.wav \
+  --audio assets/avatar/single/elena/audio.wav \
   --prompt "Same person, lip sync to new audio, stable identity." \
   --num_cond_frames 13 \
   --num_frames 17 --num_inference_steps 2 \
@@ -619,7 +761,7 @@ python scripts/infer.py \
 
 | # | Режим | Артефакт | ☐ |
 | - | ----- | -------- | - |
-| 1 | `ai2v` + свой face + speech.wav | `output/avatar_ai2v_smoke.mp4` | ☐ |
+| 1 | `ai2v` + Elena `face.jpg` + `audio.wav` | `output/avatar_ai2v_smoke.mp4` | ☐ |
 | 2 | `ai2v` + KAIRA preset | `output/kaira_ai2v_smoke.mp4` | ☐ |
 | 3 | `streaming_ai2v` (длинный WAV) | `output/avatar_streaming_smoke.mp4` | ☐ |
 | 4 | `at2v` | `output/avatar_at2v_smoke.mp4` | ☐ |
@@ -706,7 +848,8 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | `missing ...` на **merged** после §2.4 | Проверьте symlink’и VIDEO/AVATAR, §2.3.2 wav2vec                  |
 | `huggingface-cli: command not found` | `source .venv/bin/activate` (§1.1); используйте `hf download`                |
 | Lock / `.incomplete` при download    | Дождаться; не запускать два `hf download` в один `--local-dir`               |
-| `flash_attn` build fail              | Используйте prebuilt wheel под CUDA 12.4 / образ RunPod с готовым flash-attn |
+| `flash_attn` build fail              | §3.5: wheel под CUDA 12.4; образ `pytorch:2.6.0-cuda12.4` |
+| `Unsupported attention operations`   | Не установлен `flash-attn` — §3.5 обязателен на Linux infer      |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
 | Worker 401                           | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
 | Первый запрос 60–180 s               | Норма: lazy load pipeline на GPU                                             |
@@ -729,4 +872,39 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 
 ---
 
-*Документ: RunPod H200 — CLI оцифровка и тесты режимов; HTTP worker — §5 (опционально).*
+---
+
+## 9. Шпаргалка pip (полный порядок на чистом pod)
+
+```bash
+export ARACHNE_ROOT=/workspace/ARACHNE-X
+cd "$ARACHNE_ROOT"
+python3 -m venv .venv && source .venv/bin/activate
+pip install -U pip setuptools wheel
+
+# torch
+pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 \
+  --index-url https://download.pytorch.org/whl/cu124
+
+# audio
+pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn resampy pooch soxr
+
+# ML pins
+pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
+  huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
+  loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 scipy==1.15.3 tqdm==4.66.1
+pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
+
+# repo + flash-attn
+pip install -r requirements.txt -r requirements_avatar.txt
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+
+# HF (токен только из env RunPod — не в git)
+export HF_TOKEN="${HF_TOKEN:?set in pod secrets}"
+pip install -U "huggingface_hub[cli]>=0.34,<1.0"
+huggingface-cli login --token "$HF_TOKEN"
+```
+
+---
+
+*Документ: RunPod H200 — обзор ARACHNE-X, CLI оцифровка (Elena: face.jpg + audio.wav), deps/attention; HTTP worker — §5 (опционально).*

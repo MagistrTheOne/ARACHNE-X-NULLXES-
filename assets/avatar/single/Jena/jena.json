@@ -9,6 +9,6 @@
     "num_inference_steps": 2,
     "text_guidance_scale": 3.0,
     "audio_guidance_scale": 3.0,
-    "note": "Optional bundled audio: assets/avatar/single/Jena/voice.mp3. Prefer /workspace/input/speech.wav for smoke."
+    "note": "Optional bundled audio: assets/avatar/single/Jena/voice.mp3. For Elena-style layout use audio.wav beside face image."
   }
 }
