@@ -1,23 +1,24 @@
 {
   "prompt": "ELENA, ultra realistic executive woman, professional digital human, realistic close-up portrait speaking naturally straight to camera, cinematic low-key lighting, stable identity, realistic facial motion, precise lipsync, sharp face details, corporate interview framing, subtle blinking, photorealistic skin texture, minimal head movement, high temporal consistency",
-  "negative_prompt": "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text",
+  "negative_prompt": "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth",
   "cond_image": "assets/avatar/single/elena/image.jpg",
   "cond_audio": "assets/avatar/single/elena/audio.wav",
   "_arachne_x_infer": {
     "mode": "ai2v",
     "checkpoint_dir": "/workspace/ARACHNE-X/weights/arachne-avatar-runtime",
     "resolution": "720p",
-    "num_frames": 181,
-    "num_inference_steps": 30,
+    "num_frames": 165,
+    "num_inference_steps": 35,
     "text_guidance_scale": 4.0,
     "audio_guidance_scale": 5.0,
-    "note": "Production digitization preset. Square image.jpg maps to ~960x960 at 720p. num_frames=181 is 4n+1 for VAE; at 30fps mux ≈6.03s — match audio length (ffprobe) or recompute frames. Audio: mono 16kHz WAV (ffmpeg -ar 16000 -ac 1). Smoke: resolution 480p, num_frames 17, num_inference_steps 2, guidance 3/3."
+    "note": "Cinematic production: 720p (~960x960 square), 165f≈5.5s@30fps mux, audio CFG 5.0 for lip-sync. Match num_frames to audio (4n+1). Preprocess: ffmpeg -i audio.wav -ar 16000 -ac 1 elena_16k.wav. Requires ffmpeg+ffprobe on pod."
   },
   "_arachne_x_infer_smoke": {
     "resolution": "480p",
     "num_frames": 17,
     "num_inference_steps": 2,
     "text_guidance_scale": 3.0,
-    "audio_guidance_scale": 3.0
+    "audio_guidance_scale": 3.0,
+    "note": "Fast sanity only (~0.5s if audio short). Not cinematic."
   }
 }

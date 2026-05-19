@@ -731,11 +731,43 @@ mkdir -p output
 
 Пресет в репо: [`assets/avatar/single/kaira/kaira.json`](assets/avatar/single/kaira/kaira.json) — поле `prompt` + `_arachne_x_infer` (steps/frames для smoke).
 
-Smoke-параметры (быстро на H200): `--num_frames 17`, `--num_inference_steps 2`, `--text_guidance_scale 3`, `--audio_guidance_scale 3`. Качество: steps 25–50, frames 93, resolution `480p`/`720p`.
+| Профиль | resolution | num_frames | steps | text CFG | audio CFG | Длительность @30fps |
+| ------- | ---------- | ---------- | ----- | -------- | --------- | ------------------- |
+| smoke | `480p` (~640²) | 17 | 2 | 3.0 | 3.0 | ~0.57 s (если аудио короткое) |
+| **cinematic** | **`720p`** (~960²) | **165+** (4n+1) | **35** | **4.0** | **5.0** | ~5.5 s при 165f |
+
+**Важно:** `num_frames` режет длительность видео. Если `ffprobe` аудио = 0.57 s, smoke даст ~17 кадров — это норма. Для cinematic нужен **длинный** `audio.wav` или пересчёт кадров (ниже).
+
+### 4.1.2 Системные зависимости на pod (до infer)
+
+```bash
+apt-get update
+apt-get install -y ffmpeg jq
+ffmpeg -version && ffprobe -version
+```
+
+### 4.1.3 Подогнать `num_frames` под длину аудио (4n+1)
+
+```bash
+AUDIO=assets/avatar/single/elena/audio.wav
+python - <<'PY'
+import subprocess, os
+audio = os.environ.get("AUDIO", "assets/avatar/single/elena/audio.wav")
+out = subprocess.check_output([
+    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+    "-of", "default=noprint_wrappers=1:nokey=1", audio
+], text=True)
+dur = float(out.strip())
+raw = max(17, int(round(dur * 30)))
+n = ((raw - 1) // 4) * 4 + 1
+print(f"duration_sec={dur:.3f}")
+print(f"use --num_frames {n}  ({n/30:.2f}s @ 30fps mux)")
+PY
+```
 
 ### 4.2 `ai2v` — image + audio + prompt (основной, Elena)
 
-Канонические пути: `assets/avatar/single/elena/face.jpg` + `audio.wav` (см. `elena.json` → `cond_image` / `cond_audio`).
+Канонические пути: `assets/avatar/single/elena/image.jpg` + `audio.wav` (см. `elena.json`).
 
 ```bash
 PRESET=assets/avatar/single/elena/elena.json
@@ -770,11 +802,55 @@ python scripts/infer.py \
   --output output/kaira_ai2v_smoke.mp4
 ```
 
-ELENA — production (из `elena.json` → `_arachne_x_infer`: 720p, 181f, 30 steps):
+### 4.2.1 ELENA cinematic (720p, 165+ frames, audio CFG 5.0) — **основной quality run**
+
+Без `jq` (только `python` + файлы из JSON):
+
+```bash
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+export PYTHONPATH="$ARACHNE_ROOT"
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+
+# mono 16 kHz (обязательно для стабильного lipsync)
+ffmpeg -y -i assets/avatar/single/elena/audio.wav -ar 16000 -ac 1 output/elena_16k.wav
+
+# опционально: пересчитать кадры под длину WAV
+export AUDIO=output/elena_16k.wav
+NUM_FRAMES=$(python - <<'PY'
+import subprocess, os
+audio = os.environ["AUDIO"]
+dur = float(subprocess.check_output([
+    "ffprobe","-v","error","-show_entries","format=duration",
+    "-of","default=noprint_wrappers=1:nokey=1", audio], text=True))
+raw = max(165, int(round(dur * 30)))  # минимум 165 для cinematic
+print(((raw - 1) // 4) * 4 + 1)
+PY
+)
+echo "NUM_FRAMES=$NUM_FRAMES"
+
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --prompt "ELENA, ultra realistic executive woman, professional digital human, realistic close-up portrait speaking naturally straight to camera, cinematic low-key lighting, stable identity, realistic facial motion, precise lipsync, sharp face details, corporate interview framing, subtle blinking, photorealistic skin texture, minimal head movement, high temporal consistency" \
+  --negative_prompt "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth" \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --resolution 720p \
+  --num_frames "${NUM_FRAMES:-165}" \
+  --num_inference_steps 35 \
+  --text_guidance_scale 4.0 \
+  --audio_guidance_scale 5.0 \
+  --output output/elena_ai2v_cinematic.mp4
+
+ffprobe -hide_banner output/elena_ai2v_cinematic.mp4 2>&1 | head -20
+```
+
+С `jq` (если установлен):
 
 ```bash
 PRESET=assets/avatar/single/elena/elena.json
-ffmpeg -y -i "$(jq -r .cond_audio "$PRESET")" -ar 16000 -ac 1 /workspace/input/elena_16k.wav
+ffmpeg -y -i "$(jq -r .cond_audio "$PRESET")" -ar 16000 -ac 1 output/elena_16k.wav
 
 python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
@@ -782,13 +858,13 @@ python scripts/infer.py \
   --prompt "$(jq -r .prompt "$PRESET")" \
   --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
   --image "$(jq -r .cond_image "$PRESET")" \
-  --audio /workspace/input/elena_16k.wav \
+  --audio output/elena_16k.wav \
   --resolution "$(jq -r '._arachne_x_infer.resolution' "$PRESET")" \
   --num_frames "$(jq -r '._arachne_x_infer.num_frames' "$PRESET")" \
   --num_inference_steps "$(jq -r '._arachne_x_infer.num_inference_steps' "$PRESET")" \
   --text_guidance_scale "$(jq -r '._arachne_x_infer.text_guidance_scale' "$PRESET")" \
   --audio_guidance_scale "$(jq -r '._arachne_x_infer.audio_guidance_scale' "$PRESET")" \
-  --output output/elena_ai2v_production.mp4
+  --output output/elena_ai2v_cinematic.mp4
 ```
 
 ELENA smoke (`_arachne_x_infer_smoke` в том же JSON):
@@ -870,22 +946,38 @@ python scripts/infer.py \
   --output output/avatar_avc_smoke.mp4
 ```
 
-### 4.6 `enroll_identity` — банк лица (опционально)
+### 4.6 `enroll_identity` — банк лица Elena (опционально)
+
+Используйте **тот же** портрет, что для `ai2v`:
 
 ```bash
 python scripts/infer.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --mode enroll_identity \
-  --image /workspace/input/face.png \
+  --image assets/avatar/single/elena/image.jpg \
   --identity_id 1 \
-  --identity_bank_save_path output/kaira_identity_bank.pt
+  --identity_bank_save_path output/elena_identity_bank.pt
 ```
 
-Дальше в `ai2v` / `streaming_ai2v`:
+### 4.6.1 `ai2v` cinematic + identity bank
 
 ```bash
-  --identity_bank_path output/kaira_identity_bank.pt \
-  --identity_id 1 --identity_strength 1.0
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --prompt "ELENA, ultra realistic executive woman, speaking naturally straight to camera, cinematic lighting, stable identity, precise lipsync, photorealistic skin" \
+  --negative_prompt "anime, cartoon, blurry, distorted face, duplicated mouth, frozen lips, bad anatomy, watermark" \
+  --resolution 720p \
+  --num_frames "${NUM_FRAMES:-165}" \
+  --num_inference_steps 35 \
+  --text_guidance_scale 4.0 \
+  --audio_guidance_scale 5.0 \
+  --identity_bank_path output/elena_identity_bank.pt \
+  --identity_id 1 \
+  --identity_strength 1.0 \
+  --output output/elena_ai2v_cinematic_id.mp4
 ```
 
 ### 4.7 Identity / emotion / LoRA (доп. флаги к `ai2v`)
@@ -902,12 +994,13 @@ python scripts/infer.py \
 
 | # | Режим | Артефакт | ☐ |
 | - | ----- | -------- | - |
-| 1 | `ai2v` + Elena `face.jpg` + `audio.wav` | `output/avatar_ai2v_smoke.mp4` | ☐ |
+| 1 | `ai2v` smoke 480p / 17f | `output/elena_ai2v_smoke.mp4` | ☐ |
+| 1b | `ai2v` **cinematic** 720p / 165+f / audio CFG 5 | `output/elena_ai2v_cinematic.mp4` | ☐ |
 | 2 | `ai2v` + KAIRA preset | `output/kaira_ai2v_smoke.mp4` | ☐ |
 | 3 | `streaming_ai2v` (длинный WAV) | `output/avatar_streaming_smoke.mp4` | ☐ |
 | 4 | `at2v` | `output/avatar_at2v_smoke.mp4` | ☐ |
 | 5 | `avc` (если есть reference video) | `output/avatar_avc_smoke.mp4` | ☐ |
-| 6 | `enroll_identity` + `ai2v` с bank | bank + MP4 | ☐ |
+| 6 | `enroll_identity` + cinematic `ai2v` | `elena_identity_bank.pt` + MP4 | ☐ |
 
 ### 4.9 Базовое VIDEO (`t2v` / `i2v` / `vc`) — опционально
 
@@ -994,6 +1087,9 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | `libcudart.so.13` / torchaudio       | §3.6.1: `torchaudio==2.6.0` с cu124 index, не 2.11 с PyPI          |
 | `flash_attn` build fail              | §3.2 OK? затем §3.3 `MAX_JOBS=4 --no-build-isolation`             |
 | layout `missing: all`                | §2.4 merged runtime не собран — веса не скачаны / нет symlink      |
+| `ffmpeg` / `ffprobe` not found       | `apt-get install -y ffmpeg` (§4.1.2)                             |
+| Видео 640×608, 0.57 s                | smoke 17f + короткий audio — запускайте §4.2.1 cinematic         |
+| `face.png` path invalid              | Используйте `assets/avatar/single/elena/image.jpg`               |
 | `Unsupported attention operations`   | §3.3–3.4: flash-attn не установлен / не импортируется              |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
 | Worker 401                           | Заголовок `X-NULLXES-Avatar-Inference-Key` = `NULLXES_INFERENCE_SERVICE_KEY` |
