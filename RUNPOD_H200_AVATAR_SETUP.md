@@ -625,7 +625,7 @@ print("available:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu:", torch.cuda.get_device_name(0))
     print("vram_gb:", round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 2))
-import flash_attn
+    import flash_attn
 print("flash_attn:", flash_attn.__version__, "FLASH OK")
 PY
 ```
