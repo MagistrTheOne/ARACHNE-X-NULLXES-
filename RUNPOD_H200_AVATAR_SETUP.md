@@ -169,11 +169,25 @@ flowchart TB
 
 DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает backend **в порядке**:
 
-1. **Block-sparse (BSA)** — если `enable_bsa` и multi-frame (обычно train, не smoke infer).
+1. **Block-sparse (BSA)** — если `enable_bsa` и multi-frame.
 2. **FlashAttention 3** — если установлен `flash_attn_interface`.
 3. **FlashAttention 2** — **`flash-attn==2.7.4.post1`** ← **целевой для RunPod H200**.
 4. **xFormers** — только если явно включён и пакет установлен.
 5. Иначе — `RuntimeError: Unsupported attention operations`.
+
+**BSA policy (train/infer parity):**
+
+- **LoRA train / validation renders:** BSA **OFF** — `train_lora_avatar.py` вызывает `dit.disable_bsa()`. Train идёт на dense flash-attn.
+- **Production long-video infer:** BSA **ON** по умолчанию (`ARACHNE_INFER_ENABLE_BSA=1`). Demo/worker используют `configure_infer_bsa()`.
+- **Parity debug:** `ARACHNE_INFER_ENABLE_BSA=0` — dense infer, сравнение с train без snow от 93.75% sparsity mismatch.
+- **Не включать BSA при LoRA train** — approximate attention ломает lips/eyes/texture.
+
+**LoRA anti-snow defaults (H200 pod):**
+
+- `--lora_scope attention` (без `audio_proj` / FFN / `final_layer`)
+- `--ema_decay 0.9995` (для 500k+ steps: `0.9997`)
+- `--min_snr_gamma 5.0`
+- `--normalize_audio_embs`
 
 Для прод-инференса на Linux **обязательно** §3.3–3.4: без `flash_attn` импорт attention упадёт. SDPAttn «из коробки PyTorch» в этом стеке **не** используется как fallback.
 

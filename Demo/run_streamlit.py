@@ -11,6 +11,7 @@ from diffusers.utils import export_to_video, load_image, load_video
 
 from arachne_x.context_parallel import context_parallel_util
 from arachne_x.loader import load_base_pipeline
+from arachne_x.infer_attention import configure_infer_bsa
 
 
 def torch_gc():
@@ -207,7 +208,7 @@ def main():
                         stage1_video = [(output[i] * 255).astype(np.uint8) for i in range(output.shape[0])]
                         stage1_video = [Image.fromarray(img) for img in stage1_video]
                         del output
-                        pipe.dit.enable_bsa()
+                        configure_infer_bsa(pipe.dit)
                         output = pipe.generate_refine(
                             prompt="",
                             stage1_video=stage1_video,
@@ -244,7 +245,7 @@ def main():
                         stage1_video = [(output[i] * 255).astype(np.uint8) for i in range(output.shape[0])]
                         stage1_video = [Image.fromarray(img) for img in stage1_video]
                         del output
-                        pipe.dit.enable_bsa()
+                        configure_infer_bsa(pipe.dit)
                         output = pipe.generate_refine(
                             image=input_image,
                             prompt="",
@@ -292,7 +293,7 @@ def main():
                         del output
                         target_fps = 30
                         stride = max(1, round(current_fps / target_fps))
-                        pipe.dit.enable_bsa()
+                        configure_infer_bsa(pipe.dit)
                         output = pipe.generate_refine(
                             video=input_video[::stride],
                             prompt="",

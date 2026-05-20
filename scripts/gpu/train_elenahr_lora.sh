@@ -104,10 +104,11 @@ fi
   fi
 } | tee -a "$LOG"
 
-# Anti-snow (flow-match Min-SNR + audio RMS). Resume must keep --lora_scope default if checkpoint used default.
-LORA_SCOPE="${ELENAHR_LORA_SCOPE:-default}"
+# Anti-snow (flow-match Min-SNR + audio RMS + attention-only LoRA + EMA).
+# Resume must keep the same --lora_scope as the checkpoint that created it.
+LORA_SCOPE="${ELENAHR_LORA_SCOPE:-attention}"
 MIN_SNR="${ELENAHR_MIN_SNR_GAMMA:-5}"
-EMA="${ELENAHR_EMA_DECAY:-0.999}"
+EMA="${ELENAHR_EMA_DECAY:-0.9995}"
 
 # After shard load: DiT→GPU + LoRA scan ~2–5 min — wait for [train_lora_avatar] lines.
 python -u scripts/train_lora_avatar.py \

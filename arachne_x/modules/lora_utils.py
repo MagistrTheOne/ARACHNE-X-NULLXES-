@@ -242,7 +242,9 @@ def avatar_attention_only_lora_filter(
 ) -> bool:
     """
     Train LoRA only on self/cross/audio attention linear layers inside DiT blocks.
+
     Skips FFN, adaLN, audio_proj, final_layer — reduces texture snow / MLP overfit.
+    audio_proj LoRA is especially dangerous: noisy audio embeddings can cause lip/cheek jitter.
     """
     del mod
     if include_prefixes is not None:

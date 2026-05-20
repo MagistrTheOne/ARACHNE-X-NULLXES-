@@ -49,6 +49,7 @@ from arachne_x.training_lora_loss import (
     load_flow_match_scheduler,
     stabilize_audio_embs,
 )
+from arachne_x.training_avatar_aux import AvatarAuxStageSchedule, AvatarAuxTrainingRuntime
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
 
@@ -127,7 +128,7 @@ def main():
         "--lora_scope",
         type=str,
         choices=("default", "attention"),
-        default="default",
+        default="attention",
         help="default=blocks+audio_proj+final_layer; attention=attn/cross_attn/audio_cross_attn only (less snow).",
     )
     parser.add_argument(
@@ -145,8 +146,8 @@ def main():
     parser.add_argument(
         "--ema_decay",
         type=float,
-        default=0.0,
-        help="EMA decay for LoRA weights (0=off). Saves *_ema.safetensors alongside checkpoints.",
+        default=0.9995,
+        help="EMA decay for LoRA weights (0=off). Default 0.9995; use 0.9997 for 500k+ steps.",
     )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -177,6 +178,55 @@ def main():
         "--no_gradient_checkpointing",
         action="store_true",
         help="Disable DiT activation checkpointing (needs ~100GB+ extra VRAM on 720p latents).",
+    )
+    parser.add_argument(
+        "--enable_aux_losses",
+        action="store_true",
+        help="Enable staged avatar auxiliary losses (VAE decode + identity/perceptual).",
+    )
+    parser.add_argument(
+        "--reference_image",
+        type=str,
+        default=None,
+        help="Reference face image for identity/perceptual aux losses (required if --enable_aux_losses).",
+    )
+    parser.add_argument(
+        "--aux_training_stage",
+        type=int,
+        default=1,
+        choices=(1, 2, 3, 4),
+        help="Initial aux loss stage (auto-advances with --aux_stage*_step).",
+    )
+    parser.add_argument(
+        "--aux_stage2_step",
+        type=int,
+        default=5000,
+        help="Global step to enable identity aux loss (stage 2).",
+    )
+    parser.add_argument(
+        "--aux_stage3_step",
+        type=int,
+        default=15000,
+        help="Global step to enable lip-sync aux loss (stage 3).",
+    )
+    parser.add_argument(
+        "--aux_stage4_step",
+        type=int,
+        default=30000,
+        help="Global step to enable temporal aux loss (stage 4).",
+    )
+    parser.add_argument(
+        "--aux_loss_weight",
+        type=float,
+        default=0.15,
+        help="Scale factor for auxiliary loss total added to diffusion loss.",
+    )
+    parser.add_argument(
+        "--perceptual_backend",
+        type=str,
+        choices=("vgg", "dino"),
+        default="vgg",
+        help="Perceptual backend for aux losses (dino = DINOv2, stage 4+ quality).",
     )
     add_resolve_args(parser)
     args = parser.parse_args()
@@ -257,6 +307,10 @@ def main():
     dit.requires_grad_(False)
     dit.train()
 
+    if hasattr(dit, "disable_bsa"):
+        dit.disable_bsa()
+        _phase("BSA disabled for LoRA train (dense flash-attn parity)")
+
     if not args.no_gradient_checkpointing and hasattr(dit, "enable_gradient_checkpointing"):
         dit.enable_gradient_checkpointing()
         _phase("gradient_checkpointing on")
@@ -313,9 +367,33 @@ def main():
     dit.lora_dict[args.lora_key] = lora_network
     dit.enable_loras([args.lora_key])
 
-    optimizer = torch.optim.AdamW(
-        lora_network.prepare_optimizer_params(args.lr), weight_decay=weight_decay
-    )
+    aux_runtime: AvatarAuxTrainingRuntime | None = None
+    if args.enable_aux_losses:
+        if not args.reference_image or not os.path.isfile(args.reference_image):
+            raise FileNotFoundError(
+                "--enable_aux_losses requires existing --reference_image"
+            )
+        aux_runtime = AvatarAuxTrainingRuntime(
+            checkpoint_dir,
+            args.reference_image,
+            torch.device(device),
+            training_stage=args.aux_training_stage,
+            perceptual_backend=args.perceptual_backend,
+            stage_schedule=AvatarAuxStageSchedule(
+                stage2_step=args.aux_stage2_step,
+                stage3_step=args.aux_stage3_step,
+                stage4_step=args.aux_stage4_step,
+            ),
+        )
+        _phase(
+            f"aux losses enabled stage={args.aux_training_stage} "
+            f"backend={args.perceptual_backend} ref={args.reference_image}"
+        )
+
+    opt_params = list(lora_network.prepare_optimizer_params(args.lr))
+    if aux_runtime is not None:
+        opt_params.extend(list(aux_runtime.trainable_parameters()))
+    optimizer = torch.optim.AdamW(opt_params, weight_decay=weight_decay)
 
     ema_decay = float(args.ema_decay)
     ema_state: Dict[str, torch.Tensor] | None = None
@@ -338,6 +416,14 @@ def main():
         "checkpoint_dir": checkpoint_dir,
         "resume_lora_path": args.resume_lora_path,
         "start_step": args.start_step,
+        "enable_aux_losses": args.enable_aux_losses,
+        "aux_training_stage": args.aux_training_stage,
+        "aux_stage2_step": args.aux_stage2_step,
+        "aux_stage3_step": args.aux_stage3_step,
+        "aux_stage4_step": args.aux_stage4_step,
+        "aux_loss_weight": args.aux_loss_weight,
+        "perceptual_backend": args.perceptual_backend,
+        "reference_image": args.reference_image,
     }
     with open(os.path.join(args.output_dir, "lora_train_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -393,9 +479,22 @@ def main():
             min_snr_gamma=args.min_snr_gamma,
         )
 
+        aux_log: dict | None = None
+        if aux_runtime is not None:
+            aux_total, aux_log = aux_runtime.compute_aux_loss(
+                latents=latents,
+                audio_embs=audio_embs,
+                global_step=step,
+            )
+            loss = loss + args.aux_loss_weight * aux_total
+
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(lora_network.parameters(), cfg.max_grad_norm)
+        if aux_runtime is not None:
+            aux_params = list(aux_runtime.trainable_parameters())
+            if aux_params:
+                torch.nn.utils.clip_grad_norm_(aux_params, cfg.max_grad_norm)
         optimizer.step()
 
         if ema_state is not None:
@@ -404,7 +503,17 @@ def main():
                     ema_state[k].mul_(ema_decay).add_(v.detach().cpu(), alpha=1.0 - ema_decay)
 
         if step % 50 == 0 or (step > 0 and step % args.save_every == 0):
-            _phase(f"step {step} loss={loss.item():.6f}")
+            msg = f"step {step} loss={loss.item():.6f}"
+            if aux_log is not None:
+                msg += (
+                    f" aux={aux_log['total'].item():.6f}"
+                    f" stage={aux_runtime.loss_module.training_stage if aux_runtime else '-'}"
+                )
+                if "raw_log_vars" in aux_log:
+                    msg += f" raw_log_vars={aux_log['raw_log_vars'].tolist()}"
+                if "compute_perceptual" in aux_log:
+                    msg += f" perceptual={bool(aux_log['compute_perceptual'].item())}"
+            _phase(msg)
 
         if step > 0 and step % args.save_every == 0:
             sub = os.path.join(args.output_dir, f"{args.lora_key}_step_{step}.safetensors")
