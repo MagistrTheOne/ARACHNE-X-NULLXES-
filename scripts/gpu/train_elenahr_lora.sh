@@ -104,16 +104,25 @@ fi
   fi
 } | tee -a "$LOG"
 
+# Anti-snow (flow-match Min-SNR + audio RMS). Resume must keep --lora_scope default if checkpoint used default.
+LORA_SCOPE="${ELENAHR_LORA_SCOPE:-default}"
+MIN_SNR="${ELENAHR_MIN_SNR_GAMMA:-5}"
+EMA="${ELENAHR_EMA_DECAY:-0.999}"
+
 # After shard load: DiT→GPU + LoRA scan ~2–5 min — wait for [train_lora_avatar] lines.
 python -u scripts/train_lora_avatar.py \
   --checkpoint_dir "$CKPT" \
   --dataset_dir "$DATASET_DIR" \
   --output_dir "$OUT_DIR" \
   --lora_key elenahr \
+  --lora_scope "$LORA_SCOPE" \
   --lora_rank 16 --lora_alpha 8 \
   --max_steps 60 --save_every 15 \
   --lr 5e-5 --batch_size 1 \
   --num_workers 0 \
+  --min_snr_gamma "$MIN_SNR" \
+  --normalize_audio_embs \
+  --ema_decay "$EMA" \
   "${RESUME_ARGS[@]}" \
   2>&1 | tee -a "$LOG" &
 train_pid=$!

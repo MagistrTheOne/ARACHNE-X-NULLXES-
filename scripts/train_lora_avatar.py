@@ -39,9 +39,15 @@ from arachne_x.training_latent_common import (
 )
 from arachne_x.training_wds import LatentWebDataset
 from arachne_x.modules.lora_utils import (
+    avatar_attention_only_lora_filter,
     build_initial_lora_state_dict,
     create_lora_network,
     default_avatar_train_lora_filter,
+)
+from arachne_x.training_lora_loss import (
+    avatar_lora_diffusion_loss,
+    load_flow_match_scheduler,
+    stabilize_audio_embs,
 )
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
@@ -116,6 +122,31 @@ def main():
         type=str,
         default="",
         help="Comma-separated name prefixes for Linear modules (e.g. blocks.,audio_proj.). Empty = default filter.",
+    )
+    parser.add_argument(
+        "--lora_scope",
+        type=str,
+        choices=("default", "attention"),
+        default="default",
+        help="default=blocks+audio_proj+final_layer; attention=attn/cross_attn/audio_cross_attn only (less snow).",
+    )
+    parser.add_argument(
+        "--min_snr_gamma",
+        type=float,
+        default=5.0,
+        help="Min-SNR gamma for flow-match loss (0=plain MSE). Default 5.0 reduces high-noise grain.",
+    )
+    parser.add_argument(
+        "--normalize_audio_embs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Per-token RMS normalize audio_embs before DiT forward.",
+    )
+    parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=0.0,
+        help="EMA decay for LoRA weights (0=off). Saves *_ema.safetensors alongside checkpoints.",
     )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -236,8 +267,17 @@ def main():
     if args.lora_prefixes.strip():
         prefixes = tuple(p.strip() for p in args.lora_prefixes.split(",") if p.strip())
 
+    scope_filter = (
+        avatar_attention_only_lora_filter
+        if args.lora_scope == "attention"
+        else default_avatar_train_lora_filter
+    )
+
     def name_filter(name: str, mod: torch.nn.Linear) -> bool:
-        return default_avatar_train_lora_filter(name, mod, include_prefixes=prefixes)
+        return scope_filter(name, mod, include_prefixes=prefixes)
+
+    train_scheduler = load_flow_match_scheduler(checkpoint_dir)
+    _phase(f"flow-match scheduler loaded (min_snr_gamma={args.min_snr_gamma})")
 
     init_state = build_initial_lora_state_dict(
         dit,
@@ -266,7 +306,7 @@ def main():
             resume_incon.missing_keys,
             resume_incon.unexpected_keys,
         )
-        print(f"[train_lora_avatar] resumed LoRA weights from {resume_path}")
+        _phase(f"resumed LoRA weights from {resume_path}")
 
     lora_network.to(device=device, dtype=dtype)
     lora_network.train()
@@ -277,11 +317,23 @@ def main():
         lora_network.prepare_optimizer_params(args.lr), weight_decay=weight_decay
     )
 
+    ema_decay = float(args.ema_decay)
+    ema_state: Dict[str, torch.Tensor] | None = None
+    if ema_decay > 0.0:
+        if not 0.0 < ema_decay < 1.0:
+            raise ValueError(f"ema_decay must be in (0, 1), got {ema_decay}")
+        ema_state = {k: v.detach().cpu().clone() for k, v in lora_network.state_dict().items()}
+        _phase(f"EMA enabled decay={ema_decay}")
+
     meta = {
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_key": args.lora_key,
-        "lora_prefixes": list(prefixes) if prefixes else "default_avatar_train_lora_filter",
+        "lora_scope": args.lora_scope,
+        "lora_prefixes": list(prefixes) if prefixes else args.lora_scope,
+        "min_snr_gamma": args.min_snr_gamma,
+        "normalize_audio_embs": args.normalize_audio_embs,
+        "ema_decay": ema_decay,
         "layer_count": len(lora_network.loras),
         "checkpoint_dir": checkpoint_dir,
         "resume_lora_path": args.resume_lora_path,
@@ -315,6 +367,8 @@ def main():
         audio_embs = squeeze_collated_singleton_batch_dim(batch["audio_embs"])
         if audio_embs.ndim == 4:
             audio_embs = audio_embs.unsqueeze(0)
+        if args.normalize_audio_embs:
+            audio_embs = stabilize_audio_embs(audio_embs)
 
         # Gradient checkpointing + bf16: forward under autocast; MSE in float32 for backward.
         amp_cm = (
@@ -331,12 +385,23 @@ def main():
                 audio_embs=audio_embs,
             )
 
-        loss = F.mse_loss(noise_pred.float(), noise.float())
+        loss = avatar_lora_diffusion_loss(
+            noise_pred,
+            noise,
+            timesteps,
+            train_scheduler,
+            min_snr_gamma=args.min_snr_gamma,
+        )
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(lora_network.parameters(), cfg.max_grad_norm)
         optimizer.step()
+
+        if ema_state is not None:
+            with torch.no_grad():
+                for k, v in lora_network.state_dict().items():
+                    ema_state[k].mul_(ema_decay).add_(v.detach().cpu(), alpha=1.0 - ema_decay)
 
         if step % 50 == 0 or (step > 0 and step % args.save_every == 0):
             _phase(f"step {step} loss={loss.item():.6f}")
@@ -345,6 +410,10 @@ def main():
             sub = os.path.join(args.output_dir, f"{args.lora_key}_step_{step}.safetensors")
             save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, sub)
             _phase(f"saved {sub}")
+            if ema_state is not None:
+                ema_sub = os.path.join(args.output_dir, f"{args.lora_key}_step_{step}_ema.safetensors")
+                save_file(ema_state, ema_sub)
+                _phase(f"saved {ema_sub}")
 
         step += 1
         if step >= args.max_steps:
@@ -353,6 +422,10 @@ def main():
     final_path = os.path.join(args.output_dir, f"{args.lora_key}_final.safetensors")
     save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, final_path)
     _phase(f"training complete → {final_path}")
+    if ema_state is not None:
+        ema_final = os.path.join(args.output_dir, f"{args.lora_key}_final_ema.safetensors")
+        save_file(ema_state, ema_final)
+        _phase(f"training complete EMA → {ema_final}")
 
 
 if __name__ == "__main__":

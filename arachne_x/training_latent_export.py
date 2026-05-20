@@ -29,6 +29,7 @@ def build_avatar_latent_training_sample(
     num_frames: int = 93,
     seed: Optional[int] = None,
     device: Optional[str] = None,
+    timestep_bias_power: float = 2.0,
 ) -> Dict[str, torch.Tensor]:
     """
     Return CPU float tensors: latents, noise, timesteps, prompt_embeds, prompt_mask, audio_embs.
@@ -87,7 +88,13 @@ def build_avatar_latent_training_sample(
     idx_gen = torch.Generator()
     if seed is not None:
         idx_gen.manual_seed(int(seed) + 1)
-    idx = int(torch.randint(0, n_sched, (1,), generator=idx_gen).item())
+    # Bias away from high-noise (low index): u^power → more clean-timestep samples for LoRA.
+    u = torch.rand(1, generator=idx_gen).item()
+    power = max(0.0, float(timestep_bias_power))
+    if power <= 0:
+        idx = int(torch.randint(0, n_sched, (1,), generator=idx_gen).item())
+    else:
+        idx = int((1.0 - u**power) * (n_sched - 1))
     t = sched.timesteps[idx].view(1).to(device=device, dtype=torch.float32)
     noisy = sched.scale_noise(z0, t, eps)
 
@@ -137,6 +144,7 @@ def export_avatar_latent_training_pt(
         num_frames=num_frames,
         seed=seed,
         device=device,
+        timestep_bias_power=timestep_bias_power,
     )
     out_abs = os.path.abspath(output_path)
     parent = os.path.dirname(out_abs)

@@ -235,6 +235,35 @@ def build_initial_lora_state_dict(
     return state
 
 
+def avatar_attention_only_lora_filter(
+    name: str,
+    mod: nn.Linear,
+    include_prefixes: Optional[Union[Sequence[str], Set[str]]] = None,
+) -> bool:
+    """
+    Train LoRA only on self/cross/audio attention linear layers inside DiT blocks.
+    Skips FFN, adaLN, audio_proj, final_layer — reduces texture snow / MLP overfit.
+    """
+    del mod
+    if include_prefixes is not None:
+        return any(name.startswith(p) for p in include_prefixes)
+    if not name.startswith("blocks."):
+        return False
+    if ".ffn." in name or "adaLN_modulation" in name or "audio_adaLN_modulation" in name:
+        return False
+    if ".attn." in name and (name.endswith(".qkv") or name.endswith(".proj")):
+        return True
+    if ".cross_attn." in name:
+        return True
+    if ".audio_cross_attn." in name and (
+        name.endswith(".q_linear")
+        or name.endswith(".kv_linear")
+        or name.endswith(".proj")
+    ):
+        return True
+    return False
+
+
 def default_avatar_train_lora_filter(
     name: str,
     mod: nn.Linear,
