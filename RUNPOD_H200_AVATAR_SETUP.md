@@ -1116,12 +1116,16 @@ test -d "$NULLXES_CHECKPOINT_DIR/avatar_single" || test -d "$NULLXES_CHECKPOINT_
 # 1) Экспорт 5× .pt (~5–15 мин на H200)
 bash scripts/gpu/export_elena_lora_smoke.sh training_latents/elena_lora_smoke
 
-# 2) Smoke-обучение LoRA (мало шагов — только проверка пайплайна)
+# После export освободите VRAM (5× load pipeline) перед train:
+python -c "import gc,torch; gc.collect(); torch.cuda.empty_cache()"
+nvidia-smi
+
+# 2) Smoke-обучение LoRA (gradient checkpointing включён по умолчанию)
 python scripts/train_lora_avatar.py \
   --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
   --dataset_dir training_latents/elena_lora_smoke \
   --output_dir output/elena_lora_smoke \
-  --lora_rank 64 --lora_alpha 32 \
+  --lora_rank 32 --lora_alpha 16 \
   --max_steps 200 --save_every 100 --batch_size 1
 
 # 3) Infer с LoRA (sync + identity по желанию)

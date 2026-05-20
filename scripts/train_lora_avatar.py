@@ -124,6 +124,11 @@ def main():
     )
     parser.add_argument("--wds_shuffle", type=int, default=5000, help="WebDataset shuffle buffer (0=off).")
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument(
+        "--no_gradient_checkpointing",
+        action="store_true",
+        help="Disable DiT activation checkpointing (needs ~100GB+ extra VRAM on 720p latents).",
+    )
     add_resolve_args(parser)
     args = parser.parse_args()
 
@@ -184,6 +189,12 @@ def main():
 
     batch_iter: Iterable = itertools.cycle(loader) if args.dataset_dir else loader
 
+    import gc
+
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
     dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
         checkpoint_dir,
         subfolder="avatar_single",
@@ -192,6 +203,12 @@ def main():
     dit.to(device)
     dit.requires_grad_(False)
     dit.train()
+
+    if not args.no_gradient_checkpointing and hasattr(dit, "enable_gradient_checkpointing"):
+        dit.enable_gradient_checkpointing()
+        print("[train_lora_avatar] gradient_checkpointing on")
+    elif hasattr(dit, "disable_gradient_checkpointing"):
+        dit.disable_gradient_checkpointing()
 
     prefixes = None
     if args.lora_prefixes.strip():
