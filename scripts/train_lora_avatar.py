@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel
 from arachne_x.training_latent_common import (
@@ -116,6 +116,18 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--save_every", type=int, default=500)
+    parser.add_argument(
+        "--resume_lora_path",
+        type=str,
+        default=None,
+        help="Load LoRA weights from a prior checkpoint (e.g. lora_step_15.safetensors).",
+    )
+    parser.add_argument(
+        "--start_step",
+        type=int,
+        default=0,
+        help="Global step to continue from (use 16 after saving lora_step_15).",
+    )
     parser.add_argument("--config", type=str, default=None, help="Optional H200TrainingConfig JSON")
     parser.add_argument(
         "--weight_decay",
@@ -235,6 +247,17 @@ def main():
     )
     incon = lora_network.load_state_dict(init_state, strict=True)
     assert not incon.missing_keys and not incon.unexpected_keys, (incon.missing_keys, incon.unexpected_keys)
+    if args.resume_lora_path:
+        resume_path = os.path.abspath(args.resume_lora_path)
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(f"resume LoRA not found: {resume_path}")
+        resume_state = load_file(resume_path, device="cpu")
+        resume_incon = lora_network.load_state_dict(resume_state, strict=True)
+        assert not resume_incon.missing_keys and not resume_incon.unexpected_keys, (
+            resume_incon.missing_keys,
+            resume_incon.unexpected_keys,
+        )
+        print(f"[train_lora_avatar] resumed LoRA weights from {resume_path}")
 
     lora_network.to(device=device, dtype=dtype)
     lora_network.train()
@@ -252,6 +275,8 @@ def main():
         "lora_prefixes": list(prefixes) if prefixes else "default_avatar_train_lora_filter",
         "layer_count": len(lora_network.loras),
         "checkpoint_dir": checkpoint_dir,
+        "resume_lora_path": args.resume_lora_path,
+        "start_step": args.start_step,
     }
     with open(os.path.join(args.output_dir, "lora_train_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -302,7 +327,7 @@ def main():
             print(f"[step {step}] loss={loss.item():.6f}")
 
         if step > 0 and step % args.save_every == 0:
-            sub = os.path.join(args.output_dir, f"lora_step_{step}.safetensors")
+            sub = os.path.join(args.output_dir, f"{args.lora_key}_step_{step}.safetensors")
             save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, sub)
             print(f"saved {sub}")
 
