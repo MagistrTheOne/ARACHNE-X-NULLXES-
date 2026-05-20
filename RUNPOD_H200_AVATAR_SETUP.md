@@ -1106,8 +1106,12 @@ python scripts/infer.py \
 На pod после `git pull`:
 
 ```bash
+export ARACHNE_ROOT="${ARACHNE_ROOT:-/workspace/ARACHNE-X}"
 cd "$ARACHNE_ROOT" && source .venv/bin/activate
+export PYTHONPATH="$ARACHNE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+test -d "$NULLXES_CHECKPOINT_DIR/avatar_single" || test -d "$NULLXES_CHECKPOINT_DIR/tokenizer" \
+  || { echo "missing merged runtime — §2.4"; exit 1; }
 
 # 1) Экспорт 5× .pt (~5–15 мин на H200)
 bash scripts/gpu/export_elena_lora_smoke.sh training_latents/elena_lora_smoke

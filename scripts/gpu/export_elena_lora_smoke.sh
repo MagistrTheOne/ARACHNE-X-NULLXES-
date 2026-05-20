@@ -5,8 +5,16 @@ set -euo pipefail
 ARACHNE_ROOT="${ARACHNE_ROOT:-/workspace/ARACHNE-X}"
 cd "$ARACHNE_ROOT"
 source .venv/bin/activate
+export PYTHONPATH="${ARACHNE_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 CKPT="${NULLXES_CHECKPOINT_DIR:-$ARACHNE_ROOT/weights/arachne-avatar-runtime}"
+if [[ ! -d "$CKPT/tokenizer" && ! -d "$CKPT/avatar_single" ]]; then
+  echo "ERROR: checkpoint not found: $CKPT" >&2
+  echo "Set: export ARACHNE_ROOT=$ARACHNE_ROOT" >&2
+  echo "     export NULLXES_CHECKPOINT_DIR=\$ARACHNE_ROOT/weights/arachne-avatar-runtime" >&2
+  echo "Merged runtime must exist (RUNPOD §2.4–2.5)." >&2
+  exit 1
+fi
 PRESET_JSON="assets/avatar/single/elena/elena.json"
 OUT_DIR="${1:-training_latents/elena_lora_smoke}"
 RESOLUTION="${LORA_EXPORT_RESOLUTION:-720p}"
