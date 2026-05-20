@@ -310,7 +310,7 @@ def main():
         if step >= args.max_steps:
             break
 
-    final_path = os.path.join(args.output_dir, "lora_final.safetensors")
+    final_path = os.path.join(args.output_dir, f"{args.lora_key}_final.safetensors")
     save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, final_path)
     print(f"Training complete. LoRA saved to {final_path}")
 

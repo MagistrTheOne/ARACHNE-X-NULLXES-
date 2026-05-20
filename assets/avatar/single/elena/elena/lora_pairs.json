@@ -1,7 +1,7 @@
 {
   "subject": "elena",
   "preset_json": "assets/avatar/single/elena/elena.json",
-  "motion_prefix": "ELENA, speaking naturally straight to camera, precise lipsync, minimal head movement, high temporal consistency, ",
+  "motion_prefix": "ELENA, audio-driven lipsync, mouth and jaw follow speech, fixed camera no zoom no dolly, head locked minimal movement, high temporal consistency, natural pace not fast motion, ",
   "export_resolution": "720p",
   "num_frames_mode": "sync",
   "pairs": [

@@ -16,11 +16,11 @@ if [[ ! -d "$CKPT/tokenizer" && ! -d "$CKPT/avatar_single" ]]; then
   exit 1
 fi
 PRESET_JSON="assets/avatar/single/elena/elena.json"
-OUT_DIR="${1:-training_latents/elena_lora_smoke}"
+OUT_DIR="${1:-training_latents/elenahr_v1}"
 RESOLUTION="${LORA_EXPORT_RESOLUTION:-720p}"
 
 NEG="$(python3 -c "import json; print(json.load(open('$PRESET_JSON'))['negative_prompt'])")"
-PREFIX="ELENA, speaking naturally straight to camera, precise lipsync, minimal head movement, high temporal consistency, "
+PREFIX="ELENA, audio-driven lipsync, mouth and jaw follow speech, fixed camera no zoom no dolly, head locked minimal movement, high temporal consistency, natural pace not fast motion, "
 
 mkdir -p "$OUT_DIR"
 
