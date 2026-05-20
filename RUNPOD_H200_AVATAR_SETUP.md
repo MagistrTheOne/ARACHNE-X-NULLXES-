@@ -178,16 +178,22 @@ DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает back
 **BSA policy (train/infer parity):**
 
 - **LoRA train / validation renders:** BSA **OFF** — `train_lora_avatar.py` вызывает `dit.disable_bsa()`. Train идёт на dense flash-attn.
-- **Production long-video infer:** BSA **ON** по умолчанию (`ARACHNE_INFER_ENABLE_BSA=1`). Demo/worker используют `configure_infer_bsa()`.
+- **Production long-video infer:** BSA **ON** по умолчанию (`ARACHNE_INFER_ENABLE_BSA=1`). Demo/worker используют `configure_infer_bsa()`. **TD2:** production CLI (`scripts/infer.py`) сам `configure_infer_bsa` не вызывает — BSA на инфере зависит от `enable_bsa` в чекпоинте.
 - **Parity debug:** `ARACHNE_INFER_ENABLE_BSA=0` — dense infer, сравнение с train без snow от 93.75% sparsity mismatch.
 - **Не включать BSA при LoRA train** — approximate attention ломает lips/eyes/texture.
 
-**LoRA anti-snow defaults (H200 pod):**
+**LoRA policy (locked в коде, post `7ce2310`):**
 
-- LoRA scope locked to attention-only (без `audio_proj` / FFN / `final_layer`); см. `ARCHITECTURE.md`
-- `--ema_decay 0.9995` (для 500k+ steps: `0.9997`)
-- `--min_snr_gamma 5.0`
-- `--normalize_audio_embs`
+| Feature | Train | Infer |
+|---------|-------|-------|
+| LoRA scope | **attention-only Q/K/V/Out** (FFN/audio_proj/final_layer DENIED) | follows ckpt |
+| BSA | **OFF** (`dit.disable_bsa()`) | optional |
+| EMA | **0.9995** default | N/A |
+| Min-SNR γ | **5.0** | N/A |
+| Audio embs RMS norm | **YES** | implicit |
+| Timestep bias power | **2.0** (export-time) | N/A |
+
+Полный контракт + denylist deny причины — `ARCHITECTURE.md` (раздел *Identity LoRA*). Нарушения ловятся `verify_lora_avatar.py` и фильтром в `lora_utils.avatar_attention_only_lora_filter`.
 
 Для прод-инференса на Linux **обязательно** §3.3–3.4: без `flash_attn` импорт attention упадёт. SDPAttn «из коробки PyTorch» в этом стеке **не** используется как fallback.
 
@@ -1113,106 +1119,201 @@ python scripts/infer.py \
 --lora_path /path/to/lora.safetensors --lora_key train
 ```
 
-#### 4.7.1 Elena LoRA smoke (5 пар в репо)
+#### 4.7.1 Elena HR LoRA — H200 Stage 0 (production recipe, post `7ce2310`)
+
+**Контракт:** attention-only LoRA + Min-SNR + EMA + BSA off. Все anti-snow дефолты запекаются в `scripts/train_lora_avatar.py` — на CLI ничего вручную выставлять не нужно. **Никаких** `--enable_aux_losses` на Stage 0 (aux pipeline исправлен — `c966c63`, но не включается до sign-off).
 
 Датасет: [`assets/avatar/single/elena/elena/`](assets/avatar/single/elena/elena/) — `image/N.png`, `audio/elenaN.wav` (mono **16 kHz**), `prompt/N.txt`, манифест [`lora_pairs.json`](assets/avatar/single/elena/elena/lora_pairs.json).
 
-На pod после `git pull`:
-
 ```bash
-export ARACHNE_ROOT="${ARACHNE_ROOT:-/workspace/ARACHNE-X}"
-cd "$ARACHNE_ROOT" && source .venv/bin/activate
-export PYTHONPATH="$ARACHNE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
-test -d "$NULLXES_CHECKPOINT_DIR/avatar_single" || test -d "$NULLXES_CHECKPOINT_DIR/tokenizer" \
-  || { echo "missing merged runtime — §2.4"; exit 1; }
-
-# 1) Экспорт 5× .pt (~5–15 мин на H200)
-bash scripts/gpu/export_elena_lora_smoke.sh training_latents/elena_lora_smoke
-
-# После export освободите VRAM (5× load pipeline) перед train:
-python -c "import gc,torch; gc.collect(); torch.cuda.empty_cache()"
-nvidia-smi
-
-# 2) Smoke-обучение LoRA (gradient checkpointing включён по умолчанию)
-python scripts/train_lora_avatar.py \
-  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
-  --dataset_dir training_latents/elena_lora_smoke \
-  --output_dir output/elena_lora_smoke \
-  --lora_rank 32 --lora_alpha 16 \
-  --max_steps 200 --save_every 100 --batch_size 1
-
-# 3) Infer с LoRA (sync + identity по желанию)
-PRESET=assets/avatar/single/elena/elena.json
-python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" --mode ai2v \
-  --image "$(jq -r .cond_image "$PRESET")" \
-  --audio "$(jq -r .cond_audio "$PRESET")" \
-  --prompt "$(jq -r .prompt "$PRESET")" \
-  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
-  --resolution 720p --num_frames_mode sync \
-  --num_inference_steps 35 --text_guidance_scale 4.0 --audio_guidance_scale 5.0 \
-  --lora_path output/elena_lora_smoke/lora_final.safetensors --lora_key train \
-  --output output/elena_ai2v_lora_smoke.mp4
+cd /workspace/ARACHNE-X
+git pull
+source .venv/bin/activate
+export PYTHONPATH=/workspace/ARACHNE-X
+export NULLXES_CHECKPOINT_DIR=/workspace/ARACHNE-X/weights/arachne-avatar-runtime
+git log -1 --oneline   # ожидаем минимум 7ce2310
 ```
 
-5 пар = **smoke только**; для лица в проде целиться **20–50+** `.pt` (те же 5 фото × больше коротких WAV).
+**T0 — preflight (1 минута)**
 
-#### 4.7.2 Elena HR LoRA — H200 Stage 0 (blocker audit T0–T2)
+```bash
+python -c "import flash_attn; print('FLASH OK')"
+python -c "from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel; print('DiT OK')"
+test -d "$NULLXES_CHECKPOINT_DIR/avatar_single" && test -d "$NULLXES_CHECKPOINT_DIR/vae" && echo "RUNTIME OK"
 
-**Scope:** diffusion + Min-SNR only — **без** `--enable_aux_losses`. Aux path (B1–B3) исправлен; включайте aux отдельным прогоном после Stage 0 sign-off.
+# Filter policy smoke (10 сек) — гарантия что audio_proj/FFN/final_layer не пролезут:
+python scripts/verify_lora_avatar.py
+# ожидаем: "toy lora roundtrip OK"
+```
 
-На pod после `git pull`:
+**T1 — Export + Fresh train (60 шагов)**
+
+```bash
+# 1) Latent export → 5 .pt, ~5 мин на H200
+bash scripts/gpu/export_elena_lora_smoke.sh training_latents/elenahr_v1
+
+python -c "import gc,torch; gc.collect(); torch.cuda.empty_cache()"
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+
+# 2) Train. Скрипт сам:
+#    · disable_bsa() и пишет 'BSA disabled for LoRA train'
+#    · --min_snr_gamma 5.0  --normalize_audio_embs  --ema_decay 0.9995
+#    · attention-only LoRA filter (FFN/audio_proj/final_layer DENIED)
+#    · логи: output/elenahr_lora_v1/train.log
+bash scripts/gpu/train_elenahr_lora.sh fresh
+```
+
+**T2 — Verify**
+
+```bash
+# Метаданные LoRA — ключевые поля:
+python -c "import json; m=json.load(open('output/elenahr_lora_v1/lora_train_meta.json'));
+print({k:m[k] for k in ('lora_scope','ema_decay','min_snr_gamma','normalize_audio_embs','layer_count')})"
+
+# Должно быть:
+#   lora_scope='attention', ema_decay=0.9995, min_snr_gamma=5.0,
+#   normalize_audio_embs=True, layer_count > 0
+
+grep -E 'BSA disabled|step [0-9]+ loss|saved' output/elenahr_lora_v1/train.log | tail -20
+
+# Артефакты:
+ls -la output/elenahr_lora_v1/*.safetensors
+# ожидаем:
+#   elenahr_step_15.safetensors        + elenahr_step_15_ema.safetensors
+#   elenahr_step_30.safetensors        + elenahr_step_30_ema.safetensors
+#   elenahr_step_45.safetensors        + elenahr_step_45_ema.safetensors
+#   elenahr_final.safetensors          + elenahr_final_ema.safetensors
+
+# Дополнительно — никаких запрещённых модулей в LoRA:
+python -c "
+from safetensors import safe_open
+p='output/elenahr_lora_v1/elenahr_final.safetensors'
+deny=('audio_proj','ffn','final_layer','x_embedder','adaLN')
+with safe_open(p, framework='pt') as f:
+    bad=[k for k in f.keys() if any(d in k for d in deny)]
+print('POLICY OK' if not bad else f'VIOLATION: {bad[:5]}')
+"
+```
+
+**T3 — Infer A/B (наши веса, hold-out пара 5)**
+
+```bash
+PRESET=assets/avatar/single/elena/elena.json
+PROMPT="$(jq -r .prompt "$PRESET")"
+NEG="$(jq -r .negative_prompt "$PRESET")"
+
+# B) Naked baseline — без LoRA
+python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" --mode ai2v \
+  --image assets/avatar/single/elena/elena/image/5.png \
+  --audio assets/avatar/single/elena/elena/audio/elena5.wav \
+  --prompt "$PROMPT" --negative_prompt "$NEG" \
+  --resolution 720p --num_frames 53 \
+  --num_inference_steps 35 --text_guidance_scale 4.0 --audio_guidance_scale 5.0 \
+  --output output/elena_ai2v_ours_pair5.mp4
+
+# C) С LoRA (EMA step 45 — обычно лучше final на 5-пар датасете)
+python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" --mode ai2v \
+  --lora_path output/elenahr_lora_v1/elenahr_step_45_ema.safetensors --lora_key elenahr \
+  --image assets/avatar/single/elena/elena/image/5.png \
+  --audio assets/avatar/single/elena/elena/audio/elena5.wav \
+  --prompt "$PROMPT" --negative_prompt "$NEG" \
+  --resolution 720p --num_frames 53 \
+  --num_inference_steps 35 --text_guidance_scale 4.0 --audio_guidance_scale 5.0 \
+  --output output/elena_ai2v_ours_lora_pair5.mp4
+```
+
+> **Note:** старые pre-policy чекпоинты (`lora_step_15.safetensors` со scope=`default`) **больше не resumable** — фильтр поменялся, strict load упадёт. Запускай `fresh`. Для нового resume используй `bash scripts/gpu/train_elenahr_lora.sh resume` с чекпоинтом, обученным после `7ce2310`.
+
+5 пар = **smoke только**; для production identity целиться **20–50+** `.pt` (те же 5 фото × больше коротких WAV).
+
+#### 4.7.2 A/B с upstream LongCat-Video-Avatar (опционально, sanity check)
+
+Скачать чужие веса в `.venv` без поломки текущего окружения — `huggingface_hub[cli]` уже стоит.
+
+```bash
+cd /workspace
+mkdir -p /workspace/weights_upstream
+
+# 1) Avatar bundle (~120 GB)
+hf download meituan-longcat/LongCat-Video-Avatar \
+  --local-dir /workspace/weights_upstream/LongCat-Video-Avatar
+
+# 2) Base bundle — нужны tokenizer/text_encoder/scheduler/VAE
+hf download meituan-longcat/LongCat-Video \
+  --local-dir /workspace/weights_upstream/LongCat-Video \
+  --include "tokenizer/*" "text_encoder/*" "scheduler/*" "vae/*"
+
+# 3) Собрать upstream merged runtime под наш WeightsLayout
+UP=/workspace/weights_upstream/LongCat-Video-Avatar
+BASE=/workspace/weights_upstream/LongCat-Video
+TGT=/workspace/weights_upstream/arachne-avatar-runtime
+rm -rf "$TGT" && mkdir -p "$TGT/audio"
+
+ln -sfn "$UP/avatar_single"          "$TGT/avatar_single"
+ln -sfn "$UP/avatar_multi"           "$TGT/avatar_multi"
+ln -sfn "$BASE/vae"                  "$TGT/vae"
+ln -sfn "$BASE/scheduler"            "$TGT/scheduler"
+ln -sfn "$BASE/tokenizer"            "$TGT/tokenizer"
+ln -sfn "$BASE/text_encoder"         "$TGT/text_encoder"
+ln -sfn "$UP/vocal_separator"        "$TGT/vocal_separator"
+ln -sfn "$UP/chinese-wav2vec2-base"  "$TGT/audio/wav2vec2"
+
+ls -la "$TGT" "$TGT/audio"
+test -d "$TGT/vae" && test -d "$TGT/audio/wav2vec2" && echo "UPSTREAM RUNTIME OK"
+```
+
+A/B infer:
 
 ```bash
 cd /workspace/ARACHNE-X
 source .venv/bin/activate
 export PYTHONPATH=/workspace/ARACHNE-X
-export NULLXES_CHECKPOINT_DIR=/workspace/ARACHNE-X/weights/arachne-avatar-runtime
-git pull
+export NULLXES_UPSTREAM_DIR=/workspace/weights_upstream/arachne-avatar-runtime
+PRESET=assets/avatar/single/elena/elena.json
+PROMPT="$(jq -r .prompt "$PRESET")"
+NEG="$(jq -r .negative_prompt "$PRESET")"
+
+# A) UPSTREAM weights, БЕЗ LoRA — потолок качества модели
+python scripts/infer.py --checkpoint_dir "$NULLXES_UPSTREAM_DIR" --mode ai2v \
+  --image assets/avatar/single/elena/elena/image/5.png \
+  --audio assets/avatar/single/elena/elena/audio/elena5.wav \
+  --prompt "$PROMPT" --negative_prompt "$NEG" \
+  --resolution 720p --num_frames 53 \
+  --num_inference_steps 35 --text_guidance_scale 4.0 --audio_guidance_scale 5.0 \
+  --output output/elena_ai2v_upstream_pair5.mp4
 ```
 
-**T0 — Preflight**
+Интерпретация:
+
+| Сценарий | Diagnose |
+|----------|----------|
+| **A** чистый, **B** чистый, похожи | merged runtime OK; качество = upstream baseline |
+| **A** чистый, **B** с шумом | регресс в наших весах — diff `vae/config.json` / `scheduler/scheduler_config.json` upstream vs наши |
+| **A** тоже с шумом | проблема не в весах: `audio_guidance_scale` высокий или `num_frames` не подходит под audio длину |
+| **C** > **B** → identity-bump после LoRA | sign-off LoRA train |
+
+#### 4.7.3 Aux losses (Phase B, post Stage 0 sign-off)
 
 ```bash
-python -c "import flash_attn; print('FLASH OK')"
-python -c "from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel; print('DiT import OK')"
-ls "$NULLXES_CHECKPOINT_DIR/avatar_single" "$NULLXES_CHECKPOINT_DIR/vae" | head
-ls training_latents/elenahr_v1/*.pt | head
-```
-
-**T1 — Fresh smoke (60 steps, attention LoRA, EMA, BSA off)**
-
-```bash
-bash scripts/gpu/train_elenahr_lora.sh fresh
-```
-
-Pass: log содержит `BSA disabled for LoRA train`; `lora_train_meta.json` → `lora_scope=attention`, `ema_decay=0.9995`; checkpoints `lora_step_15` / `lora_step_60` + EMA; без OOM.
-
-**T2 — Verify**
-
-```bash
-python -c "import json; print(json.load(open('output/elenahr_lora_v1/lora_train_meta.json')))"
-grep -E "BSA disabled|step [0-9]+ loss" output/elenahr_lora_v1/train.log | tail -20
-```
-
-**Resume (старые default-scope checkpoints):**
-
-```bash
-ELENAHR_LORA_SCOPE=default bash scripts/gpu/train_elenahr_lora.sh resume
-```
-
-**Aux smoke (optional, после Stage 0):** pre-cache DINOv2, затем низкие stage thresholds:
-
-```bash
+# Pre-cache DINOv2 (Stage 2+ нужен — иначе RuntimeError при init):
 python -c "from transformers import AutoModel; AutoModel.from_pretrained('facebook/dinov2-base'); print('DINO OK')"
-# Раскомментируйте AUX_ARGS в scripts/gpu/train_elenahr_lora.sh или:
-python scripts/train_lora_avatar.py ... \
+
+# Stage thresholds под 60-step smoke (иначе дефолты 5k/15k/30k → stage 1 only):
+python scripts/train_lora_avatar.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --dataset_dir training_latents/elenahr_v1 \
+  --output_dir output/elenahr_lora_v1_aux \
+  --lora_key elenahr_aux \
+  --lora_rank 16 --lora_alpha 8 \
+  --max_steps 60 --save_every 15 \
+  --lr 5e-5 --batch_size 1 --num_workers 0 \
   --enable_aux_losses \
   --reference_image assets/avatar/single/elena/face.jpg \
-  --aux_stage2_step 10 --aux_stage3_step 20 --aux_stage4_step 40
+  --aux_stage2_step 10 --aux_stage3_step 20 --aux_stage4_step 40 \
+  --aux_loss_weight 0.15
 ```
 
-Для 60-step smoke без aux defaults (5k/15k/30k) stage 2+ **никогда** не активируется — используйте `--aux_stage*_step` как выше.
+Aux включает: perceptual (VGG/DINO) → identity (frozen DINO) → lip-sync (InfoNCE на mouth crop + audio embs) → temporal (flow warp). См. `arachne_x/training_avatar_aux.py` и `ARCHITECTURE.md` → *Identity LoRA → Anti-snow stack*.
 
 ### 4.8 Чеклист прогона режимов (текущий этап)
 
