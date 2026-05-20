@@ -22,6 +22,14 @@ def normalize_and_scale(column, source_range, target_range, epsilon=1e-8):
     return scaled
 
 
+def _align_flash_attn_qkv_dtype(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+    """flash-attn requires Q/K/V same dtype (LoRA + autocast can mix bf16/fp32)."""
+    if k.dtype != q.dtype:
+        k = k.to(dtype=q.dtype)
+        v = v.to(dtype=q.dtype)
+    return q, k, v
+
+
 class Attention(nn.Module):
     def __init__(
         self,
@@ -81,6 +89,7 @@ class Attention(nn.Module):
             q = rearrange(q, "B H S D -> B S H D").contiguous()
             k = rearrange(k, "B H S D -> B S H D").contiguous()
             v = rearrange(v, "B H S D -> B S H D").contiguous()
+            q, k, v = _align_flash_attn_qkv_dtype(q, k, v)
             x, *_ = flash_attn_func(
                 q,
                 k,
@@ -93,6 +102,7 @@ class Attention(nn.Module):
             q = rearrange(q, "B H S D -> B S H D")
             k = rearrange(k, "B H S D -> B S H D")
             v = rearrange(v, "B H S D -> B S H D")
+            q, k, v = _align_flash_attn_qkv_dtype(q, k, v)
             x = flash_attn_func(
                 q,
                 k,
@@ -108,6 +118,7 @@ class Attention(nn.Module):
             q = rearrange(q, "B H M K -> B M H K")
             k = rearrange(k, "B H M K -> B M H K")
             v = rearrange(v, "B H M K -> B M H K")
+            q, k, v = _align_flash_attn_qkv_dtype(q, k, v)
             x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=None,)
             x = rearrange(x, "B M H K -> B H M K")
         else:
@@ -389,6 +400,7 @@ class SingleStreamAttention(nn.Module):
             q = rearrange(q, "B H S D -> B S H D").contiguous()
             encoder_k = rearrange(encoder_k, "B H S D -> B S H D").contiguous()
             encoder_v = rearrange(encoder_v, "B H S D -> B S H D").contiguous()
+            q, encoder_k, encoder_v = _align_flash_attn_qkv_dtype(q, encoder_k, encoder_v)
             x, *_ = flash_attn_func(
                 q,
                 encoder_k,
@@ -401,6 +413,7 @@ class SingleStreamAttention(nn.Module):
             q = rearrange(q, "B H S D -> B S H D")
             encoder_k = rearrange(encoder_k, "B H S D -> B S H D")
             encoder_v = rearrange(encoder_v, "B H S D -> B S H D")
+            q, encoder_k, encoder_v = _align_flash_attn_qkv_dtype(q, encoder_k, encoder_v)
             x = flash_attn_func(
                 q,
                 encoder_k,
@@ -414,6 +427,7 @@ class SingleStreamAttention(nn.Module):
             q = rearrange(q, "B H M K -> B M H K")
             encoder_k = rearrange(encoder_k, "B H M K -> B M H K")
             encoder_v = rearrange(encoder_v, "B H M K -> B M H K")
+            q, encoder_k, encoder_v = _align_flash_attn_qkv_dtype(q, encoder_k, encoder_v)
             x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)
             x = rearrange(x, "B M H K -> B H M K") 
         else:
