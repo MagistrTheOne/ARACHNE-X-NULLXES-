@@ -27,14 +27,57 @@ fi
 
 mkdir -p "$OUT_DIR"
 LOG="${OUT_DIR}/train.log"
+PID_FILE="${OUT_DIR}/train.pid"
 
-pkill -f "train_lora_avatar.py" 2>/dev/null || true
-sleep 1
-python -c "import gc,torch; gc.collect(); torch.cuda.empty_cache()"
+stop_elenahr_gpu_jobs() {
+  echo "=== stop: prior ARACHNE train / latent-export on GPU ==="
 
-echo "=== elenahr LoRA train mode=$MODE ===" | tee "$LOG"
-echo "checkpoint=$CKPT dataset=$DATASET_DIR out=$OUT_DIR" | tee -a "$LOG"
-nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader 2>/dev/null | tee -a "$LOG" || true
+  if [[ -f "$PID_FILE" ]]; then
+    old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "${old_pid:-}" ]] && kill -0 "$old_pid" 2>/dev/null; then
+      echo "kill PID file $PID_FILE → pid=$old_pid (SIGTERM)"
+      kill -TERM "$old_pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  local patterns=(
+    "train_lora_avatar.py"
+    "scripts/train_lora_avatar.py"
+    "export_latent_training_sample.py"
+  )
+  for pat in "${patterns[@]}"; do
+    if pgrep -f "$pat" >/dev/null 2>&1; then
+      echo "pkill -TERM -f $pat"
+      pkill -TERM -f "$pat" 2>/dev/null || true
+    fi
+  done
+  sleep 3
+
+  for pat in "${patterns[@]}"; do
+    if pgrep -f "$pat" >/dev/null 2>&1; then
+      echo "pkill -KILL -f $pat"
+      pkill -KILL -f "$pat" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+
+  if pgrep -af "train_lora_avatar|export_latent_training_sample" >/dev/null 2>&1; then
+    echo "WARN: still running:" >&2
+    pgrep -af "train_lora_avatar|export_latent_training_sample" >&2 || true
+    echo "ERROR: could not stop old GPU jobs — free VRAM manually (nvidia-smi) and retry" >&2
+    exit 1
+  fi
+  echo "=== stop: no train/export processes ==="
+
+  python -c "import gc,torch; gc.collect(); torch.cuda.empty_cache() if torch.cuda.is_available() else None"
+  nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null \
+    || echo "(nvidia-smi unavailable)"
+}
+
+stop_elenahr_gpu_jobs
 
 RESUME_ARGS=()
 if [[ "$MODE" == "resume" ]]; then
@@ -46,14 +89,23 @@ if [[ "$MODE" == "resume" ]]; then
     exit 1
   fi
   RESUME_ARGS=(--resume_lora_path "$RESUME_CKPT" --start_step "$START_STEP")
-  echo "resume=$RESUME_CKPT start_step=$START_STEP" | tee -a "$LOG"
+  LOG="${OUT_DIR}/train_resume.log"
 elif [[ "$MODE" != "fresh" ]]; then
   echo "Usage: $0 [fresh|resume]" >&2
   exit 1
 fi
 
-# After shard load: DiT→GPU + LoRA scan can take 2–5 min with no tqdm — watch [train_lora_avatar] lines.
-exec python -u scripts/train_lora_avatar.py \
+{
+  echo ""
+  echo "=== elenahr LoRA train mode=$MODE $(date -Iseconds) ==="
+  echo "checkpoint=$CKPT dataset=$DATASET_DIR out=$OUT_DIR"
+  if [[ "${#RESUME_ARGS[@]}" -gt 0 ]]; then
+    echo "resume=$RESUME_CKPT start_step=$START_STEP"
+  fi
+} | tee -a "$LOG"
+
+# After shard load: DiT→GPU + LoRA scan ~2–5 min — wait for [train_lora_avatar] lines.
+python -u scripts/train_lora_avatar.py \
   --checkpoint_dir "$CKPT" \
   --dataset_dir "$DATASET_DIR" \
   --output_dir "$OUT_DIR" \
@@ -63,4 +115,13 @@ exec python -u scripts/train_lora_avatar.py \
   --lr 5e-5 --batch_size 1 \
   --num_workers 0 \
   "${RESUME_ARGS[@]}" \
-  2>&1 | tee -a "$LOG"
+  2>&1 | tee -a "$LOG" &
+train_pid=$!
+echo "$train_pid" > "$PID_FILE"
+echo "train pid=$train_pid (PID file: $PID_FILE)"
+trap 'echo "interrupt → stopping train pid=$train_pid"; kill -TERM "$train_pid" 2>/dev/null; wait "$train_pid" 2>/dev/null; rm -f "$PID_FILE"; exit 130' INT TERM
+wait "$train_pid"
+trap - INT TERM
+rm -f "$PID_FILE"
+echo "=== train finished $(date -Iseconds) ===" | tee -a "$LOG"
+ls -la "$OUT_DIR"/*.safetensors 2>/dev/null | tee -a "$LOG" || true
