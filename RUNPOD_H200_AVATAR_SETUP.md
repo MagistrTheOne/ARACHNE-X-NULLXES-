@@ -184,7 +184,7 @@ DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает back
 
 **LoRA anti-snow defaults (H200 pod):**
 
-- `--lora_scope attention` (без `audio_proj` / FFN / `final_layer`)
+- LoRA scope locked to attention-only (без `audio_proj` / FFN / `final_layer`); см. `ARCHITECTURE.md`
 - `--ema_decay 0.9995` (для 500k+ steps: `0.9997`)
 - `--min_snr_gamma 5.0`
 - `--normalize_audio_embs`

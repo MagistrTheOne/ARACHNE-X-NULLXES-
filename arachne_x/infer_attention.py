@@ -1,5 +1,14 @@
 """
 Infer-time attention backend configuration (BSA parity control).
+
+NULLXES policy — BSA is inference-only.
+Do NOT enable during LoRA training.
+Sparse attention during training causes train/infer distribution drift and
+temporal artifacts (flicker, identity bleed, manifold collapse on long videos).
+See ARCHITECTURE.md → "Runtime" and "Identity LoRA" sections.
+
+Training code MUST call ``dit.disable_bsa()`` before forward; ``configure_infer_bsa``
+is a runtime-only helper and is never imported from ``scripts/train_lora_avatar.py``.
 """
 
 from __future__ import annotations

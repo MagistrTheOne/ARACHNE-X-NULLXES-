@@ -42,7 +42,6 @@ from arachne_x.modules.lora_utils import (
     avatar_attention_only_lora_filter,
     build_initial_lora_state_dict,
     create_lora_network,
-    default_avatar_train_lora_filter,
 )
 from arachne_x.training_lora_loss import (
     avatar_lora_diffusion_loss,
@@ -124,13 +123,8 @@ def main():
         default="",
         help="Comma-separated name prefixes for Linear modules (e.g. blocks.,audio_proj.). Empty = default filter.",
     )
-    parser.add_argument(
-        "--lora_scope",
-        type=str,
-        choices=("default", "attention"),
-        default="attention",
-        help="default=blocks+audio_proj+final_layer; attention=attn/cross_attn/audio_cross_attn only (less snow).",
-    )
+    # NULLXES policy: LoRA scope is constant attention-only (Q/K/V/Out inside DiT blocks).
+    # FFN / audio_proj / final_layer LoRA are denied at filter level (see lora_utils).
     parser.add_argument(
         "--min_snr_gamma",
         type=float,
@@ -321,14 +315,8 @@ def main():
     if args.lora_prefixes.strip():
         prefixes = tuple(p.strip() for p in args.lora_prefixes.split(",") if p.strip())
 
-    scope_filter = (
-        avatar_attention_only_lora_filter
-        if args.lora_scope == "attention"
-        else default_avatar_train_lora_filter
-    )
-
     def name_filter(name: str, mod: torch.nn.Linear) -> bool:
-        return scope_filter(name, mod, include_prefixes=prefixes)
+        return avatar_attention_only_lora_filter(name, mod, include_prefixes=prefixes)
 
     train_scheduler = load_flow_match_scheduler(checkpoint_dir)
     _phase(f"flow-match scheduler loaded (min_snr_gamma={args.min_snr_gamma})")
@@ -407,8 +395,8 @@ def main():
         "lora_rank": lora_rank,
         "lora_alpha": lora_alpha,
         "lora_key": args.lora_key,
-        "lora_scope": args.lora_scope,
-        "lora_prefixes": list(prefixes) if prefixes else args.lora_scope,
+        "lora_scope": "attention",
+        "lora_prefixes": list(prefixes) if prefixes else "attention_only_qkv_out",
         "min_snr_gamma": args.min_snr_gamma,
         "normalize_audio_embs": args.normalize_audio_embs,
         "ema_decay": ema_decay,

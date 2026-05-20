@@ -130,8 +130,15 @@ def export_avatar_latent_training_pt(
     num_frames: int = 93,
     seed: Optional[int] = None,
     device: Optional[str] = None,
+    timestep_bias_power: float = 2.0,
 ) -> None:
-    """Build sample and ``torch.save`` to ``output_path``."""
+    """
+    Build sample and ``torch.save`` to ``output_path``.
+
+    ``timestep_bias_power``: anti-snow timestep sampling (Min-SNR friendly).
+    0.0 = uniform; 2.0 = quadratic bias toward clean (low-sigma) timesteps.
+    Do not disable — uniform sampling causes LoRA to learn high-noise grain.
+    """
     import os
 
     sample = build_avatar_latent_training_sample(

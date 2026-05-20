@@ -7,7 +7,7 @@ import math
 import functools
 from collections import defaultdict
 
-from typing import Callable, Dict, List, Optional, Sequence, Set, Union
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -235,27 +235,60 @@ def build_initial_lora_state_dict(
     return state
 
 
+# NULLXES LoRA train policy (enforced — do not relax without architecture review):
+#   ALLOWED  : attention Q / K / V / Out projections inside transformer blocks
+#              · self_attn   : blocks.*.attn.qkv  blocks.*.attn.proj
+#              · text  cross : blocks.*.cross_attn.q_linear / .kv_linear / .proj
+#              · audio cross : blocks.*.audio_cross_attn.q_linear / .kv_linear / .proj
+#   DENIED   : FFN, adaLN modulation, audio_proj (head), final_layer, x_embedder
+# Rationale: MLP / audio_proj LoRA overfits texture and injects audio jitter →
+# LongCat temporal manifold collapse and lip/cheek snow. See ARCHITECTURE.md.
+_LORA_DENY_SUBSTRINGS: Tuple[str, ...] = (
+    ".ffn.",
+    "adaLN_modulation",
+    "audio_adaLN_modulation",
+)
+_LORA_DENY_PREFIXES: Tuple[str, ...] = (
+    "audio_proj.",
+    "final_layer.",
+    "x_embedder.",
+    "y_embedder.",
+    "t_embedder.",
+)
+
+
 def avatar_attention_only_lora_filter(
     name: str,
     mod: nn.Linear,
     include_prefixes: Optional[Union[Sequence[str], Set[str]]] = None,
 ) -> bool:
     """
-    Train LoRA only on self/cross/audio attention linear layers inside DiT blocks.
+    NULLXES train policy: LoRA on attention Q/K/V/Out only.
 
-    Skips FFN, adaLN, audio_proj, final_layer — reduces texture snow / MLP overfit.
-    audio_proj LoRA is especially dangerous: noisy audio embeddings can cause lip/cheek jitter.
+    Matches ``blocks.{N}.{attn|cross_attn|audio_cross_attn}.{qkv|q_linear|kv_linear|proj}``
+    Refuses anything containing FFN, adaLN, audio_proj, final_layer, x_embedder.
+
+    ``include_prefixes`` is an override hook for ablation studies; the deny list
+    still applies so the policy cannot be silently bypassed.
     """
     del mod
+    for deny in _LORA_DENY_PREFIXES:
+        if name.startswith(deny):
+            return False
+    for deny in _LORA_DENY_SUBSTRINGS:
+        if deny in name:
+            return False
     if include_prefixes is not None:
         return any(name.startswith(p) for p in include_prefixes)
     if not name.startswith("blocks."):
         return False
-    if ".ffn." in name or "adaLN_modulation" in name or "audio_adaLN_modulation" in name:
-        return False
     if ".attn." in name and (name.endswith(".qkv") or name.endswith(".proj")):
         return True
-    if ".cross_attn." in name:
+    if ".cross_attn." in name and (
+        name.endswith(".q_linear")
+        or name.endswith(".kv_linear")
+        or name.endswith(".proj")
+    ):
         return True
     if ".audio_cross_attn." in name and (
         name.endswith(".q_linear")
@@ -264,26 +297,4 @@ def avatar_attention_only_lora_filter(
     ):
         return True
     return False
-
-
-def default_avatar_train_lora_filter(
-    name: str,
-    mod: nn.Linear,
-    include_prefixes: Optional[Union[Sequence[str], Set[str]]] = None,
-) -> bool:
-    """
-    Default scope for avatar DiT LoRA training: transformer blocks, audio projection head,
-    and final layer. Skips x_embedder (Conv3d patch stem) and text/timestep embedders unless
-    include_prefixes overrides.
-    """
-    del mod
-    if name.startswith("x_embedder"):
-        return False
-    if include_prefixes is not None:
-        return any(name.startswith(p) for p in include_prefixes)
-    return (
-        name.startswith("blocks.")
-        or name.startswith("audio_proj.")
-        or name.startswith("final_layer.")
-    )
 

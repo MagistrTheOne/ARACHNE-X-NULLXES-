@@ -90,11 +90,9 @@ if [[ "$MODE" == "resume" ]]; then
   fi
   RESUME_ARGS=(--resume_lora_path "$RESUME_CKPT" --start_step "$START_STEP")
   LOG="${OUT_DIR}/train_resume.log"
-  if [[ "${ELENAHR_LORA_SCOPE:-attention}" == "attention" ]]; then
-    echo "WARN: resume uses ELENAHR_LORA_SCOPE=${ELENAHR_LORA_SCOPE:-attention}." >&2
-    echo "      Checkpoints trained with --lora_scope default need:" >&2
-    echo "        ELENAHR_LORA_SCOPE=default bash scripts/gpu/train_elenahr_lora.sh resume" >&2
-  fi
+  echo "NOTE: NULLXES policy locks --lora_scope=attention. Resume only works on" >&2
+  echo "      checkpoints trained with the same scope; pre-policy 'default'-scope" >&2
+  echo "      ckpts (e.g. legacy lora_step_15) cannot be resumed — run fresh." >&2
 elif [[ "$MODE" != "fresh" ]]; then
   echo "Usage: $0 [fresh|resume]" >&2
   exit 1
@@ -109,10 +107,11 @@ fi
   fi
 } | tee -a "$LOG"
 
-# Anti-snow (flow-match Min-SNR + audio RMS + attention-only LoRA + EMA).
-# Resume must keep the same --lora_scope as the checkpoint that created it.
-# Old default-scope checkpoints: ELENAHR_LORA_SCOPE=default bash ... resume
-LORA_SCOPE="${ELENAHR_LORA_SCOPE:-attention}"
+# NULLXES policy (locked):
+#   · LoRA scope = attention Q/K/V/Out only (no FFN, no audio_proj, no final_layer)
+#   · BSA disabled during train (dense flash-attn parity)
+#   · EMA on (default 0.9995)
+#   · Min-SNR γ=5 (anti-snow)
 MIN_SNR="${ELENAHR_MIN_SNR_GAMMA:-5}"
 EMA="${ELENAHR_EMA_DECAY:-0.9995}"
 
@@ -130,7 +129,6 @@ python -u scripts/train_lora_avatar.py \
   --dataset_dir "$DATASET_DIR" \
   --output_dir "$OUT_DIR" \
   --lora_key elenahr \
-  --lora_scope "$LORA_SCOPE" \
   --lora_rank 16 --lora_alpha 8 \
   --max_steps 60 --save_every 15 \
   --lr 5e-5 --batch_size 1 \
