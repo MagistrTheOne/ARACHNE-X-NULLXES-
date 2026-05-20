@@ -8,6 +8,7 @@ latents, prompt_embeds, prompt_mask, timesteps, noise, audio_embs.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import itertools
 import json
 import os
@@ -275,15 +276,22 @@ def main():
         if audio_embs.ndim == 4:
             audio_embs = audio_embs.unsqueeze(0)
 
-        noise_pred = dit(
-            hidden_states=latents,
-            timestep=timesteps.to(dtype=fw_dtype),
-            encoder_hidden_states=prompt_embeds,
-            encoder_attention_mask=prompt_mask,
-            audio_embs=audio_embs,
+        # Gradient checkpointing + bf16: forward under autocast; MSE in float32 for backward.
+        amp_cm = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if device == "cuda" and fw_dtype == torch.bfloat16
+            else contextlib.nullcontext()
         )
+        with amp_cm:
+            noise_pred = dit(
+                hidden_states=latents,
+                timestep=timesteps.to(dtype=fw_dtype),
+                encoder_hidden_states=prompt_embeds,
+                encoder_attention_mask=prompt_mask,
+                audio_embs=audio_embs,
+            )
 
-        loss = F.mse_loss(noise_pred, noise)
+        loss = F.mse_loss(noise_pred.float(), noise.float())
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
