@@ -13,6 +13,7 @@ import itertools
 import json
 import os
 import sys
+import time
 from glob import glob
 from typing import Iterable
 from pathlib import Path
@@ -44,6 +45,10 @@ from arachne_x.modules.lora_utils import (
 )
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
 from Demo.training_config_h200 import H200TrainingConfig
+
+
+def _phase(msg: str) -> None:
+    print(f"[train_lora_avatar] {msg}", flush=True)
 
 
 class LatentDataset(Dataset):
@@ -208,18 +213,22 @@ def main():
     if device == "cuda":
         torch.cuda.empty_cache()
 
+    t0 = time.time()
+    _phase(f"loading DiT from {checkpoint_dir}/avatar_single …")
     dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
         checkpoint_dir,
         subfolder="avatar_single",
         torch_dtype=dtype,
     )
+    _phase(f"DiT shards loaded ({time.time() - t0:.1f}s), moving to {device} …")
     dit.to(device)
+    _phase(f"DiT on {device} ({time.time() - t0:.1f}s total)")
     dit.requires_grad_(False)
     dit.train()
 
     if not args.no_gradient_checkpointing and hasattr(dit, "enable_gradient_checkpointing"):
         dit.enable_gradient_checkpointing()
-        print("[train_lora_avatar] gradient_checkpointing on")
+        _phase("gradient_checkpointing on")
     elif hasattr(dit, "disable_gradient_checkpointing"):
         dit.disable_gradient_checkpointing()
 
@@ -281,7 +290,13 @@ def main():
     with open(os.path.join(args.output_dir, "lora_train_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    step = 0
+    step = max(0, int(args.start_step))
+    if step >= args.max_steps:
+        raise ValueError(f"start_step ({step}) must be < max_steps ({args.max_steps})")
+    if step > 0:
+        _phase(f"continuing from step {step} → max_steps {args.max_steps}")
+    _phase("training loop start")
+
     for batch in batch_iter:
         batch = _to_device(batch, device, fw_dtype)
         latents = squeeze_collated_singleton_batch_dim(batch["latents"])
@@ -323,13 +338,13 @@ def main():
         torch.nn.utils.clip_grad_norm_(lora_network.parameters(), cfg.max_grad_norm)
         optimizer.step()
 
-        if step % 50 == 0:
-            print(f"[step {step}] loss={loss.item():.6f}")
+        if step % 50 == 0 or (step > 0 and step % args.save_every == 0):
+            _phase(f"step {step} loss={loss.item():.6f}")
 
         if step > 0 and step % args.save_every == 0:
             sub = os.path.join(args.output_dir, f"{args.lora_key}_step_{step}.safetensors")
             save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, sub)
-            print(f"saved {sub}")
+            _phase(f"saved {sub}")
 
         step += 1
         if step >= args.max_steps:
@@ -337,7 +352,7 @@ def main():
 
     final_path = os.path.join(args.output_dir, f"{args.lora_key}_final.safetensors")
     save_file({k: v.detach().cpu() for k, v in lora_network.state_dict().items()}, final_path)
-    print(f"Training complete. LoRA saved to {final_path}")
+    _phase(f"training complete → {final_path}")
 
 
 if __name__ == "__main__":
