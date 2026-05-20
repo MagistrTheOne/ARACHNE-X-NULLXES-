@@ -14,6 +14,11 @@ import torch.nn.functional as F
 from arachne_x.modules.autoencoder_kl_wan import AutoencoderKLWan
 from arachne_x.modules.avatar_losses import ARACHNEAvatarLossModule
 from arachne_x.modules.identity_encoder import FrozenIdentityEncoder
+from arachne_x.modules.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+from arachne_x.training_vae_latent import (
+    decode_normalized_latents_to_video,
+    estimate_z0_from_flow_match,
+)
 
 
 @dataclass
@@ -30,37 +35,6 @@ class AvatarAuxStageSchedule:
         if step >= self.stage2_step:
             return 2
         return 1
-
-
-def denormalize_vae_latents(vae: AutoencoderKLWan, latents: torch.Tensor) -> torch.Tensor:
-    z_dim = int(vae.config.z_dim)
-    mean = torch.tensor(vae.config.latents_mean, device=latents.device, dtype=torch.float32)
-    std = torch.tensor(vae.config.latents_std, device=latents.device, dtype=torch.float32)
-    mean = mean.view(1, z_dim, 1, 1, 1)
-    std = std.view(1, z_dim, 1, 1, 1)
-    return latents.float() / std + mean
-
-
-@torch.no_grad()
-def decode_latents_to_video_fp32(
-    vae: AutoencoderKLWan,
-    latents: torch.Tensor,
-) -> torch.Tensor:
-    """Decode [B,C,T,H,W] latents to [B,T,C,H,W] RGB in [0,1], fp32, no tiling."""
-    vae.eval()
-    was_tiling = bool(getattr(vae, "use_tiling", False))
-    if was_tiling:
-        vae.disable_tiling()
-    try:
-        z = denormalize_vae_latents(vae, latents)
-        with torch.autocast(device_type=z.device.type, enabled=False):
-            decoded = vae.decode(z, return_dict=False)[0]
-        # [B,C,T,H,W] -> [B,T,C,H,W], clamp to [0,1]
-        video = decoded.float().permute(0, 2, 1, 3, 4)
-        return ((video + 1.0) * 0.5).clamp(0.0, 1.0)
-    finally:
-        if was_tiling:
-            vae.enable_tiling()
 
 
 def pool_audio_embs_for_sync(audio_embs: torch.Tensor, target_dim: int = 768) -> torch.Tensor:
@@ -98,10 +72,6 @@ def default_region_weights(
     width: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """
-    Region-adaptive temporal weights [B,T,H,W].
-    Eyes/jaw slightly higher than cheeks; mouth left at 1.0 (mouth_mask excludes separately).
-    """
     yy = torch.linspace(0, 1, height, device=device).view(1, 1, height, 1)
     eyes = torch.exp(-((yy - 0.28) ** 2) / 0.02)
     jaw = torch.exp(-((yy - 0.82) ** 2) / 0.03)
@@ -164,6 +134,9 @@ class AvatarAuxTrainingRuntime(nn.Module):
         self,
         latents: torch.Tensor,
         audio_embs: torch.Tensor,
+        noise_pred: torch.Tensor,
+        timesteps: torch.Tensor,
+        scheduler: FlowMatchEulerDiscreteScheduler,
         *,
         global_step: int = 0,
         compute_perceptual: Optional[bool] = None,
@@ -176,33 +149,41 @@ class AvatarAuxTrainingRuntime(nn.Module):
             run_perceptual = bool(compute_perceptual)
 
         need_identity = stage >= 2
-        need_decode = run_perceptual or need_identity
+        need_lip = stage >= 3
+        need_decode = run_perceptual or need_identity or need_lip
 
         if need_decode:
-            video = decode_latents_to_video_fp32(self.vae, latents)
+            z0_est = estimate_z0_from_flow_match(
+                latents, noise_pred, timesteps, scheduler
+            )
+            video = decode_normalized_latents_to_video(self.vae, z0_est)
+            latents_for_aux = z0_est
         else:
             video = torch.zeros(
                 b, t, 3, 64, 64, device=latents.device, dtype=torch.float32
             )
+            latents_for_aux = latents
 
-        with torch.no_grad():
-            gen_identity = (
-                self.identity_encoder.encode_images(video)
-                if need_identity
-                else torch.zeros(
-                    b, t, self.reference_identity.shape[-1],
-                    device=latents.device,
-                    dtype=torch.float32,
-                )
+        if need_identity or need_lip:
+            gen_identity = self.identity_encoder.encode_images(video)
+        else:
+            gen_identity = torch.zeros(
+                b,
+                t,
+                self.reference_identity.shape[-1],
+                device=latents.device,
+                dtype=torch.float32,
             )
 
-        mouth_features = extract_mouth_features(video) if stage >= 3 else torch.zeros(
-            b, t, 512, device=latents.device, dtype=torch.float32
+        mouth_features = (
+            extract_mouth_features(video)
+            if need_lip
+            else torch.zeros(b, t, 512, device=latents.device, dtype=torch.float32)
         )
         audio_features = pool_audio_embs_for_sync(audio_embs)
 
         phoneme_importance = (
-            default_phoneme_importance(t, latents.device) if stage >= 3 else None
+            default_phoneme_importance(t, latents.device) if need_lip else None
         )
         region_weights = (
             default_region_weights(
@@ -224,7 +205,7 @@ class AvatarAuxTrainingRuntime(nn.Module):
             mouth_features=mouth_features,
             generated_identity_embeddings=gen_identity,
             reference_identity_embedding=self.reference_identity,
-            latents=latents,
+            latents=latents_for_aux,
             generated_images=video,
             reference_image=self.reference_image,
             compute_perceptual=run_perceptual,

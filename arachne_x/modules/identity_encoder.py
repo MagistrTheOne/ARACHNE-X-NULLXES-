@@ -62,7 +62,15 @@ class FrozenIdentityEncoder(nn.Module):
             )
         from transformers import AutoModel
 
-        model = AutoModel.from_pretrained(model_name)
+        try:
+            model = AutoModel.from_pretrained(model_name)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Failed to load identity encoder {model_name!r} from Hugging Face cache. "
+                "Pre-cache on pod before aux training:\n"
+                "  python -c \"from transformers import AutoModel; "
+                "AutoModel.from_pretrained('facebook/dinov2-base')\""
+            ) from exc
         model.eval()
         return model
 
@@ -77,13 +85,14 @@ class FrozenIdentityEncoder(nn.Module):
         std = self._img_std.to(device=images.device, dtype=images.dtype)
         return (images - mean) / std
 
-    @torch.no_grad()
     def encode_images(self, images: torch.Tensor) -> torch.Tensor:
         """
         Args:
             images: [B, C, H, W] or [B, T, C, H, W] in [0,1] or [-1,1]
         Returns:
             embeddings: [B, D] or [B, T, D], L2-normalized
+
+        Encoder weights are frozen; gradients flow to ``images`` for LoRA aux path.
         """
         if images.dim() == 5:
             b, t, c, h, w = images.shape

@@ -1157,6 +1157,63 @@ python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" --mode ai2v \
 
 5 пар = **smoke только**; для лица в проде целиться **20–50+** `.pt` (те же 5 фото × больше коротких WAV).
 
+#### 4.7.2 Elena HR LoRA — H200 Stage 0 (blocker audit T0–T2)
+
+**Scope:** diffusion + Min-SNR only — **без** `--enable_aux_losses`. Aux path (B1–B3) исправлен; включайте aux отдельным прогоном после Stage 0 sign-off.
+
+На pod после `git pull`:
+
+```bash
+cd /workspace/ARACHNE-X
+source .venv/bin/activate
+export PYTHONPATH=/workspace/ARACHNE-X
+export NULLXES_CHECKPOINT_DIR=/workspace/ARACHNE-X/weights/arachne-avatar-runtime
+git pull
+```
+
+**T0 — Preflight**
+
+```bash
+python -c "import flash_attn; print('FLASH OK')"
+python -c "from arachne_x.modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DModel; print('DiT import OK')"
+ls "$NULLXES_CHECKPOINT_DIR/avatar_single" "$NULLXES_CHECKPOINT_DIR/vae" | head
+ls training_latents/elenahr_v1/*.pt | head
+```
+
+**T1 — Fresh smoke (60 steps, attention LoRA, EMA, BSA off)**
+
+```bash
+bash scripts/gpu/train_elenahr_lora.sh fresh
+```
+
+Pass: log содержит `BSA disabled for LoRA train`; `lora_train_meta.json` → `lora_scope=attention`, `ema_decay=0.9995`; checkpoints `lora_step_15` / `lora_step_60` + EMA; без OOM.
+
+**T2 — Verify**
+
+```bash
+python -c "import json; print(json.load(open('output/elenahr_lora_v1/lora_train_meta.json')))"
+grep -E "BSA disabled|step [0-9]+ loss" output/elenahr_lora_v1/train.log | tail -20
+```
+
+**Resume (старые default-scope checkpoints):**
+
+```bash
+ELENAHR_LORA_SCOPE=default bash scripts/gpu/train_elenahr_lora.sh resume
+```
+
+**Aux smoke (optional, после Stage 0):** pre-cache DINOv2, затем низкие stage thresholds:
+
+```bash
+python -c "from transformers import AutoModel; AutoModel.from_pretrained('facebook/dinov2-base'); print('DINO OK')"
+# Раскомментируйте AUX_ARGS в scripts/gpu/train_elenahr_lora.sh или:
+python scripts/train_lora_avatar.py ... \
+  --enable_aux_losses \
+  --reference_image assets/avatar/single/elena/face.jpg \
+  --aux_stage2_step 10 --aux_stage3_step 20 --aux_stage4_step 40
+```
+
+Для 60-step smoke без aux defaults (5k/15k/30k) stage 2+ **никогда** не активируется — используйте `--aux_stage*_step` как выше.
+
 ### 4.8 Чеклист прогона режимов (текущий этап)
 
 | # | Режим | Артефакт | ☐ |

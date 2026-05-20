@@ -90,6 +90,11 @@ if [[ "$MODE" == "resume" ]]; then
   fi
   RESUME_ARGS=(--resume_lora_path "$RESUME_CKPT" --start_step "$START_STEP")
   LOG="${OUT_DIR}/train_resume.log"
+  if [[ "${ELENAHR_LORA_SCOPE:-attention}" == "attention" ]]; then
+    echo "WARN: resume uses ELENAHR_LORA_SCOPE=${ELENAHR_LORA_SCOPE:-attention}." >&2
+    echo "      Checkpoints trained with --lora_scope default need:" >&2
+    echo "        ELENAHR_LORA_SCOPE=default bash scripts/gpu/train_elenahr_lora.sh resume" >&2
+  fi
 elif [[ "$MODE" != "fresh" ]]; then
   echo "Usage: $0 [fresh|resume]" >&2
   exit 1
@@ -106,9 +111,18 @@ fi
 
 # Anti-snow (flow-match Min-SNR + audio RMS + attention-only LoRA + EMA).
 # Resume must keep the same --lora_scope as the checkpoint that created it.
+# Old default-scope checkpoints: ELENAHR_LORA_SCOPE=default bash ... resume
 LORA_SCOPE="${ELENAHR_LORA_SCOPE:-attention}"
 MIN_SNR="${ELENAHR_MIN_SNR_GAMMA:-5}"
 EMA="${ELENAHR_EMA_DECAY:-0.9995}"
+
+# Optional aux smoke (after B1–B3 fix): uncomment and set reference face image.
+# AUX_ARGS=(
+#   --enable_aux_losses
+#   --reference_image assets/avatar/single/elena/face.jpg
+#   --aux_stage2_step 10 --aux_stage3_step 20 --aux_stage4_step 40
+# )
+AUX_ARGS=()
 
 # After shard load: DiT→GPU + LoRA scan ~2–5 min — wait for [train_lora_avatar] lines.
 python -u scripts/train_lora_avatar.py \
@@ -124,6 +138,7 @@ python -u scripts/train_lora_avatar.py \
   --min_snr_gamma "$MIN_SNR" \
   --normalize_audio_embs \
   --ema_decay "$EMA" \
+  "${AUX_ARGS[@]}" \
   "${RESUME_ARGS[@]}" \
   2>&1 | tee -a "$LOG" &
 train_pid=$!

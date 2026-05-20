@@ -484,6 +484,9 @@ def main():
             aux_total, aux_log = aux_runtime.compute_aux_loss(
                 latents=latents,
                 audio_embs=audio_embs,
+                noise_pred=noise_pred,
+                timesteps=timesteps,
+                scheduler=train_scheduler,
                 global_step=step,
             )
             loss = loss + args.aux_loss_weight * aux_total
