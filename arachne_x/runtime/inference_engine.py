@@ -267,9 +267,23 @@ def resolve_lora_rank_alpha(
     return rank, alpha
 
 
+def _disable_torch_compile_for_lora_infer() -> None:
+    """LoRA patches DiT forwards; torch.compile/inductor often fails on denoise (fallback eager)."""
+    try:
+        import torch._dynamo as dynamo
+
+        dynamo.config.suppress_errors = True
+        if hasattr(dynamo, "reset"):
+            dynamo.reset()
+        print("[lora] torch._dynamo suppress_errors=True (eager fallback for LoRA infer)")
+    except Exception:
+        pass
+
+
 def maybe_load_avatar_lora(pipe, args: argparse.Namespace) -> None:
     if not getattr(args, "lora_path", None):
         return
+    _disable_torch_compile_for_lora_infer()
     path = args.lora_path
     if not os.path.isfile(path):
         raise FileNotFoundError(f"--lora_path not found: {path}")

@@ -1245,6 +1245,7 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | Дёрганье губ после ~3 s на 6 s       | `--num_frames_mode sync` или `duration` + `--embedding_fps_auto` |
 | streaming MP4 ~0.4 s                 | Норма для `streaming_ai2v`; для 6 s используйте `ai2v` §4.1.5   |
 | `bash: --num_frames: command not found` | Нужен полный `python scripts/infer.py \` … не отдельные строки `--flag` |
+| LoRA infer `BackendCompilerFailed` / `'float' has no attribute 'meta'` | `git pull` (infer включает `suppress_errors` для LoRA) или `export TORCHDYNAMO_DISABLE=1` перед `infer.py` |
 | `face.png` path invalid              | Используйте `assets/avatar/single/elena/image.jpg`               |
 | `Unsupported attention operations`   | §3.3–3.4: flash-attn не установлен / не импортируется              |
 | OOM на H200                          | Уменьшите `num_frames`, resolution `480p`, `num_inference_steps`             |
