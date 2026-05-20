@@ -1099,6 +1099,42 @@ python scripts/infer.py \
 --lora_path /path/to/lora.safetensors --lora_key train
 ```
 
+#### 4.7.1 Elena LoRA smoke (5 пар в репо)
+
+Датасет: [`assets/avatar/single/elena/elena/`](assets/avatar/single/elena/elena/) — `image/N.png`, `audio/elenaN.wav` (mono **16 kHz**), `prompt/N.txt`, манифест [`lora_pairs.json`](assets/avatar/single/elena/elena/lora_pairs.json).
+
+На pod после `git pull`:
+
+```bash
+cd "$ARACHNE_ROOT" && source .venv/bin/activate
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+
+# 1) Экспорт 5× .pt (~5–15 мин на H200)
+bash scripts/gpu/export_elena_lora_smoke.sh training_latents/elena_lora_smoke
+
+# 2) Smoke-обучение LoRA (мало шагов — только проверка пайплайна)
+python scripts/train_lora_avatar.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --dataset_dir training_latents/elena_lora_smoke \
+  --output_dir output/elena_lora_smoke \
+  --lora_rank 64 --lora_alpha 32 \
+  --max_steps 200 --save_every 100 --batch_size 1
+
+# 3) Infer с LoRA (sync + identity по желанию)
+PRESET=assets/avatar/single/elena/elena.json
+python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" --mode ai2v \
+  --image "$(jq -r .cond_image "$PRESET")" \
+  --audio "$(jq -r .cond_audio "$PRESET")" \
+  --prompt "$(jq -r .prompt "$PRESET")" \
+  --negative_prompt "$(jq -r .negative_prompt "$PRESET")" \
+  --resolution 720p --num_frames_mode sync \
+  --num_inference_steps 35 --text_guidance_scale 4.0 --audio_guidance_scale 5.0 \
+  --lora_path output/elena_lora_smoke/lora_final.safetensors --lora_key train \
+  --output output/elena_ai2v_lora_smoke.mp4
+```
+
+5 пар = **smoke только**; для лица в проде целиться **20–50+** `.pt` (те же 5 фото × больше коротких WAV).
+
 ### 4.8 Чеклист прогона режимов (текущий этап)
 
 | # | Режим | Артефакт | ☐ |

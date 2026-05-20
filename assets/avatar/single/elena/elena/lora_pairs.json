@@ -1,0 +1,49 @@
+{
+  "subject": "elena",
+  "preset_json": "assets/avatar/single/elena/elena.json",
+  "motion_prefix": "ELENA, speaking naturally straight to camera, precise lipsync, minimal head movement, high temporal consistency, ",
+  "export_resolution": "720p",
+  "num_frames_mode": "sync",
+  "pairs": [
+    {
+      "id": 1,
+      "image": "assets/avatar/single/elena/elena/image/1.png",
+      "audio": "assets/avatar/single/elena/elena/audio/elena1.wav",
+      "prompt": "assets/avatar/single/elena/elena/prompt/1.txt",
+      "duration_sec": 4.28,
+      "num_frames": 69
+    },
+    {
+      "id": 2,
+      "image": "assets/avatar/single/elena/elena/image/2.png",
+      "audio": "assets/avatar/single/elena/elena/audio/elena2.wav",
+      "prompt": "assets/avatar/single/elena/elena/prompt/2.txt",
+      "duration_sec": 2.35,
+      "num_frames": 37
+    },
+    {
+      "id": 3,
+      "image": "assets/avatar/single/elena/elena/image/3.png",
+      "audio": "assets/avatar/single/elena/elena/audio/elena3.wav",
+      "prompt": "assets/avatar/single/elena/elena/prompt/3.txt",
+      "duration_sec": 2.69,
+      "num_frames": 41
+    },
+    {
+      "id": 4,
+      "image": "assets/avatar/single/elena/elena/image/4.png",
+      "audio": "assets/avatar/single/elena/elena/audio/elena4.wav",
+      "prompt": "assets/avatar/single/elena/elena/prompt/4.txt",
+      "duration_sec": 3.0,
+      "num_frames": 45
+    },
+    {
+      "id": 5,
+      "image": "assets/avatar/single/elena/elena/image/5.png",
+      "audio": "assets/avatar/single/elena/elena/audio/elena5.wav",
+      "prompt": "assets/avatar/single/elena/elena/prompt/5.txt",
+      "duration_sec": 3.32,
+      "num_frames": 53
+    }
+  ]
+}
