@@ -12,6 +12,9 @@ from .modules.avatar.arachne_avatar_dit import LongCatVideoAvatarTransformer3DMo
 from .audio_process.wav2vec2 import Wav2Vec2ModelWrapper
 from .pipeline_arachne_x_video import ArachneXVideoPipeline
 from .pipeline_arachne_x_video_avatar import ArachneXVideoAvatarPipeline
+from .pipeline_audio_i2v import AudioConditionedI2VPipeline
+from .modules.audio_conditioning import AudioConditioningAdapter
+from .modules.audio_conditioning.audio_encode import AudioEncoderRuntime
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,74 @@ def load_avatar_pipeline(
     pipe.to(device)
     if hasattr(pipe, "try_load_planning_head"):
         pipe.try_load_planning_head(checkpoint_dir)
+    return pipe
+
+
+def load_audio_i2v_pipeline(
+    checkpoint_dir: str,
+    device: str = "cuda",
+    torch_dtype: torch.dtype = torch.bfloat16,
+    cp_split_hw: Optional[Tuple[int, int]] = None,
+    layout: WeightsLayout = WeightsLayout(),
+    audio_adapter: Optional[AudioConditioningAdapter] = None,
+    audio_adapter_path: Optional[str] = None,
+) -> AudioConditionedI2VPipeline:
+    """
+    Experimental audio-conditioned I2V over frozen VIDEO checkpoint.
+
+    Requires wav2vec weights under ``audio/wav2vec2`` in the same runtime tree.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        _p(checkpoint_dir, layout.tokenizer),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    text_encoder = UMT5EncoderModel.from_pretrained(
+        _p(checkpoint_dir, layout.text_encoder),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    vae = AutoencoderKLWan.from_pretrained(
+        _p(checkpoint_dir, layout.vae),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        _p(checkpoint_dir, layout.scheduler),
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    dit = LongCatVideoTransformer3DModel.from_pretrained(
+        _p(checkpoint_dir, layout.dit),
+        cp_split_hw=cp_split_hw,
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    )
+    for param in dit.parameters():
+        param.requires_grad = False
+
+    wav2vec_path = _p(checkpoint_dir, layout.wav2vec2)
+    audio_runtime = AudioEncoderRuntime.from_checkpoint(wav2vec_path, device=device)
+
+    adapter = audio_adapter
+    if adapter is None and audio_adapter_path:
+        from .modules.audio_conditioning import load_audio_conditioning_adapter
+
+        adapter = load_audio_conditioning_adapter(audio_adapter_path, device=device)
+    if adapter is None:
+        adapter = AudioConditioningAdapter()
+    adapter.to(device)
+
+    pipe = AudioConditionedI2VPipeline(
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        vae=vae,
+        scheduler=scheduler,
+        dit=dit,
+        audio_encoder_runtime=audio_runtime,
+        audio_adapter=adapter,
+    )
+    pipe.to(device)
     return pipe
 
 

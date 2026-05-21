@@ -20,7 +20,7 @@ from PIL import Image
 from torchvision.io import write_video
 from diffusers.utils import load_image, load_video
 
-from arachne_x.loader import load_avatar_pipeline, load_base_pipeline
+from arachne_x.loader import load_avatar_pipeline, load_base_pipeline, load_audio_i2v_pipeline
 from arachne_x.audio_process.torch_utils import save_video_ffmpeg
 from arachne_x.inference_audio import build_avatar_windowed_audio_emb, default_embedding_fps
 from arachne_x.inference_frames import (
@@ -338,7 +338,7 @@ def execute_infer(args: argparse.Namespace) -> None:
         cache_dir=args.weights_cache_dir,
     )
 
-    if args.mode in ("t2v", "i2v", "vc"):
+    if args.mode in ("t2v", "i2v", "vc", "audio_i2v"):
         args._prompt_compiler_meta = apply_prompt_compiler(args)
 
     if args.mode in ("t2v", "i2v", "vc"):
@@ -389,6 +389,43 @@ def execute_infer(args: argparse.Namespace) -> None:
             )[0]
             save_video_numpy(out, args.output, fps=30)
 
+        return
+
+    if args.mode == "audio_i2v":
+        if not args.image:
+            raise ValueError("--image is required for audio_i2v")
+        if not args.audio:
+            raise ValueError("--audio is required for audio_i2v")
+        pipe = load_audio_i2v_pipeline(
+            checkpoint_dir,
+            device=device,
+            torch_dtype=torch_dtype,
+            audio_adapter_path=getattr(args, "audio_conditioning_adapter", None),
+        )
+        scale = float(getattr(args, "audio_conditioning_scale", 0.0))
+        image = load_image(args.image)
+        out = pipe.generate_audio_i2v(
+            image=image,
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            audio_path=args.audio,
+            resolution=args.resolution,
+            num_frames=args.num_frames,
+            num_inference_steps=args.num_inference_steps,
+            text_guidance_scale=args.text_guidance_scale,
+            audio_conditioning_scale=scale,
+            embedding_fps=getattr(args, "audio_embedding_fps", None),
+        )[0]
+        write_run_metadata(
+            args,
+            {
+                "mode": "audio_i2v",
+                "audio_conditioning_scale": scale,
+                "audio_conditioning_adapter": getattr(args, "audio_conditioning_adapter", None),
+                "num_frames": args.num_frames,
+            },
+        )
+        save_video_numpy(out, args.output, fps=30)
         return
 
     pipe = load_avatar_pipeline(
