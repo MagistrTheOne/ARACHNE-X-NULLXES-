@@ -12,7 +12,7 @@ def main():
         "--mode",
         type=str,
         required=True,
-        choices=["t2v", "i2v", "vc", "audio_i2v", "ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"],
+        choices=["t2v", "i2v", "vc", "audio_i2v", "imagine_i2v", "ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"],
     )
     parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--negative_prompt", type=str, default="")
@@ -146,7 +146,7 @@ def main():
         "--audio_conditioning_scale",
         type=float,
         default=0.0,
-        help="Experimental audio_i2v: adapter strength. 0.0 delegates to base i2v (identity). >1 enables audio CFG.",
+        help="Experimental audio_i2v / imagine_i2v: adapter strength. 0.0 delegates to base i2v (audio_i2v only). imagine_i2v defaults to 1.0 when unset/zero.",
     )
     parser.add_argument("--identity_id", type=int, default=None)
     parser.add_argument("--identity_strength", type=float, default=1.0)

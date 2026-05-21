@@ -24,10 +24,16 @@ GEMMA_AVATAR_SYS_EN = (
     "4) Output English only, 80-180 words, no quotes around the whole answer."
 )
 
-GEMMA_AVATAR_SYS_ZH = (
-    "将用户的简短意图改写为适合音频驱动数字人视频生成的画面描述。"
-    "要求：人物面向镜头说话、口型同步；固定机位、镜头不移动；"
-    "只描述可见内容；输出中文，80-180字，不要加引号包裹全文。"
+GEMMA_IMAGINE_SYS_EN = (
+    "You rewrite short user intents into detailed image-to-video scene descriptions. "
+    "The clip includes synchronized speech and ambient context implied by the user. "
+    "Requirements: subject faces camera; describe visible motion, expression, and setting; "
+    "static camera; English only, 80-180 words, no quotes around the whole answer."
+)
+
+GEMMA_IMAGINE_SYS_ZH = (
+    "将用户简短意图改写为图生视频画面描述，包含与语音同步的自然动作和场景。"
+    "人物面向镜头；描述可见动作、表情与环境；固定机位；中文80-180字。"
 )
 
 
@@ -76,7 +82,10 @@ def expand_with_gemma(
 
     model, tokenizer = _load_gemma()
     use_zh = locale == "zh" or (locale == "auto" and is_chinese_text(text))
-    sys_prompt = GEMMA_AVATAR_SYS_ZH if use_zh else GEMMA_AVATAR_SYS_EN
+    if mode in ("imagine_i2v", "audio_i2v", "i2v"):
+        sys_prompt = GEMMA_IMAGINE_SYS_ZH if use_zh else GEMMA_IMAGINE_SYS_EN
+    else:
+        sys_prompt = GEMMA_AVATAR_SYS_ZH if use_zh else GEMMA_AVATAR_SYS_EN
 
     if hasattr(tokenizer, "apply_chat_template"):
         messages = [

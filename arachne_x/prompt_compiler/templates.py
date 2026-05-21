@@ -21,6 +21,16 @@ AVATAR_POSITIVE_SUFFIX_ZH = (
 )
 
 _AVATAR_MODES = frozenset({"ai2v", "at2v", "streaming_ai2v", "avc"})
+_IMAGINE_MODES = frozenset({"imagine_i2v", "audio_i2v"})
+
+IMAGINE_POSITIVE_SUFFIX_EN = (
+    " The subject speaks naturally to camera with audio-driven motion, subtle head movement, "
+    "natural blinking, and stable identity. Static camera, fixed framing."
+)
+
+IMAGINE_POSITIVE_SUFFIX_ZH = (
+    " 人物面向镜头自然说话，动作与语音节奏一致，轻微头部运动，自然眨眼，身份稳定。固定机位。"
+)
 
 
 def is_chinese_text(text: str) -> bool:
@@ -41,6 +51,17 @@ def merge_avatar_defaults(
     """Apply avatar lipsync / static-camera hints without an LLM."""
     pos = (positive or "").strip()
     neg = (negative or "").strip()
+
+    if mode in _IMAGINE_MODES:
+        use_zh = locale == "zh" or (locale == "auto" and is_chinese_text(pos))
+        suffix = IMAGINE_POSITIVE_SUFFIX_ZH if use_zh else IMAGINE_POSITIVE_SUFFIX_EN
+        if suffix.strip() not in pos:
+            pos = (pos + suffix).strip()
+        if not neg:
+            neg = DEFAULT_AVATAR_NEGATIVE
+        elif DEFAULT_AVATAR_NEGATIVE not in neg:
+            neg = f"{neg}, {DEFAULT_AVATAR_NEGATIVE}"
+        return pos, neg
 
     if mode not in _AVATAR_MODES:
         if not neg:

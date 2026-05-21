@@ -77,7 +77,49 @@ See [`scripts/train_audio_conditioning_adapter.py`](../scripts/train_audio_condi
 Freeze: VIDEO DiT, VAE, text encoder, wav2vec encoder.  
 Train: adapter `audio_proj`, per-block injection gates and cross-attn weights only.
 
-## Out of scope (this path)
+## Imagine I2V (Gemma + TTS + adapter, no user WAV)
+
+Product-style path: **image + short prompt → Gemma expands scene → TTS speech → audio adapter → muxed MP4**.
+
+No base DiT / UMT5 weight changes. Gemma is **prompt compiler only**.
+
+```bash
+# needs: VIDEO ckpt + wav2vec + requirements-tts.txt + Gemma on GPU
+export ARACHNE_GEMMA_MODEL=google/gemma-2-2b-it   # or local path
+
+python scripts/infer.py \
+  --checkpoint_dir "$VIDEO_CKPT" \
+  --mode imagine_i2v \
+  --image assets/avatar/single/elena/image.jpg \
+  --prompt "Elena greets the candidate calmly in a modern office" \
+  --speak_text "Здравствуйте, рада познакомиться." \
+  --prompt_compiler gemma \
+  --tts_provider qwen \
+  --tts_language Russian \
+  --tts_speaker Ryan \
+  --resolution 480p \
+  --num_frames 49 \
+  --num_inference_steps 25 \
+  --text_guidance_scale 4.0 \
+  --audio_conditioning_scale 1.0 \
+  --audio_conditioning_adapter output/audio_i2v_adapter.safetensors \
+  --output output/imagine_i2v.mp4
+```
+
+Rules:
+- **No `--audio`** — speech is synthesized internally (use `--mode audio_i2v` if you have WAV).
+- **`--speak_text`** optional if `--prompt` is short (≤320 chars); long scene prompts need explicit speak line.
+- Default compiler for `imagine_i2v`: **gemma** (`ARACHNE_IMAGINE_PROMPT_COMPILER` env override).
+- Output is **muxed MP4** with TTS audio (like avatar modes).
+
+Pipeline:
+
+```text
+prompt → Gemma (scene) → UMT5 cross-attn (frozen)
+      ↘ speak_text → TTS → wav2vec → adapter → frozen DiT → video
+                                                      ↘ ffmpeg mux
+```
+
 
 - Frontend V1/V2
 - Elena identity bank / avatar ai2v prod

@@ -32,7 +32,7 @@ from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 from arachne_x.tts import create_speech_synthesizer
 from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
 from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
-from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler
+from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
 from arachne_x.weights_resolve import resolve_weights_root
 
 
@@ -201,6 +201,40 @@ def write_run_metadata(
     print(f"[run-metadata] wrote {path}")
 
 
+def resolve_imagine_speak_text(args: argparse.Namespace, *, source_user_text: str = "") -> str:
+    """
+    TTS line for imagine_i2v: explicit --speak_text, else short user intent, else --audio forbidden path.
+    """
+    explicit = (getattr(args, "speak_text", None) or "").strip()
+    if explicit:
+        return explicit
+    if getattr(args, "audio", None):
+        raise ValueError("imagine_i2v generates speech internally; omit --audio or use --mode audio_i2v")
+    source = (source_user_text or args.prompt or "").strip()
+    if not source:
+        raise ValueError("imagine_i2v requires --prompt or --speak_text")
+    if len(source) > 320:
+        raise ValueError(
+            "imagine_i2v: user prompt too long for auto TTS; pass --speak_text with the spoken line"
+        )
+    return source
+
+
+def synthesize_imagine_wav(args: argparse.Namespace, speak_text: str) -> Tuple[str, bool]:
+    """TTS for imagine_i2v (temp wav)."""
+    saved = dict(
+        speak_text=args.speak_text,
+        audio=args.audio,
+    )
+    try:
+        args.speak_text = speak_text
+        args.audio = None
+        return resolve_avatar_wav_path(args)
+    finally:
+        args.speak_text = saved["speak_text"]
+        args.audio = saved["audio"]
+
+
 def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
     """Returns (path_to_wav, is_temp). Prefer explicit --audio over --speak_text."""
     if getattr(args, "audio", None):
@@ -338,7 +372,11 @@ def execute_infer(args: argparse.Namespace) -> None:
         cache_dir=args.weights_cache_dir,
     )
 
-    if args.mode in ("t2v", "i2v", "vc", "audio_i2v"):
+    if args.mode in ("t2v", "i2v", "vc", "audio_i2v", "imagine_i2v"):
+        if args.mode == "imagine_i2v":
+            args._imagine_source_prompt = (args.prompt or "").strip()
+            if getattr(args, "prompt_compiler", None) is None:
+                args.prompt_compiler = resolve_imagine_compiler_backend(args)
         args._prompt_compiler_meta = apply_prompt_compiler(args)
 
     if args.mode in ("t2v", "i2v", "vc"):
@@ -426,6 +464,60 @@ def execute_infer(args: argparse.Namespace) -> None:
             },
         )
         save_video_numpy(out, args.output, fps=30)
+        return
+
+    if args.mode == "imagine_i2v":
+        if not args.image:
+            raise ValueError("--image is required for imagine_i2v")
+        compiler_meta = getattr(args, "_prompt_compiler_meta", {}) or {}
+        source_prompt = (
+            (getattr(args, "_imagine_source_prompt", None) or "").strip()
+            or (compiler_meta.get("source_user_text") or "").strip()
+        )
+        speak_text = resolve_imagine_speak_text(args, source_user_text=source_prompt)
+        wav_path, wav_is_temp = synthesize_imagine_wav(args, speak_text)
+        try:
+            pipe = load_audio_i2v_pipeline(
+                checkpoint_dir,
+                device=device,
+                torch_dtype=torch_dtype,
+                audio_adapter_path=getattr(args, "audio_conditioning_adapter", None),
+            )
+            scale = float(getattr(args, "audio_conditioning_scale", 1.0))
+            if scale == 0.0:
+                scale = 1.0
+            image = load_image(args.image)
+            out = pipe.generate_audio_i2v(
+                image=image,
+                prompt=args.prompt,
+                negative_prompt=args.negative_prompt,
+                audio_path=wav_path,
+                resolution=args.resolution,
+                num_frames=args.num_frames,
+                num_inference_steps=args.num_inference_steps,
+                text_guidance_scale=args.text_guidance_scale,
+                audio_conditioning_scale=scale,
+                embedding_fps=getattr(args, "audio_embedding_fps", None),
+            )[0]
+            write_run_metadata(
+                args,
+                {
+                    "mode": "imagine_i2v",
+                    "speak_text": speak_text,
+                    "source_user_text": source_prompt,
+                    "audio_conditioning_scale": scale,
+                    "audio_conditioning_adapter": getattr(args, "audio_conditioning_adapter", None),
+                    "prompt_compiler": getattr(args, "prompt_compiler", None),
+                    "compiler_meta": compiler_meta,
+                    "num_frames": args.num_frames,
+                    "tts_provider": args.tts_provider,
+                },
+            )
+            save_avatar_mp4(out, args.output, wav_path, args)
+            print(f"[imagine-i2v] muxed TTS audio speak_text={speak_text[:96]!r}")
+        finally:
+            if wav_is_temp:
+                maybe_unlink(wav_path)
         return
 
     pipe = load_avatar_pipeline(

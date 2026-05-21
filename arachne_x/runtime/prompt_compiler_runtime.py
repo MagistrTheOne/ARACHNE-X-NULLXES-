@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Any, Dict, Optional
 
 from arachne_x.inference_frames import audio_duration_sec
@@ -11,7 +12,26 @@ from arachne_x.prompt_compiler.compile import resolve_compiler_fallback
 
 
 def _infer_mode_for_compiler(mode: str) -> str:
-    return mode if mode in ("ai2v", "at2v", "streaming_ai2v", "t2v", "i2v", "vc", "avc") else "ai2v"
+    allowed = (
+        "ai2v",
+        "at2v",
+        "streaming_ai2v",
+        "t2v",
+        "i2v",
+        "vc",
+        "avc",
+        "audio_i2v",
+        "imagine_i2v",
+    )
+    return mode if mode in allowed else "ai2v"
+
+
+def resolve_imagine_compiler_backend(args: argparse.Namespace) -> str:
+    """Default Gemma for imagine_i2v when CLI/env compiler not set."""
+    if getattr(args, "prompt_compiler", None):
+        return resolve_compiler_backend(args.prompt_compiler)
+    env_default = (os.environ.get("ARACHNE_IMAGINE_PROMPT_COMPILER") or "gemma").strip().lower()
+    return resolve_compiler_backend(env_default)
 
 
 def apply_prompt_compiler(
@@ -70,6 +90,7 @@ def apply_prompt_compiler(
         "compiler_latency_ms": plan.compiler_latency_ms,
         "prompt_chars_before": chars_before,
         "prompt_chars_after": len(plan.positive_prompt),
+        "source_user_text": plan.source_user_text,
     }
 
 

@@ -4,7 +4,17 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 CompilerBackend = Literal["off", "openai", "gemma"]
-AvatarInferMode = Literal["ai2v", "at2v", "streaming_ai2v", "t2v", "i2v", "vc", "avc"]
+AvatarInferMode = Literal[
+    "ai2v",
+    "at2v",
+    "streaming_ai2v",
+    "t2v",
+    "i2v",
+    "vc",
+    "avc",
+    "audio_i2v",
+    "imagine_i2v",
+]
 
 
 @dataclass(frozen=True)
