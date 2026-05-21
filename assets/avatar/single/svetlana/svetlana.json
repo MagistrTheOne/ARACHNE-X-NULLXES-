@@ -14,7 +14,7 @@
     "identity_bank_path": "assets/avatar/single/svetlana/Svetlana.pt",
     "identity_id": 0,
     "identity_strength": 1.0,
-    "note": "Digitization: ai2v on merged avatar runtime (NOT VIDEO audio_i2v). Try identity_id 0 or 1 if bank was enrolled with another slot."
+    "note": "Digitization: ai2v on arachne-avatar-runtime. Svetlana.pt failed zip read on pod — run without bank: USE_IDENTITY_BANK=0. Re-enroll with enroll_identity if needed."
   },
   "_arachne_x_infer_smoke": {
     "resolution": "480p",

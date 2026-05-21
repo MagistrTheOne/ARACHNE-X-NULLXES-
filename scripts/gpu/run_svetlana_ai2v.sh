@@ -7,6 +7,7 @@ NULLXES_CHECKPOINT_DIR="${NULLXES_CHECKPOINT_DIR:-$ARACHNE_ROOT/weights/arachne-
 PRESET="${PRESET:-assets/avatar/single/svetlana/svetlana.json}"
 OUTPUT="${OUTPUT:-output/svetlana_ai2v.mp4}"
 IDENTITY_ID="${IDENTITY_ID:-0}"
+USE_IDENTITY_BANK="${USE_IDENTITY_BANK:-1}"
 SMOKE="${SMOKE:-0}"
 
 cd "$ARACHNE_ROOT"
@@ -42,14 +43,30 @@ IMAGE="$(python -c "import json; print(json.load(open('$PRESET'))['cond_image'])
 AUDIO="$(python -c "import json; print(json.load(open('$PRESET'))['cond_audio'])")"
 PROMPT="$(python -c "import json; print(json.load(open('$PRESET'))['prompt'])")"
 NEG="$(python -c "import json; print(json.load(open('$PRESET'))['negative_prompt'])")"
-BANK="$(python -c "import json; print(json.load(open('$PRESET'))['_arachne_x_infer']['identity_bank_path'])")"
+BANK="$(python -c "import json; print(json.load(open('$PRESET'))['_arachne_x_infer'].get('identity_bank_path',''))")"
 
-for f in "$IMAGE" "$AUDIO" "$BANK"; do
+for f in "$IMAGE" "$AUDIO"; do
   if [[ ! -f "$f" ]]; then
     echo "missing file: $f" >&2
     exit 1
   fi
 done
+
+IDENTITY_ARGS=()
+if [[ "$USE_IDENTITY_BANK" == "1" && -n "$BANK" && -f "$BANK" ]]; then
+  if python - <<PY
+import torch
+torch.load("$BANK", map_location="cpu")
+PY
+  then
+    IDENTITY_ARGS=(--identity_bank_path "$BANK" --identity_id "$IDENTITY_ID" --identity_strength 1.0)
+    echo "identity_bank OK: $BANK"
+  else
+    echo "WARN: identity bank unreadable, continuing without bank: $BANK" >&2
+  fi
+else
+  echo "identity_bank skipped (USE_IDENTITY_BANK=$USE_IDENTITY_BANK)"
+fi
 
 EXTRA=()
 if [[ "$SMOKE" == "1" ]]; then
@@ -65,9 +82,7 @@ python scripts/infer.py \
   --audio "$AUDIO" \
   --prompt "$PROMPT" \
   --negative_prompt "$NEG" \
-  --identity_bank_path "$BANK" \
-  --identity_id "$IDENTITY_ID" \
-  --identity_strength 1.0 \
+  "${IDENTITY_ARGS[@]}" \
   "${EXTRA[@]}" \
   --output "$OUTPUT"
 
