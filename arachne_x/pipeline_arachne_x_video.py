@@ -27,6 +27,34 @@ def torch_gc():
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
 
+
+def release_modules_for_denoise(
+    pipe: "LongCatVideoPipeline",
+    *,
+    keep_text_encoder: bool = False,
+) -> None:
+    """Move modules not needed during DiT sampling off GPU."""
+    if not keep_text_encoder and pipe.text_encoder is not None:
+        pipe.text_encoder = pipe.text_encoder.to("cpu", non_blocking=True)
+    if pipe.vae is not None:
+        pipe.vae = pipe.vae.to("cpu", non_blocking=True)
+    gc.collect()
+    torch_gc()
+    loguru.logger.info(
+        "[vram] released text_encoder={} vae=True for denoise",
+        not keep_text_encoder,
+    )
+
+
+def restore_modules_after_denoise(pipe: "LongCatVideoPipeline") -> None:
+    device = pipe.device
+    if pipe.vae is not None:
+        pipe.vae = pipe.vae.to(device, non_blocking=True)
+    if pipe.text_encoder is not None:
+        pipe.text_encoder = pipe.text_encoder.to(device, non_blocking=True)
+    gc.collect()
+    torch_gc()
+
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
 def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"

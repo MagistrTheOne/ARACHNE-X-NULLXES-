@@ -7,6 +7,7 @@ Does not modify avatar / Elena / production runtime paths.
 
 from __future__ import annotations
 
+import gc
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import loguru
@@ -22,7 +23,7 @@ from .modules.audio_conditioning import (
     encode_wav2vec_audio,
     load_audio_conditioning_adapter,
 )
-from .pipeline_arachne_x_video import LongCatVideoPipeline
+from .pipeline_arachne_x_video import LongCatVideoPipeline, release_modules_for_denoise, restore_modules_after_denoise, torch_gc
 
 
 class AudioConditionedI2VPipeline(LongCatVideoPipeline):
@@ -238,6 +239,16 @@ class AudioConditionedI2VPipeline(LongCatVideoPipeline):
         audio_null = torch.zeros_like(audio_emb)
         do_audio_cfg = self.audio_conditioning_scale > 1.0
 
+        release_modules_for_denoise(self)
+        if self.audio_encoder_runtime is not None:
+            self.audio_encoder_runtime.audio_encoder = self.audio_encoder_runtime.audio_encoder.to(
+                "cpu", non_blocking=True
+            )
+            self.audio_encoder_runtime.device = "cpu"
+            gc.collect()
+            torch_gc()
+            loguru.logger.info("[vram] released wav2vec runtime for denoise")
+
         if context_parallel_util.get_cp_size() > 1:
             torch.distributed.barrier(group=context_parallel_util.get_cp_group())
 
@@ -338,6 +349,7 @@ class AudioConditionedI2VPipeline(LongCatVideoPipeline):
         if output_type == "latent":
             return latents
 
+        restore_modules_after_denoise(self)
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         output_video = self.vae.decode(latents, return_dict=False)[0]
