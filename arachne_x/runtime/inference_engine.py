@@ -32,6 +32,7 @@ from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 from arachne_x.tts import create_speech_synthesizer
 from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
 from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
+from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler
 from arachne_x.weights_resolve import resolve_weights_root
 
 
@@ -191,6 +192,9 @@ def write_run_metadata(
     }
     if frame_budget:
         payload["frame_budget"] = frame_budget
+    compiler_meta = getattr(args, "_prompt_compiler_meta", None)
+    if compiler_meta:
+        payload["prompt_compiler"] = compiler_meta
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -335,6 +339,9 @@ def execute_infer(args: argparse.Namespace) -> None:
     )
 
     if args.mode in ("t2v", "i2v", "vc"):
+        args._prompt_compiler_meta = apply_prompt_compiler(args)
+
+    if args.mode in ("t2v", "i2v", "vc"):
         pipe = load_base_pipeline(checkpoint_dir, device=device, torch_dtype=torch_dtype)
 
         if args.mode == "t2v":
@@ -435,6 +442,7 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.image:
             raise ValueError("--image is required for ai2v / streaming_ai2v")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
         frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
         emb_fps = resolved_embedding_fps(args, pipe)
         image = load_image(args.image)
@@ -514,6 +522,7 @@ def execute_infer(args: argparse.Namespace) -> None:
 
     if args.mode == "at2v":
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
         frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
         emb_fps = resolved_embedding_fps(args, pipe)
         try:
@@ -553,6 +562,7 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.video:
             raise ValueError("--video is required for avc")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
         frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
         emb_fps = resolved_embedding_fps(args, pipe)
         try:

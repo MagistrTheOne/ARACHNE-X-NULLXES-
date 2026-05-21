@@ -132,6 +132,8 @@ def generate_frames_numpy(
     image_bytes: bytes,
     prompt: str,
     audio_f32: np.ndarray,
+    negative_prompt: str = "",
+    prompt_compiler: Optional[str] = None,
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
@@ -142,8 +144,18 @@ def generate_frames_numpy(
 
     if audio_f32.size == 0:
         raise ValueError("audio_f32 is empty")
+    from arachne_x.runtime.prompt_compiler_runtime import compile_prompt_for_job
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    audio_dur = float(audio_f32.size) / 16000.0 if audio_f32.size > 0 else None
+    compiled_pos, compiled_neg = compile_prompt_for_job(
+        prompt or "A person speaking clearly to camera.",
+        negative_prompt=negative_prompt,
+        mode="streaming_ai2v",
+        audio_duration_sec=audio_dur,
+        compiler=prompt_compiler,
+    )
 
     def audio_stream():
         for c in audio_chunks_from_f32(audio_f32):
@@ -154,7 +166,7 @@ def generate_frames_numpy(
     with _lock:
         for frame in pipe.generate_streaming_ai2v(
             image=img,
-            prompt=prompt or "A person speaking clearly to camera.",
+            prompt=compiled_pos,
             audio_stream=audio_stream(),
             resolution=resolution if resolution in ("480p", "720p") else "480p",
             num_frames=int(num_frames),
@@ -175,6 +187,7 @@ def stream_avatar_frames_raw_sync(
     prompt: str,
     audio_f32: np.ndarray,
     negative_prompt: str = "",
+    prompt_compiler: Optional[str] = None,
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
@@ -183,11 +196,20 @@ def stream_avatar_frames_raw_sync(
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from PIL import Image
 
-    del negative_prompt
+    from arachne_x.runtime.prompt_compiler_runtime import compile_prompt_for_job
+
     if audio_f32.size == 0:
         raise ValueError("audio_f32 is empty")
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    audio_dur = float(audio_f32.size) / 16000.0
+    compiled_pos, _compiled_neg = compile_prompt_for_job(
+        prompt or "A person speaking clearly to camera.",
+        negative_prompt=negative_prompt,
+        mode="streaming_ai2v",
+        audio_duration_sec=audio_dur,
+        compiler=prompt_compiler,
+    )
 
     def audio_stream():
         for c in audio_chunks_from_f32(audio_f32):
@@ -198,7 +220,7 @@ def stream_avatar_frames_raw_sync(
     with _lock:
         for frame in pipe.generate_streaming_ai2v(
             image=img,
-            prompt=prompt or "A person speaking clearly to camera.",
+            prompt=compiled_pos,
             audio_stream=audio_stream(),
             resolution=resolution if resolution in ("480p", "720p") else "480p",
             num_frames=int(num_frames),
@@ -222,6 +244,9 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
     if task not in ("audio-image-to-video", "audio-text-to-video"):
         raise RuntimeError(f"in-process GPU path does not support task={task!r}")
     prompt = str(job.get("prompt") or "")
+    prompt_compiler = _job_get(job, "promptCompiler", "prompt_compiler", default=None)
+    if prompt_compiler is not None:
+        prompt_compiler = str(prompt_compiler).strip().lower() or None
     image_path = job.get("image_path")
     audio_path = job.get("audio_path")
     if not image_path or not os.path.isfile(str(image_path)):
@@ -243,6 +268,7 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
         image_bytes=image_bytes,
         prompt=prompt,
         audio_f32=audio_f32,
+        prompt_compiler=prompt_compiler,
         num_inference_steps=num_inference_steps,
         text_guidance_scale=text_guidance_scale,
         audio_guidance_scale=audio_guidance_scale,

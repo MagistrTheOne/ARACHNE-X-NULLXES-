@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Optional
+
+import torch
+
+from arachne_x.prompt_compiler.templates import is_chinese_text, merge_avatar_defaults
+
+logger = logging.getLogger(__name__)
+
+_gemma_model = None
+_gemma_tokenizer = None
+_gemma_model_id: Optional[str] = None
+
+GEMMA_AVATAR_SYS_EN = (
+    "You rewrite short user intents into detailed video scene descriptions for "
+    "audio-driven talking-head avatar generation. Requirements: "
+    "1) The subject faces the camera and speaks with accurate lip sync. "
+    "2) Static camera, fixed framing, no zoom or pan. "
+    "3) Describe only visible actions and appearance; no speculation. "
+    "4) Output English only, 80-180 words, no quotes around the whole answer."
+)
+
+GEMMA_AVATAR_SYS_ZH = (
+    "将用户的简短意图改写为适合音频驱动数字人视频生成的画面描述。"
+    "要求：人物面向镜头说话、口型同步；固定机位、镜头不移动；"
+    "只描述可见内容；输出中文，80-180字，不要加引号包裹全文。"
+)
+
+
+def _gemma_model_path() -> str:
+    return (os.environ.get("ARACHNE_GEMMA_MODEL") or "google/gemma-2-2b-it").strip()
+
+
+def _load_gemma():
+    global _gemma_model, _gemma_tokenizer, _gemma_model_id
+    model_id = _gemma_model_path()
+    if _gemma_model is not None and _gemma_tokenizer is not None and _gemma_model_id == model_id:
+        return _gemma_model, _gemma_tokenizer
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Gemma prompt compiler requires CUDA (RunPod GPU path).")
+
+    dtype = torch.bfloat16
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=dtype,
+        device_map="auto",
+    )
+    model.eval()
+    _gemma_model = model
+    _gemma_tokenizer = tokenizer
+    _gemma_model_id = model_id
+    logger.info("prompt_compiler gemma loaded model_id=%s", model_id)
+    return model, tokenizer
+
+
+def expand_with_gemma(
+    user_text: str,
+    *,
+    mode: str,
+    locale: str = "auto",
+    max_new_tokens: int = 256,
+) -> tuple[str, float]:
+    """RunPod path: local Gemma instruction expansion."""
+    t0 = time.perf_counter()
+    text = (user_text or "").strip()
+    if not text:
+        return "", (time.perf_counter() - t0) * 1000.0
+
+    model, tokenizer = _load_gemma()
+    use_zh = locale == "zh" or (locale == "auto" and is_chinese_text(text))
+    sys_prompt = GEMMA_AVATAR_SYS_ZH if use_zh else GEMMA_AVATAR_SYS_EN
+
+    if hasattr(tokenizer, "apply_chat_template"):
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": text},
+        ]
+        prompt_ids = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+    else:
+        prompt_ids = tokenizer(
+            f"{sys_prompt}\n\nUser: {text}\n\nAssistant:",
+            return_tensors="pt",
+        ).input_ids
+
+    device = next(model.parameters()).device
+    prompt_ids = prompt_ids.to(device)
+    with torch.inference_mode():
+        out = model.generate(
+            prompt_ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    new_tokens = out[0, prompt_ids.shape[-1] :]
+    expanded = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+    pos, _ = merge_avatar_defaults(expanded, "", mode=mode, locale=locale)
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    logger.info(
+        "prompt_compiler gemma mode=%s latency_ms=%.1f chars_in=%d chars_out=%d",
+        mode,
+        latency_ms,
+        len(text),
+        len(pos),
+    )
+    return pos, latency_ms

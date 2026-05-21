@@ -217,6 +217,11 @@ class LongCatVideoAvatarPipeline:
             self.identity_tokens_per_id * self.identity_token_dim,
         )
         nn.init.normal_(self.identity_embedding.weight, mean=0.0, std=0.02)
+
+        # Phase B: optional planning tokens (before identity bank); disabled by default.
+        self.planning_enabled = False
+        self.planning_tokens_count = 4
+        self._planning_token_head: Optional[nn.Module] = None
         latent_dim = int(getattr(self.vae.config, "z_dim", 16))
         self.identity_latent_projector = nn.Sequential(
             nn.Linear(latent_dim, self.identity_token_dim),
@@ -705,6 +710,207 @@ class LongCatVideoAvatarPipeline:
             prompt_attention_mask,
             negative_prompt_embeds,
             negative_prompt_attention_mask,
+        )
+
+    def _get_planning_token_head(self) -> nn.Module:
+        if self._planning_token_head is None:
+            from arachne_x.planning.planning_token_head import PlanningTokenHead
+
+            self._planning_token_head = PlanningTokenHead(
+                d_model=self.identity_token_dim,
+                n_tokens=self.planning_tokens_count,
+            ).to(device=self.device, dtype=self.dit.dtype)
+        return self._planning_token_head
+
+    def try_load_planning_head(self, checkpoint_dir: str) -> bool:
+        """Load ``planning/planning_head.safetensors`` when present; enables planning."""
+        path = os.path.join(checkpoint_dir, "planning", "planning_head.safetensors")
+        if not os.path.isfile(path):
+            return False
+        try:
+            from safetensors.torch import load_file
+
+            head = self._get_planning_token_head()
+            state = load_file(path, device=str(self.device))
+            head.load_state_dict(state, strict=False)
+            self.planning_enabled = True
+            loguru.logger.info("Planning token head loaded from {}", path)
+            return True
+        except Exception as exc:
+            loguru.logger.warning("Failed to load planning head from {}: {}", path, exc)
+            return False
+
+    def _append_planning_tokens(
+        self,
+        prompt_embeds: torch.Tensor,
+        prompt_attention_mask: torch.Tensor,
+        negative_prompt_embeds: Optional[torch.Tensor],
+        negative_prompt_attention_mask: Optional[torch.Tensor],
+        *,
+        audio_duration_sec: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if not self.planning_enabled or self.planning_tokens_count <= 0:
+            return (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            )
+
+        pooled = prompt_embeds.mean(dim=2).squeeze(1)
+        bsz = pooled.shape[0]
+        dur = float(audio_duration_sec or 0.0)
+        audio_stats = torch.tensor(
+            [[dur, dur / max(bsz, 1), 0.0, 0.0]] * bsz,
+            device=pooled.device,
+            dtype=pooled.dtype,
+        )
+        head = self._get_planning_token_head()
+        plan_tokens = head(pooled, audio_stats).unsqueeze(1)
+        plan_mask = torch.ones(
+            (plan_tokens.shape[0], plan_tokens.shape[2]),
+            dtype=prompt_attention_mask.dtype,
+            device=prompt_attention_mask.device,
+        )
+        prompt_embeds = torch.cat([plan_tokens, prompt_embeds], dim=2)
+        prompt_attention_mask = torch.cat([plan_mask, prompt_attention_mask], dim=1)
+
+        if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
+            neg_tokens = torch.zeros_like(plan_tokens)
+            neg_mask = torch.zeros_like(plan_mask)
+            negative_prompt_embeds = torch.cat([neg_tokens, negative_prompt_embeds], dim=2)
+            negative_prompt_attention_mask = torch.cat([neg_mask, negative_prompt_attention_mask], dim=1)
+
+        self.metrics.record("planning_tokens_appended", int(self.planning_tokens_count))
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        )
+
+    def _encode_prompt_with_avatar_tokens(
+        self,
+        *,
+        prompt: Union[str, List[str]],
+        negative_prompt: Optional[Union[str, List[str]]],
+        batch_size: int,
+        num_videos_per_prompt: int,
+        max_sequence_length: int,
+        dit_dtype: torch.dtype,
+        device: torch.device,
+        identity_id: Optional[Union[int, List[int], torch.Tensor]],
+        identity_strength: float,
+        identity_negative_strength: float,
+        audio_duration_sec: Optional[float] = None,
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        int,
+        int,
+    ]:
+        """UMT5 encode → planning tokens (optional) → identity tokens (optional)."""
+        identity_token_count = (
+            self.identity_tokens_per_id
+            if self.identity_bank_enabled and identity_id is not None
+            else 0
+        )
+        planning_token_count = (
+            self.planning_tokens_count if self.planning_enabled else 0
+        )
+
+        if context_parallel_util.get_cp_rank() == 0:
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                do_classifier_free_guidance=self.do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                max_sequence_length=max_sequence_length,
+                dtype=dit_dtype,
+                device=device,
+            )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_planning_tokens(
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+                audio_duration_sec=audio_duration_sec,
+            )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_identity_tokens(
+                prompt_embeds=prompt_embeds,
+                prompt_attention_mask=prompt_attention_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_attention_mask=negative_prompt_attention_mask,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                batch_size=batch_size,
+                num_videos_per_prompt=num_videos_per_prompt,
+            )
+            if context_parallel_util.get_cp_size() > 1:
+                context_parallel_util.cp_broadcast(prompt_embeds)
+                context_parallel_util.cp_broadcast(prompt_attention_mask)
+                if self.do_classifier_free_guidance:
+                    context_parallel_util.cp_broadcast(negative_prompt_embeds)
+                    context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
+        elif context_parallel_util.get_cp_size() > 1:
+            caption_channels = self.text_encoder.config.d_model
+            prompt_seq_len = max_sequence_length + planning_token_count + identity_token_count
+            effective_batch_size = batch_size * num_videos_per_prompt
+            prompt_embeds = torch.zeros(
+                [effective_batch_size, 1, prompt_seq_len, caption_channels],
+                dtype=dit_dtype,
+                device=device,
+            )
+            prompt_attention_mask = torch.zeros(
+                [effective_batch_size, prompt_seq_len],
+                dtype=torch.int64,
+                device=device,
+            )
+            context_parallel_util.cp_broadcast(prompt_embeds)
+            context_parallel_util.cp_broadcast(prompt_attention_mask)
+            negative_prompt_embeds = None
+            negative_prompt_attention_mask = None
+            if self.do_classifier_free_guidance:
+                negative_prompt_embeds = torch.zeros(
+                    [effective_batch_size, 1, prompt_seq_len, caption_channels],
+                    dtype=dit_dtype,
+                    device=device,
+                )
+                negative_prompt_attention_mask = torch.zeros(
+                    [effective_batch_size, prompt_seq_len],
+                    dtype=torch.int64,
+                    device=device,
+                )
+                context_parallel_util.cp_broadcast(negative_prompt_embeds)
+                context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
+        else:
+            raise RuntimeError("Unexpected context-parallel rank layout")
+
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+            planning_token_count,
+            identity_token_count,
         )
 
     @torch.no_grad()
@@ -1580,10 +1786,13 @@ class LongCatVideoAvatarPipeline:
         cache_dir = getattr(self, 'audio_cache_dir', './audio_cache')
         os.makedirs(cache_dir, exist_ok=True)
 
+        from arachne_x.modules.audio.nullxes_audio_encoder import resolve_audio_encoder_backend
+
         phoneme_scale_tag = str(round(float(self.phoneme_stream_scale), 4)).replace(".", "p")
+        enc_tag = resolve_audio_encoder_backend()
         key = (
             sha256_of_audio_array(np.ascontiguousarray(speech_array))
-            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_v2"
+            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_enc{enc_tag}_v3"
         )
         cache_path = os.path.join(cache_dir, key + '.npz')
 
@@ -1601,29 +1810,16 @@ class LongCatVideoAvatarPipeline:
             except Exception as exc:
                 loguru.logger.debug("Audio cache load failed; recomputing. Error: {}", exc)
 
-        audio_duration = len(speech_array) / sample_rate
-        video_length = audio_duration * fps
+        from arachne_x.modules.audio.nullxes_audio_encoder import encode_avatar_audio
 
-        # speech preprocess
-        speech_array = self._loudness_norm(speech_array, sample_rate)
-        if not getattr(self, "skip_audio_noise_floor", False):
-            speech_array = self._add_noise_floor(speech_array)
-        speech_array = self._smooth_transients(speech_array)
-
-        # wav2vec_feature_extractor
-        audio_feature = np.squeeze(
-            self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
+        speech_pre = np.ascontiguousarray(speech_array)
+        audio_emb = encode_avatar_audio(
+            self,
+            speech_pre,
+            fps=fps,
+            device=device,
+            sample_rate=sample_rate,
         )
-        audio_feature = torch.from_numpy(audio_feature).float().to(device=device)
-        audio_feature = audio_feature.unsqueeze(0)
-
-        # audio embedding
-        with self.metrics.timeit('wav2vec_encode'):
-            embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
-
-        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
-        audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
-
 
         # try to compute fused multi-stream features and persist to cache
         try:
@@ -2241,62 +2437,32 @@ class LongCatVideoAvatarPipeline:
 
         # 3. Encode inputs
         dit_dtype = self.dit.dtype
-        identity_token_count = (
-            self.identity_tokens_per_id
-            if self.identity_bank_enabled and identity_id is not None
-            else 0
+        audio_duration_sec = None
+        if audio_emb is not None and hasattr(audio_emb, "shape"):
+            try:
+                audio_duration_sec = float(audio_emb.shape[0]) / 32.0
+            except Exception:
+                audio_duration_sec = None
+        (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+            _planning_token_count,
+            _identity_token_count,
+        ) = self._encode_prompt_with_avatar_tokens(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            dit_dtype=dit_dtype,
+            device=device,
+            identity_id=identity_id,
+            identity_strength=identity_strength,
+            identity_negative_strength=identity_negative_strength,
+            audio_duration_sec=audio_duration_sec,
         )
-
-        if context_parallel_util.get_cp_rank() == 0:
-            (
-                prompt_embeds, 
-                prompt_attention_mask, 
-                negative_prompt_embeds, 
-                negative_prompt_attention_mask,
-            ) = self.encode_prompt(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=max_sequence_length,
-                dtype=dit_dtype,
-                device=device,
-            )
-            (
-                prompt_embeds,
-                prompt_attention_mask,
-                negative_prompt_embeds,
-                negative_prompt_attention_mask,
-            ) = self._append_identity_tokens(
-                prompt_embeds=prompt_embeds,
-                prompt_attention_mask=prompt_attention_mask,
-                negative_prompt_embeds=negative_prompt_embeds,
-                negative_prompt_attention_mask=negative_prompt_attention_mask,
-                identity_id=identity_id,
-                identity_strength=identity_strength,
-                identity_negative_strength=identity_negative_strength,
-                batch_size=batch_size,
-                num_videos_per_prompt=num_videos_per_prompt,
-            )
-            if context_parallel_util.get_cp_size() > 1:
-                context_parallel_util.cp_broadcast(prompt_embeds)
-                context_parallel_util.cp_broadcast(prompt_attention_mask)
-                if self.do_classifier_free_guidance:
-                    context_parallel_util.cp_broadcast(negative_prompt_embeds)
-                    context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
-        elif context_parallel_util.get_cp_size() > 1:
-            caption_channels = self.text_encoder.config.d_model
-            prompt_seq_len = max_sequence_length + identity_token_count
-            effective_batch_size = batch_size * num_videos_per_prompt
-            prompt_embeds = torch.zeros([effective_batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
-            prompt_attention_mask = torch.zeros([effective_batch_size, prompt_seq_len], dtype=torch.int64, device=device)
-            context_parallel_util.cp_broadcast(prompt_embeds)
-            context_parallel_util.cp_broadcast(prompt_attention_mask)
-            if self.do_classifier_free_guidance:
-                negative_prompt_embeds = torch.zeros([effective_batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
-                negative_prompt_attention_mask = torch.zeros([effective_batch_size, prompt_seq_len], dtype=torch.int64, device=device)
-                context_parallel_util.cp_broadcast(negative_prompt_embeds)
-                context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
         audio_base_embs = self._prepare_audio_emb_for_dit(
             audio_emb,

@@ -135,6 +135,25 @@ The Behavior Layer **never** writes to avatar runtime; it sends `(audio chunks, 
 
 ---
 
+## 4.5 Prompt Intelligence Layer
+
+`arachne_x/prompt_compiler/` — LTX-style **instruction** step before frozen UMT5 (not a DiT adapter).
+
+| Backend | Deployment | Role |
+|---------|------------|------|
+| `openai` | Production | Expand short intent via OpenAI (`prompt_enhancer`, `force=True`) |
+| `gemma` | RunPod calibration | Local `ARACHNE_GEMMA_MODEL` on CUDA |
+| `off` | Default | Passthrough + avatar template merge (lipsync, static camera, negative guard) |
+
+Wiring: `inference_engine.apply_prompt_compiler` → `encode_prompt` → identity tokens → DiT.  
+See [`Documentation/PROMPT_COMPILER.md`](Documentation/PROMPT_COMPILER.md).
+
+**Phase B (planning tokens):** `arachne_x/planning/planning_token_head.py` — optional extra cross-attn tokens; disabled by default (`planning_enabled=False`).
+
+**Phase C (audio plate):** `arachne_x/modules/audio/nullxes_audio_encoder.py` — shape-compatible wav2vec replacement; `ARACHNE_AUDIO_ENCODER=nullxes|wav2vec`.
+
+---
+
 ## 5. Runtime
 
 `arachne_x/runtime/inference_engine.py`, `arachne_x/runtime/avatar_serving.py`, `arachne_x/streaming_inference.py`, `scripts/infer.py`.

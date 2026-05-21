@@ -106,11 +106,11 @@ def is_chinese_prompt(string):
 
 ### I2V prompt enhancer
 
-def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3):
+def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3, force: bool = False):
     """
     Enhance a prompt used for text-2-video
     """
-    if not PROMPT_ENHANCER_ENABLED:
+    if not force and not PROMPT_ENHANCER_ENABLED:
         logger.info("Prompt enhancer disabled: ARACHNE_PROMPT_ENHANCER_ENABLED=0.")
         return prompt
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -159,11 +159,11 @@ def enhance_prompt_i2v(image_path: str, prompt: str, retry_times: int = 3):
 
     return prompt
 
-def enhance_prompt_t2v(prompt: str, retry_times: int = 3):
+def enhance_prompt_t2v(prompt: str, retry_times: int = 3, force: bool = False):
     """
     Enhance a prompt used for text-2-video
     """
-    if not PROMPT_ENHANCER_ENABLED:
+    if not force and not PROMPT_ENHANCER_ENABLED:
         logger.info("Prompt enhancer disabled: ARACHNE_PROMPT_ENHANCER_ENABLED=0.")
         return prompt
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()

@@ -135,6 +135,8 @@ def load_avatar_pipeline(
         wav2vec_feature_extractor=wav2vec_feature_extractor,
     )
     pipe.to(device)
+    if hasattr(pipe, "try_load_planning_head"):
+        pipe.try_load_planning_head(checkpoint_dir)
     return pipe
 
 

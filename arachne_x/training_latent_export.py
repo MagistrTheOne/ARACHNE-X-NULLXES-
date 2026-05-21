@@ -25,6 +25,7 @@ def build_avatar_latent_training_sample(
     audio_path: str,
     prompt: str,
     negative_prompt: str = "",
+    compiled_prompt: Optional[str] = None,
     resolution: str = "480p",
     num_frames: int = 93,
     seed: Optional[int] = None,
@@ -52,8 +53,9 @@ def build_avatar_latent_training_sample(
         nf = adj
 
     dit_dtype = pipe.dit.dtype
+    encode_prompt_text = (compiled_prompt or prompt).strip()
     prompt_embeds, prompt_attention_mask, _, _ = pipe.encode_prompt(
-        prompt=prompt,
+        prompt=encode_prompt_text,
         negative_prompt=negative_prompt,
         do_classifier_free_guidance=False,
         num_videos_per_prompt=1,
@@ -126,6 +128,9 @@ def export_avatar_latent_training_pt(
     prompt: str,
     output_path: str,
     negative_prompt: str = "",
+    compiled_prompt: Optional[str] = None,
+    prompt_compiler: Optional[str] = None,
+    image_path: Optional[str] = None,
     resolution: str = "480p",
     num_frames: int = 93,
     seed: Optional[int] = None,
@@ -141,12 +146,32 @@ def export_avatar_latent_training_pt(
     """
     import os
 
+    from arachne_x.inference_frames import audio_duration_sec
+    from arachne_x.prompt_compiler import compile_avatar_turn, resolve_compiler_backend
+
+    effective_compiled = compiled_prompt
+    if effective_compiled is None and prompt_compiler:
+        backend = resolve_compiler_backend(prompt_compiler)
+        if backend != "off":
+            dur = audio_duration_sec(audio_path)
+            plan = compile_avatar_turn(
+                prompt,
+                mode="ai2v",
+                image_path=image_path,
+                audio_duration_sec=dur,
+                backend=backend,
+                negative_prompt=negative_prompt,
+            )
+            effective_compiled = plan.positive_prompt
+            negative_prompt = plan.negative_prompt
+
     sample = build_avatar_latent_training_sample(
         pipe,
         image=image,
         audio_path=audio_path,
         prompt=prompt,
         negative_prompt=negative_prompt,
+        compiled_prompt=effective_compiled,
         resolution=resolution,
         num_frames=num_frames,
         seed=seed,
