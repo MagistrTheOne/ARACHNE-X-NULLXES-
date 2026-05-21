@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -59,11 +60,14 @@ def _load_gemma():
         raise RuntimeError("Gemma prompt compiler requires CUDA (RunPod GPU path).")
 
     dtype = torch.bfloat16
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model_path = Path(model_id)
+    local_only = model_path.is_dir() and (model_path / "config.json").is_file()
+    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_only)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=dtype,
         device_map="auto",
+        local_files_only=local_only,
     )
     model.eval()
     _gemma_model = model
