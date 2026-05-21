@@ -6,8 +6,7 @@ ARACHNE_ROOT="${ARACHNE_ROOT:-/workspace/ARACHNE-X}"
 NULLXES_CHECKPOINT_DIR="${NULLXES_CHECKPOINT_DIR:-$ARACHNE_ROOT/weights/arachne-avatar-runtime}"
 PRESET="${PRESET:-assets/avatar/single/svetlana/svetlana.json}"
 OUTPUT="${OUTPUT:-output/svetlana_ai2v.mp4}"
-IDENTITY_ID="${IDENTITY_ID:-0}"
-USE_IDENTITY_BANK="${USE_IDENTITY_BANK:-1}"
+IDENTITY_ID="${IDENTITY_ID:-1}"
 SMOKE="${SMOKE:-0}"
 
 cd "$ARACHNE_ROOT"
@@ -43,7 +42,28 @@ IMAGE="$(python -c "import json; print(json.load(open('$PRESET'))['cond_image'])
 AUDIO="$(python -c "import json; print(json.load(open('$PRESET'))['cond_audio'])")"
 PROMPT="$(python -c "import json; print(json.load(open('$PRESET'))['prompt'])")"
 NEG="$(python -c "import json; print(json.load(open('$PRESET'))['negative_prompt'])")"
-BANK="$(python -c "import json; print(json.load(open('$PRESET'))['_arachne_x_infer'].get('identity_bank_path',''))")"
+BANK="$(python -c "import json; print(json.load(open('$PRESET'))['_arachne_x_infer']['identity_bank_path'])")"
+
+if [[ -f "$BANK" ]]; then
+  if ! python - <<PY
+import sys, torch
+path = "$BANK"
+try:
+    p = torch.load(path, map_location="cpu")
+    assert "identity_embedding" in p
+    print("identity bank OK:", path, tuple(p["identity_embedding"].shape))
+except Exception as e:
+    print("INVALID", path, e, file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    echo "WARN: corrupt bank $BANK — ai2v without identity (or run enroll script)" >&2
+    BANK=""
+  fi
+else
+  echo "WARN: no bank at $BANK — run scripts/gpu/run_svetlana_enroll_and_ai2v.sh" >&2
+  BANK=""
+fi
 
 for f in "$IMAGE" "$AUDIO"; do
   if [[ ! -f "$f" ]]; then
@@ -51,21 +71,9 @@ for f in "$IMAGE" "$AUDIO"; do
     exit 1
   fi
 done
-
-IDENTITY_ARGS=()
-if [[ "$USE_IDENTITY_BANK" == "1" && -n "$BANK" && -f "$BANK" ]]; then
-  if python - <<PY
-import torch
-torch.load("$BANK", map_location="cpu")
-PY
-  then
-    IDENTITY_ARGS=(--identity_bank_path "$BANK" --identity_id "$IDENTITY_ID" --identity_strength 1.0)
-    echo "identity_bank OK: $BANK"
-  else
-    echo "WARN: identity bank unreadable, continuing without bank: $BANK" >&2
-  fi
-else
-  echo "identity_bank skipped (USE_IDENTITY_BANK=$USE_IDENTITY_BANK)"
+if [[ -n "$BANK" && ! -f "$BANK" ]]; then
+  echo "missing bank: $BANK" >&2
+  exit 1
 fi
 
 EXTRA=()
@@ -82,7 +90,9 @@ python scripts/infer.py \
   --audio "$AUDIO" \
   --prompt "$PROMPT" \
   --negative_prompt "$NEG" \
-  "${IDENTITY_ARGS[@]}" \
+  ${BANK:+--identity_bank_path "$BANK"} \
+  ${BANK:+--identity_id "$IDENTITY_ID"} \
+  ${BANK:+--identity_strength 1.0} \
   "${EXTRA[@]}" \
   --output "$OUTPUT"
 
