@@ -24,6 +24,12 @@ GEMMA_AVATAR_SYS_EN = (
     "4) Output English only, 80-180 words, no quotes around the whole answer."
 )
 
+GEMMA_AVATAR_SYS_ZH = (
+    "将用户简短意图改写为音频驱动数字人说话视频的画面描述。"
+    "人物面向镜头、口型与语音同步；固定机位无推拉摇移；"
+    "只描述可见动作与外观；中文80-180字，整段回答不加引号。"
+)
+
 GEMMA_IMAGINE_SYS_EN = (
     "You rewrite short user intents into detailed image-to-video scene descriptions. "
     "The clip includes synchronized speech and ambient context implied by the user. "
@@ -87,11 +93,10 @@ def expand_with_gemma(
     else:
         sys_prompt = GEMMA_AVATAR_SYS_ZH if use_zh else GEMMA_AVATAR_SYS_EN
 
+    # Gemma-2 chat templates reject {"role": "system"} — fold instructions into user turn.
+    user_content = f"{sys_prompt.strip()}\n\n{text.strip()}"
     if hasattr(tokenizer, "apply_chat_template"):
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": text},
-        ]
+        messages = [{"role": "user", "content": user_content}]
         prompt_ids = tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -99,7 +104,7 @@ def expand_with_gemma(
         )
     else:
         prompt_ids = tokenizer(
-            f"{sys_prompt}\n\nUser: {text}\n\nAssistant:",
+            f"{user_content}\n\nAssistant:",
             return_tensors="pt",
         ).input_ids
 
