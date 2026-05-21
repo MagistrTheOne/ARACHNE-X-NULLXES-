@@ -33,6 +33,7 @@ from arachne_x.tts import create_speech_synthesizer
 from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
 from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
+from arachne_x.prompt_compiler.gemma_backend import release_gemma_compiler
 from arachne_x.weights_resolve import resolve_weights_root
 
 
@@ -269,6 +270,10 @@ def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
     fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="arachne_tts_")
     os.close(fd)
     synth.synthesize_to_path(speak, tmp_path)
+    if prov == "qwen":
+        from arachne_x.tts.qwen import release_qwen_tts_cache
+
+        release_qwen_tts_cache()
     return tmp_path, True
 
 
@@ -377,7 +382,10 @@ def execute_infer(args: argparse.Namespace) -> None:
             args._imagine_source_prompt = (args.prompt or "").strip()
             if getattr(args, "prompt_compiler", None) is None:
                 args.prompt_compiler = resolve_imagine_compiler_backend(args)
-        args._prompt_compiler_meta = apply_prompt_compiler(args)
+        try:
+            args._prompt_compiler_meta = apply_prompt_compiler(args)
+        finally:
+            release_gemma_compiler()
 
     if args.mode in ("t2v", "i2v", "vc"):
         pipe = load_base_pipeline(checkpoint_dir, device=device, torch_dtype=torch_dtype)

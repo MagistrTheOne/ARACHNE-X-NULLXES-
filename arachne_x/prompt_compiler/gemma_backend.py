@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import time
@@ -77,6 +78,30 @@ def _load_gemma():
     return model, tokenizer
 
 
+def release_gemma_compiler() -> None:
+    """Drop cached Gemma weights so VIDEO/AVATAR DiT can use full GPU memory."""
+    global _gemma_model, _gemma_tokenizer, _gemma_model_id
+    if _gemma_model is None and _gemma_tokenizer is None:
+        return
+    del _gemma_model
+    del _gemma_tokenizer
+    _gemma_model = None
+    _gemma_tokenizer = None
+    _gemma_model_id = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logger.info("prompt_compiler gemma released gpu cache")
+
+
+def _keep_gemma_loaded() -> bool:
+    return (os.environ.get("ARACHNE_GEMMA_KEEP_LOADED") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def expand_with_gemma(
     user_text: str,
     *,
@@ -132,4 +157,6 @@ def expand_with_gemma(
         len(text),
         len(pos),
     )
+    if not _keep_gemma_loaded():
+        release_gemma_compiler()
     return pos, latency_ms

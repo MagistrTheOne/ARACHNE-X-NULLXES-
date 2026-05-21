@@ -97,3 +97,14 @@ class Qwen3CustomVoiceSynthesizer:
         if hasattr(wav0, "cpu"):
             wav0 = wav0.cpu().numpy()
         sf.write(wav_path, wav0, int(sr))
+
+
+def release_qwen_tts_cache() -> None:
+    """Drop cached Qwen TTS weights before loading VIDEO DiT."""
+    if Qwen3CustomVoiceSynthesizer._model_cache:
+        Qwen3CustomVoiceSynthesizer._model_cache.clear()
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
