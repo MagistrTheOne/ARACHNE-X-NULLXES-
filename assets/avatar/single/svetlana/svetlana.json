@@ -1,0 +1,26 @@
+{
+  "prompt": "SVETLANA, ultra realistic professional woman, speaking naturally straight to camera, stable identity, precise audio-driven lipsync, cinematic portrait lighting, photorealistic skin, minimal head movement, high temporal consistency, corporate HR style",
+  "negative_prompt": "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth, mismatched lip sync, lips out of sync",
+  "cond_image": "assets/avatar/single/svetlana/sveta.jpg",
+  "cond_audio": "assets/avatar/single/svetlana/audio.wav",
+  "_arachne_x_infer": {
+    "mode": "ai2v",
+    "checkpoint_dir": "/workspace/ARACHNE-X/weights/arachne-avatar-runtime",
+    "resolution": "720p",
+    "num_frames_mode": "sync",
+    "num_inference_steps": 35,
+    "text_guidance_scale": 4.0,
+    "audio_guidance_scale": 5.5,
+    "identity_bank_path": "assets/avatar/single/svetlana/Svetlana.pt",
+    "identity_id": 0,
+    "identity_strength": 1.0,
+    "note": "Digitization: ai2v on merged avatar runtime (NOT VIDEO audio_i2v). Try identity_id 0 or 1 if bank was enrolled with another slot."
+  },
+  "_arachne_x_infer_smoke": {
+    "resolution": "480p",
+    "num_frames": 17,
+    "num_inference_steps": 2,
+    "text_guidance_scale": 3.0,
+    "audio_guidance_scale": 3.0
+  }
+}
