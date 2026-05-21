@@ -27,6 +27,8 @@ class AudioConditionedVideoDiTWrapper(nn.Module):
         super().__init__()
         self.base_dit = base_dit
         self.adapter = adapter
+        self._cached_audio_hidden_states: Optional[torch.Tensor] = None
+        self._cached_audio_n_t: Optional[int] = None
 
     @property
     def config(self):
@@ -44,6 +46,10 @@ class AudioConditionedVideoDiTWrapper(nn.Module):
     def dtype(self):
         return next(self.base_dit.parameters()).dtype
 
+    def clear_audio_hidden_state_cache(self) -> None:
+        self._cached_audio_hidden_states = None
+        self._cached_audio_n_t = None
+
     def _prepare_audio_hidden_states(
         self,
         audio_embs: torch.Tensor,
@@ -51,7 +57,15 @@ class AudioConditionedVideoDiTWrapper(nn.Module):
     ) -> torch.Tensor:
         if self.adapter is None:
             raise RuntimeError("audio_embs provided but adapter is None")
+        if (
+            self._cached_audio_hidden_states is not None
+            and self._cached_audio_n_t == n_t
+            and self._cached_audio_hidden_states.shape[0] >= n_t
+        ):
+            return self._cached_audio_hidden_states[-n_t:]
         projected = self.adapter.project_audio_embs(audio_embs)
+        self._cached_audio_hidden_states = projected
+        self._cached_audio_n_t = n_t
         return projected[-n_t:]
 
     def forward(
@@ -70,6 +84,7 @@ class AudioConditionedVideoDiTWrapper(nn.Module):
     ):
         use_audio = (
             self.adapter is not None
+            and self.adapter.has_active_injection()
             and audio_embs is not None
             and float(audio_conditioning_scale) != 0.0
             and not skip_crs_attn

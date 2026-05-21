@@ -129,6 +129,15 @@ class AudioConditioningAdapter(nn.Module):
     def block_indices(self) -> Tuple[int, ...]:
         return self.config.block_indices
 
+    def is_noop(self) -> bool:
+        """True when all injection gates are zero (fresh / untrained adapter)."""
+        if not self.blocks:
+            return True
+        return all(float(block.gate.detach().abs().cpu()) == 0.0 for block in self.blocks.values())
+
+    def has_active_injection(self) -> bool:
+        return not self.is_noop()
+
     def project_audio_embs(
         self,
         audio_embs: torch.Tensor,
@@ -188,6 +197,8 @@ class AudioConditioningAdapter(nn.Module):
         if key not in self.blocks:
             return hidden_states
         block = self.blocks[key]
+        if float(block.gate.detach().abs().cpu()) == 0.0:
+            return hidden_states
         delta_block = block(hidden_states, audio_hidden_states, latent_shape, num_cond_latents)
         if scale == 1.0:
             return delta_block

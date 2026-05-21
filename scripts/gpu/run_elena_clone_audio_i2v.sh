@@ -24,6 +24,7 @@ export ARACHNE_AVATAR_CKPT="$AVATAR_CKPT"
 export ARACHNE_GEMMA_MODEL="${ARACHNE_GEMMA_MODEL:-$ARACHNE_ROOT/weights/hf/gemma-2-2b-it}"
 export PYTHONPATH="$ARACHNE_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export ARACHNE_SEQUENTIAL_CFG="${ARACHNE_SEQUENTIAL_CFG:-1}"
 mkdir -p output
 
 if [[ ! -f "$AUDIO" ]]; then

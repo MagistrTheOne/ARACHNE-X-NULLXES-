@@ -53,12 +53,38 @@ def test_inject_block_missing_index_is_identity():
     assert torch.allclose(out, hidden)
 
 
+def test_adapter_is_noop_by_default():
+    adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24, 26)))
+    assert adapter.is_noop()
+    assert not adapter.has_active_injection()
+
+
 def test_inject_block_scale_one_runs():
     adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24,)))
     hidden = torch.randn(1, 13 * 64, 4096)
     audio_tokens = torch.randn(13, 32, 768)
     out = adapter.inject_block(24, hidden, audio_tokens, (13, 8, 8), 1, scale=1.0)
     assert out.shape == hidden.shape
+    assert torch.allclose(out, hidden)
+
+
+def test_wrapped_dit_delegates_when_adapter_noop():
+    class _FakeBase(torch.nn.Module):
+        def forward(self, hidden_states, **kwargs):
+            return hidden_states + 2.0
+
+    base = _FakeBase()
+    adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24,)))
+    wrapper = AudioConditionedVideoDiTWrapper(base, adapter)
+    x = torch.randn(1, 16, 13, 8, 8)
+    out = wrapper(
+        hidden_states=x,
+        timestep=torch.zeros(1),
+        encoder_hidden_states=torch.zeros(1, 1, 4, 4096),
+        audio_embs=torch.randn(1, 13, 5, 12, 768),
+        audio_conditioning_scale=1.0,
+    )
+    assert torch.allclose(out, x + 2.0)
 
 
 def test_save_load_roundtrip():

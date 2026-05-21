@@ -23,7 +23,13 @@ from .modules.audio_conditioning import (
     encode_wav2vec_audio,
     load_audio_conditioning_adapter,
 )
-from .pipeline_arachne_x_video import LongCatVideoPipeline, release_modules_for_denoise, restore_modules_after_denoise, torch_gc
+from .pipeline_arachne_x_video import (
+    LongCatVideoPipeline,
+    release_modules_for_denoise,
+    restore_modules_after_denoise,
+    should_use_sequential_cfg,
+    torch_gc,
+)
 
 
 class AudioConditionedI2VPipeline(LongCatVideoPipeline):
@@ -140,11 +146,16 @@ class AudioConditionedI2VPipeline(LongCatVideoPipeline):
 
         self.audio_conditioning_scale = float(audio_conditioning_scale)
         loguru.logger.info(
-            "[audio-i2v] scale={} frames={} adapter_blocks={}",
+            "[audio-i2v] scale={} frames={} adapter_blocks={} adapter_active={}",
             self.audio_conditioning_scale,
             num_frames,
             tuple(self.audio_adapter.block_indices) if self.audio_adapter else (),
+            self.audio_adapter.has_active_injection() if self.audio_adapter else False,
         )
+        if self.audio_adapter is not None and not self.audio_adapter.has_active_injection():
+            loguru.logger.warning(
+                "[audio-i2v] adapter gates=0 (untrained); DiT uses base forward (identical to scale=0)"
+            )
 
         scale_factor_spatial = self.vae_scale_factor_spatial * 2
         if self.dit.cp_split_hw is not None:
@@ -254,11 +265,16 @@ class AudioConditionedI2VPipeline(LongCatVideoPipeline):
 
         dit_forward = self._dit_wrapper
         assert dit_forward is not None
+        dit_forward.clear_audio_hidden_state_cache()
 
         pos_prompt_embeds = prompt_embeds[-batch_size:] if self.do_classifier_free_guidance else prompt_embeds
         pos_prompt_mask = prompt_attention_mask[-batch_size:] if self.do_classifier_free_guidance else prompt_attention_mask
         neg_prompt_embeds = prompt_embeds[:batch_size] if self.do_classifier_free_guidance else prompt_embeds
         neg_prompt_mask = prompt_attention_mask[:batch_size] if self.do_classifier_free_guidance else prompt_attention_mask
+
+        sequential_cfg = should_use_sequential_cfg(device)
+        if sequential_cfg:
+            loguru.logger.info("[vram] sequential CFG enabled for audio_i2v denoise")
 
         with tqdm(total=len(timesteps), desc="Denoising (audio_i2v)") as progress_bar:
             for i, t in enumerate(timesteps):
@@ -304,27 +320,54 @@ class AudioConditionedI2VPipeline(LongCatVideoPipeline):
                         + self.audio_conditioning_scale * (noise_pred_audio - noise_pred_text)
                     )
                 elif self.do_classifier_free_guidance:
-                    latent_model_input = torch.cat([latents, latents], dim=0)
-                    timestep = t.expand(latent_model_input.shape[0]).to(dit_dtype)
-                    timestep = timestep.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
-                    timestep[:, :1] = 0
-                    noise_pred = dit_forward(
-                        hidden_states=latent_model_input,
-                        timestep=timestep,
-                        encoder_hidden_states=prompt_embeds,
-                        encoder_attention_mask=prompt_attention_mask,
-                        num_cond_latents=1,
-                        audio_embs=torch.cat([audio_emb, audio_emb], dim=0),
-                        audio_conditioning_scale=self.audio_conditioning_scale,
-                    )
-                    noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-                    b = noise_pred_cond.shape[0]
-                    positive = noise_pred_cond.reshape(b, -1)
-                    negative = noise_pred_uncond.reshape(b, -1)
-                    st_star = self.optimized_scale(positive, negative).view(b, 1, 1, 1)
-                    noise_pred = noise_pred_uncond * st_star + text_guidance_scale * (
-                        noise_pred_cond - noise_pred_uncond * st_star
-                    )
+                    if sequential_cfg:
+                        noise_pred_uncond = dit_forward(
+                            hidden_states=latents,
+                            timestep=timestep_base,
+                            encoder_hidden_states=neg_prompt_embeds,
+                            encoder_attention_mask=neg_prompt_mask,
+                            num_cond_latents=1,
+                            audio_embs=audio_emb,
+                            audio_conditioning_scale=self.audio_conditioning_scale,
+                        )
+                        noise_pred_cond = dit_forward(
+                            hidden_states=latents,
+                            timestep=timestep_base,
+                            encoder_hidden_states=pos_prompt_embeds,
+                            encoder_attention_mask=pos_prompt_mask,
+                            num_cond_latents=1,
+                            audio_embs=audio_emb,
+                            audio_conditioning_scale=self.audio_conditioning_scale,
+                        )
+                        b = noise_pred_cond.shape[0]
+                        positive = noise_pred_cond.reshape(b, -1)
+                        negative = noise_pred_uncond.reshape(b, -1)
+                        st_star = self.optimized_scale(positive, negative).view(b, 1, 1, 1)
+                        noise_pred = noise_pred_uncond * st_star + text_guidance_scale * (
+                            noise_pred_cond - noise_pred_uncond * st_star
+                        )
+                    else:
+                        latent_model_input = torch.cat([latents, latents], dim=0)
+                        timestep = t.expand(latent_model_input.shape[0]).to(dit_dtype)
+                        timestep = timestep.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
+                        timestep[:, :1] = 0
+                        noise_pred = dit_forward(
+                            hidden_states=latent_model_input,
+                            timestep=timestep,
+                            encoder_hidden_states=prompt_embeds,
+                            encoder_attention_mask=prompt_attention_mask,
+                            num_cond_latents=1,
+                            audio_embs=torch.cat([audio_emb, audio_emb], dim=0),
+                            audio_conditioning_scale=self.audio_conditioning_scale,
+                        )
+                        noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                        b = noise_pred_cond.shape[0]
+                        positive = noise_pred_cond.reshape(b, -1)
+                        negative = noise_pred_uncond.reshape(b, -1)
+                        st_star = self.optimized_scale(positive, negative).view(b, 1, 1, 1)
+                        noise_pred = noise_pred_uncond * st_star + text_guidance_scale * (
+                            noise_pred_cond - noise_pred_uncond * st_star
+                        )
                 else:
                     noise_pred = dit_forward(
                         hidden_states=latents,
