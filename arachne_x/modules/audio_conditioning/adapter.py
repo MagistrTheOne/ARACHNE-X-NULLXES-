@@ -184,9 +184,10 @@ class AudioConditioningAdapter(nn.Module):
     ) -> torch.Tensor:
         if scale == 0.0:
             return hidden_states
-        block = self.blocks.get(str(block_index))
-        if block is None:
+        key = str(block_index)
+        if key not in self.blocks:
             return hidden_states
+        block = self.blocks[key]
         delta_block = block(hidden_states, audio_hidden_states, latent_shape, num_cond_latents)
         if scale == 1.0:
             return delta_block

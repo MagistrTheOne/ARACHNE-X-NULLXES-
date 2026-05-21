@@ -45,6 +45,22 @@ def test_inject_block_scale_zero_is_identity():
     assert torch.allclose(out, hidden)
 
 
+def test_inject_block_missing_index_is_identity():
+    adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24,)))
+    hidden = torch.randn(1, 13 * 64, 4096)
+    audio_tokens = torch.randn(13, 32, 768)
+    out = adapter.inject_block(25, hidden, audio_tokens, (13, 8, 8), 1, scale=1.0)
+    assert torch.allclose(out, hidden)
+
+
+def test_inject_block_scale_one_runs():
+    adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24,)))
+    hidden = torch.randn(1, 13 * 64, 4096)
+    audio_tokens = torch.randn(13, 32, 768)
+    out = adapter.inject_block(24, hidden, audio_tokens, (13, 8, 8), 1, scale=1.0)
+    assert out.shape == hidden.shape
+
+
 def test_save_load_roundtrip():
     adapter = AudioConditioningAdapter(AudioConditioningAdapterConfig(block_indices=(24, 26)))
     with tempfile.TemporaryDirectory() as tmp:
