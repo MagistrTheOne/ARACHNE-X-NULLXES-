@@ -81,6 +81,8 @@ Streaming overload policy (env on worker): `ARACHNE_STREAM_MAX_ACTIVE_JOBS=1`, `
 
 Multi-worker routing (orchestrator): `NULLXES_AVATAR_WORKER_URLS=url1,url2` → `hash(session_id) % N` via `src/server/avatar_worker_router.py`.
 
+Incremental wav2vec (TTFF): `ARACHNE_INCREMENTAL_WAV2VEC=1` (default) — partial encode (~400ms prefix) before chunk-0 denoise; full encode before chunk 1+. Tune via `ARACHNE_INCREMENTAL_WAV2VEC_MIN_MS`.
+
 ---
 
 ## 1. Foundation DiT

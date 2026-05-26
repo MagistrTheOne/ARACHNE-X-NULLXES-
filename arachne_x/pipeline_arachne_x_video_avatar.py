@@ -1610,6 +1610,7 @@ class ArachneXVideoAvatarPipeline(
         yield_frames: bool = False,
         use_kv_cross_chunk: Optional[bool] = None,
         kv_keep_last: int = 24,
+        incremental_audio: Optional[Any] = None,
     ):
         """
         Chunked ai2v: multiple ``generate_ai2v`` passes with pixel-space stitch (Sampling OS wedge).
@@ -1626,7 +1627,7 @@ class ArachneXVideoAvatarPipeline(
         )
         from arachne_x.inference_frames import normalize_ai2v_video_output, round_to_4n_plus_1
 
-        if audio_emb is None:
+        if incremental_audio is None and audio_emb is None:
             raise ValueError("generate_chunked_ai2v requires pre-built `audio_emb` for full clip.")
 
         total_frames = int(num_frames)
@@ -1634,22 +1635,24 @@ class ArachneXVideoAvatarPipeline(
             total_frames = total_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
         total_frames = max(total_frames, 1)
 
-        if not torch.is_tensor(audio_emb):
-            audio_emb = torch.as_tensor(audio_emb)
-        if audio_emb.dim() == 3:
-            full_prepared = self._prepare_audio_emb_for_dit(
-                audio_emb,
-                num_frames=total_frames,
-                batch_size=1,
-                num_videos_per_prompt=1,
-                device=self.device,
-            )
-        elif audio_emb.dim() >= 5:
-            full_prepared = audio_emb
-            if full_prepared.shape[1] < total_frames:
-                total_frames = int(full_prepared.shape[1])
-        else:
-            raise ValueError(f"Unsupported audio_emb shape for chunked ai2v: {tuple(audio_emb.shape)}")
+        full_prepared = None
+        if incremental_audio is None:
+            if not torch.is_tensor(audio_emb):
+                audio_emb = torch.as_tensor(audio_emb)
+            if audio_emb.dim() == 3:
+                full_prepared = self._prepare_audio_emb_for_dit(
+                    audio_emb,
+                    num_frames=total_frames,
+                    batch_size=1,
+                    num_videos_per_prompt=1,
+                    device=self.device,
+                )
+            elif audio_emb.dim() >= 5:
+                full_prepared = audio_emb
+                if full_prepared.shape[1] < total_frames:
+                    total_frames = int(full_prepared.shape[1])
+            else:
+                raise ValueError(f"Unsupported audio_emb shape for chunked ai2v: {tuple(audio_emb.shape)}")
 
         rsm = getattr(self, "runtime_sampling_metrics", None)
         if rsm is not None:
@@ -1706,7 +1709,7 @@ class ArachneXVideoAvatarPipeline(
         if context_parallel_util.get_cp_rank() == 0:
             loguru.logger.info(
                 "Chunked AI2V start: frames={} chunk_frames={} first_chunk_frames={} overlap={} steps={} distill={} kv_cross_chunk={} "
-                "identity_id={}",
+                "identity_id={} incremental_wav2vec={}",
                 total_frames,
                 int(chunk_frames),
                 first_chunk_frames,
@@ -1715,13 +1718,17 @@ class ArachneXVideoAvatarPipeline(
                 use_distill_flag,
                 use_kv_cross_chunk,
                 identity_id,
+                incremental_audio is not None,
             )
 
         for start, end, n_chunk in _iter_realtime_chunk_ranges():
             if chunk_idx == 0:
                 self.kv_cache_dict = None
             n_gen = round_to_4n_plus_1(n_chunk)
-            audio_slice = slice_audio_emb_temporal(full_prepared, start, min(end, full_prepared.shape[1]))
+            if incremental_audio is not None:
+                audio_slice = incremental_audio.chunk_slice(chunk_idx, start, end, n_gen)
+            else:
+                audio_slice = slice_audio_emb_temporal(full_prepared, start, min(end, full_prepared.shape[1]))
             if audio_slice.shape[1] < n_gen:
                 n_gen = int(audio_slice.shape[1])
                 n_gen = round_to_4n_plus_1(max(1, n_gen))
@@ -1897,39 +1904,61 @@ class ArachneXVideoAvatarPipeline(
         
         device = self.device
         
+        incremental_audio = None
         # 1. Resolve audio embedding.
         if audio_emb is None:
             if audio_stream is None:
                 raise ValueError("Either `audio_stream` or `audio_emb` must be provided.")
 
-            audio_chunks = []
-            sample_rate = 16000
-            for chunk in audio_stream:
-                if chunk is None:
-                    continue
-                audio_chunks.append(np.asarray(chunk, dtype=np.float32))
+            from arachne_x.inference_audio import (
+                IncrementalStreamingAudioEmb,
+                drain_audio_stream,
+                incremental_wav2vec_enabled,
+            )
 
-            if not audio_chunks:
-                raise ValueError("`audio_stream` yielded no chunks.")
-
-            full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
-            audio_stride = max(int(self.vae_scale_factor_temporal), 1)
-            emb_fps = getattr(self, "inference_embedding_fps", None)
-            if emb_fps is None:
-                emb_fps = 16 * audio_stride
+            if incremental_wav2vec_enabled():
+                full_audio = drain_audio_stream(audio_stream)
+                incremental_audio = IncrementalStreamingAudioEmb(
+                    self,
+                    full_audio,
+                    num_frames=num_frames,
+                    first_chunk_frames=first_chunk_frames,
+                    device=device,
+                )
+                if context_parallel_util.get_cp_rank() == 0:
+                    loguru.logger.info(
+                        "Streaming AI2V incremental wav2vec enabled metrics={}",
+                        incremental_audio.metrics_snapshot(),
+                    )
             else:
-                emb_fps = float(emb_fps)
-            full_audio_emb = self.get_audio_embedding(
-                full_audio,
-                fps=emb_fps,
-                device=device,
-                sample_rate=sample_rate,
-            )
-            audio_emb = self._build_windowed_audio_embedding(
-                full_audio_emb,
-                num_frames=num_frames,
-                device=device,
-            )
+                audio_chunks = []
+                sample_rate = 16000
+                for chunk in audio_stream:
+                    if chunk is None:
+                        continue
+                    audio_chunks.append(np.asarray(chunk, dtype=np.float32))
+
+                if not audio_chunks:
+                    raise ValueError("`audio_stream` yielded no chunks.")
+
+                full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
+                audio_stride = max(int(self.vae_scale_factor_temporal), 1)
+                emb_fps = getattr(self, "inference_embedding_fps", None)
+                if emb_fps is None:
+                    emb_fps = 16 * audio_stride
+                else:
+                    emb_fps = float(emb_fps)
+                full_audio_emb = self.get_audio_embedding(
+                    full_audio,
+                    fps=emb_fps,
+                    device=device,
+                    sample_rate=sample_rate,
+                )
+                audio_emb = self._build_windowed_audio_embedding(
+                    full_audio_emb,
+                    num_frames=num_frames,
+                    device=device,
+                )
         else:
             audio_emb = self._prepare_audio_emb_for_dit(
                 audio_emb,
@@ -1994,11 +2023,15 @@ class ArachneXVideoAvatarPipeline(
                 first_chunk_frames=first_chunk_frames,
                 chunk_overlap=chunk_overlap,
                 yield_frames=True,
+                incremental_audio=incremental_audio,
             ):
                 yield frame_np
             return
 
         # Legacy: monolithic denoise then stream VAE decode
+        if incremental_audio is not None:
+            incremental_audio._build_full()
+            audio_emb = incremental_audio._full_prepared
         rsm_stream = getattr(self, "runtime_sampling_metrics", None)
         if rsm_stream is not None:
             rsm_stream.streaming_mode = "legacy_monolithic"

@@ -23,6 +23,8 @@ class RuntimeSamplingMetrics:
     denoise_wall_sec: float = 0.0
     first_chunk_sec: Optional[float] = None
     ttff_sec: Optional[float] = None
+    wav2vec_partial_sec: Optional[float] = None
+    wav2vec_full_sec: Optional[float] = None
     silence_ratio: Optional[float] = None
     audio_guidance_scale_effective: Optional[float] = None
     identity_cosine_per_chunk: list[float] = field(default_factory=list)
@@ -70,4 +72,10 @@ class RuntimeSamplingMetrics:
             "denoise_wall_sec": round(self.denoise_wall_sec, 4),
             "first_chunk_sec": round(self.first_chunk_sec, 4) if self.first_chunk_sec is not None else None,
             "ttff_sec": round(self.ttff_sec, 4) if self.ttff_sec is not None else None,
+            "wav2vec_partial_sec": round(self.wav2vec_partial_sec, 4)
+            if self.wav2vec_partial_sec is not None
+            else None,
+            "wav2vec_full_sec": round(self.wav2vec_full_sec, 4)
+            if self.wav2vec_full_sec is not None
+            else None,
         }
