@@ -1,5 +1,30 @@
 """
 Auxiliary avatar loss runtime for LoRA training (VAE decode + frozen identity).
+
+GUARDRAIL — TRAINING-ONLY, EXPENSIVE PATH (read before importing):
+
+- This module is NOT part of the production realtime avatar serving path.
+  It must never be imported by ``arachne_x/runtime/avatar_serving.py``,
+  ``services/arachnex-worker/``, ``src/server/``, or any WebSocket / NDJSON
+  hot path. Realtime owner is
+  ``arachne_x/pipeline_arachne_x_video_avatar.py``.
+
+- :class:`AvatarAuxTrainingRuntime` is designed for ``scripts/train_lora_avatar.py``
+  Phase B+ auxiliary losses (perceptual / identity / lip-sync / region).
+  Every aux step can run:
+    * full VAE decode of estimated ``z0`` (frozen, but still expensive),
+    * frozen identity encoder forward (DINO/VGG-grade backbone),
+    * perceptual backbone forward.
+  These are O(decode) per batch and easily dominate VRAM/time budgets on
+  H200 — explicitly out of scope for realtime constraints.
+
+- Stage schedule (``AvatarAuxStageSchedule``) is training-step indexed and
+  does not make sense at inference time. Do not call ``compute_aux_loss``
+  outside the LoRA training loop.
+
+- Phoneme importance / mouth-mask defaults here are placeholders until real
+  phoneme alignment is wired in the training data path; treat them as
+  training scaffolding, not as production behavior.
 """
 
 from __future__ import annotations

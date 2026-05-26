@@ -1,6 +1,38 @@
 """
-ARACHNE-X Real-Time Streaming Inference Engine
-Production-grade streaming decoder, KV-cache, async audio, CUDA optimizations
+ARACHNE-X — prototype streaming utilities (NOT the production realtime avatar path).
+
+GUARDRAIL (read before editing or wiring this module into prod):
+
+- Source of truth for production realtime avatar serving is
+  ``arachne_x/pipeline_arachne_x_video_avatar.py`` (``generate_ai2v`` /
+  ``generate_chunked_ai2v`` / ``generate_streaming_ai2v``) and the runtime
+  driver in ``arachne_x/runtime/avatar_serving.py``.
+
+- ``RealtimeInferencePipeline.generate_streaming()`` in this file is NOT
+  true incremental streaming. It drains the supplied ``audio_stream``
+  generator into a single ``full_audio`` numpy buffer, then runs the full
+  DiT denoise loop, then frame-by-frame VAE decodes. TTFF is bounded by
+  full denoise, not by per-chunk emission. Operational chunked + first-chunk
+  TTFF behavior lives in ``generate_chunked_ai2v``, not here.
+
+- ``PersistentKVCache`` / ``StreamingAudioBuffer`` / ``RealtimeAudioEncoder`` /
+  ``DistilledSchedulerFast`` / ``QuantizationUtils`` are prototype scaffolds
+  and are intentionally NOT wired into the production avatar pipeline.
+  Do not start using them in production paths without an explicit design
+  review — DiT KV reuse is owned by the avatar pipeline (``kv_cache_dict``)
+  and ``arachne_x/runtime/chunk_kv.py``.
+
+- The two helpers below ARE still imported by the production avatar pipeline
+  and must stay behaviorally stable:
+
+    * ``StreamingVAEDecoder`` — frame-by-frame VAE decode helper, used by the
+      avatar pipeline's legacy monolithic streaming branch.
+    * ``CUDAOptimizer`` — flash-attn / TF32 / torch.compile / inference-mode
+      helpers, used in the avatar pipeline's ``__init__``.
+
+Editing policy: keep this file as a documented prototype zone. Do not rename,
+delete, or repurpose it without a follow-up that updates ``Claude_senior.md``
+and the RunPod playbook references.
 """
 
 import torch

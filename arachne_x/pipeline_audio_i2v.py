@@ -1,8 +1,24 @@
 """
-Experimental audio-conditioned I2V pipeline (lab only).
+Experimental audio-conditioned I2V pipeline (LAB ONLY — quarantine zone).
 
-Wraps frozen base VIDEO DiT with :class:`AudioConditionedVideoDiTWrapper`.
-Does not modify avatar / Elena / production runtime paths.
+GUARDRAIL (read before editing):
+
+- This module is NOT part of the production ARACHNE avatar realtime path.
+  Production avatar runtime lives in
+  ``arachne_x/pipeline_arachne_x_video_avatar.py`` (Elena/Katya/Svetlana
+  ``ai2v``/``streaming_ai2v`` flows) and is loaded via
+  ``arachne_x.loader.load_avatar_pipeline`` (see ``RUNPOD_H200_AVATAR_SETUP.md``).
+
+- This file wraps the frozen base VIDEO DiT with
+  :class:`AudioConditionedVideoDiTWrapper` for the experimental audio_i2v
+  lab track (``scripts/train_audio_conditioning_adapter.py``,
+  ``Documentation/AUDIO_CONDITIONED_I2V.md``). It does not touch the avatar
+  DiT, identity bank, hybrid mouth renderer, silence gate, chunked denoise,
+  or any other Sampling OS / Stability OS components.
+
+- Do not import this pipeline from production realtime serving code.
+  Do not promote it to the avatar runtime path without an explicit
+  architectural review and a documentation update.
 """
 
 from __future__ import annotations

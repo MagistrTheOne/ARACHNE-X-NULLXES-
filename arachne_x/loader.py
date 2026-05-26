@@ -1,3 +1,30 @@
+"""
+ARACHNE-X weights loader — pipeline factories for prod avatar / base VIDEO / lab i2v.
+
+OWNERSHIP (do not merge these into a single generic factory):
+
+- ``load_avatar_pipeline``  — PRODUCTION avatar realtime loader. Consumes the
+  merged runtime tree (``tokenizer`` / ``text_encoder`` / ``vae`` / ``scheduler``
+  from VIDEO weights + ``avatar_single`` / ``audio/wav2vec2`` from AVATAR
+  weights, see ``RUNPOD_H200_AVATAR_SETUP.md`` §2.4). Returns the
+  :class:`ArachneXVideoAvatarPipeline` used by ``scripts/infer.py`` and
+  ``arachne_x.runtime.avatar_serving`` for ``ai2v`` / ``streaming_ai2v``.
+
+- ``load_base_pipeline``    — Base VIDEO pipeline (T2V / I2V / VC / refine).
+  Used by ``Demo/*`` and base/LoRA training scripts. Not the avatar realtime
+  path, but shares the same VIDEO weights subset.
+
+- ``load_audio_i2v_pipeline`` — EXPERIMENTAL lab path. Wraps frozen base VIDEO
+  DiT with the audio-conditioning adapter from
+  ``arachne_x/pipeline_audio_i2v.py`` (quarantine zone — see that module's
+  docstring). Do NOT use as a substitute for ``load_avatar_pipeline`` in
+  production realtime serving.
+
+All ``from_pretrained`` calls use ``local_files_only=True``. Hub downloads are
+gated by ``arachne_x/weights_resolve.py`` and only fire when an explicit
+``--allow_hub_download`` CLI flag is set; this module never auto-downloads.
+"""
+
 from dataclasses import dataclass
 import logging
 import os
@@ -152,6 +179,11 @@ def load_avatar_pipeline(
     cp_split_hw: Optional[Tuple[int, int]] = None,
     layout: WeightsLayout = WeightsLayout(),
 ) -> ArachneXVideoAvatarPipeline:
+    """PRODUCTION avatar realtime loader (merged ARACHNE-X-ULTRA runtime tree).
+
+    Source of truth for ``ai2v`` / ``chunked_ai2v`` / ``streaming_ai2v``.
+    Do NOT substitute :func:`load_audio_i2v_pipeline` here — that is a lab path.
+    """
     tokenizer = AutoTokenizer.from_pretrained(
         _p(checkpoint_dir, layout.tokenizer),
         torch_dtype=torch_dtype,
@@ -217,7 +249,13 @@ def load_audio_i2v_pipeline(
     audio_adapter_path: Optional[str] = None,
 ) -> AudioConditionedI2VPipeline:
     """
-    Experimental audio-conditioned I2V over frozen VIDEO checkpoint.
+    EXPERIMENTAL audio-conditioned I2V over a frozen base VIDEO checkpoint
+    (LAB ONLY — quarantine zone, see ``arachne_x/pipeline_audio_i2v.py``).
+
+    This loader is NOT a drop-in replacement for :func:`load_avatar_pipeline`
+    and must not be wired into the production realtime avatar serving path.
+    It exists for the ``train_audio_conditioning_adapter.py`` / audio_i2v
+    research track only.
 
     Requires wav2vec weights in the runtime tree or ``ARACHNE_AVATAR_CKPT`` fallback.
     """
