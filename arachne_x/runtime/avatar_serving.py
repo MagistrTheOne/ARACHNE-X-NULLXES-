@@ -325,6 +325,7 @@ def stream_avatar_frames_raw_sync(
     mouth_mask_base64: Optional[str] = None,
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from PIL import Image
+    import time
 
     from arachne_x.runtime.prompt_compiler_runtime import compile_prompt_for_job
 
@@ -365,6 +366,22 @@ def stream_avatar_frames_raw_sync(
                 yield c
 
     seq = 0
+    stream_start = time.perf_counter()
+    first_frame_logged = False
+    logger.info(
+        "avatar_frames stream start profile=%s mode=streaming_ai2v resolution=%s frames=%s steps=%s "
+        "chunked=%s chunk_frames=%s chunk_overlap=%s distill=%s audio_samples=%s identity_id=%s",
+        getattr(samp, "_sampling_profile_name", None),
+        samp.resolution,
+        int(samp.num_frames),
+        int(samp.num_inference_steps),
+        bool(samp.use_chunked_denoise),
+        int(samp.chunk_frames),
+        int(samp.chunk_overlap),
+        bool(samp.use_distill),
+        int(audio_f32.size),
+        identity_id,
+    )
     with _lock:
         for frame in pipe.generate_streaming_ai2v(
             image=img,
@@ -390,6 +407,16 @@ def stream_avatar_frames_raw_sync(
                 continue
             h, w, _c = arr.shape
             raw = np.ascontiguousarray(arr).tobytes()
+            if not first_frame_logged:
+                first_frame_logged = True
+                elapsed = time.perf_counter() - stream_start
+                sampling = getattr(pipe, "runtime_sampling_metrics", None)
+                logger.info(
+                    "avatar_frames first_frame seq=%s ttff_sec=%.4f sampling=%s",
+                    seq,
+                    elapsed,
+                    sampling.to_dict() if sampling is not None else None,
+                )
             yield seq, raw, int(w), int(h)
 
 

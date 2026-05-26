@@ -256,6 +256,7 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
         else:
             raise ValueError("audioPcm16Base64 or audioFloat32Base64 is required")
         t0_ns = time.monotonic_ns()
+        first_line_logged = False
         for seq, frame_bytes, w, h in stream_avatar_frames_raw_sync(
             image_bytes=img,
             prompt=body.prompt,
@@ -277,6 +278,16 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
         ):
             # Use monotonic clock to timestamp frames for sync downstream.
             ts_ms = int((time.monotonic_ns() - t0_ns) / 1_000_000)
+            if not first_line_logged:
+                first_line_logged = True
+                logger.info(
+                    "avatar_frames ndjson_first_line session_id=%s seq=%s ttff_ms=%s width=%s height=%s",
+                    body.sessionId,
+                    seq,
+                    ts_ms,
+                    w,
+                    h,
+                )
             frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
             line = (
                 json.dumps(

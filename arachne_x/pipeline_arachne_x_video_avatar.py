@@ -2555,7 +2555,7 @@ class LongCatVideoAvatarPipeline:
                     latents=latents[:, :, :1],
                     momentum=identity_update_momentum,
                 )
-                if identity_token_count > 0:
+                if _identity_token_count > 0:
                     prompt_embeds, negative_prompt_embeds = self._refresh_identity_tokens(
                         prompt_embeds=prompt_embeds,
                         negative_prompt_embeds=negative_prompt_embeds,
@@ -3280,6 +3280,7 @@ class LongCatVideoAvatarPipeline:
 
         rsm = getattr(self, "runtime_sampling_metrics", None)
         if rsm is not None:
+            rsm.streaming_mode = "chunked_ai2v"
             rsm.frames_total = total_frames
             rsm.cfg_passes_per_step = 4 if emotion_id and float(emotion_guidance_scale) > 0 else 3
 
@@ -3297,6 +3298,18 @@ class LongCatVideoAvatarPipeline:
         drift_mon = IdentityDriftMonitor()
         next_refresh_identity = True
         next_audio_scale = float(audio_guidance_scale)
+        if context_parallel_util.get_cp_rank() == 0:
+            loguru.logger.info(
+                "Chunked AI2V start: frames={} chunk_frames={} overlap={} steps={} distill={} kv_cross_chunk={} "
+                "identity_id={}",
+                total_frames,
+                int(chunk_frames),
+                int(chunk_overlap),
+                int(num_inference_steps),
+                use_distill_flag,
+                use_kv_cross_chunk,
+                identity_id,
+            )
 
         for start, end, n_chunk in iter_chunk_frame_ranges(total_frames, chunk_frames, chunk_overlap):
             if chunk_idx == 0:
@@ -3351,13 +3364,32 @@ class LongCatVideoAvatarPipeline:
             )
 
             if rsm is not None:
-                rsm.add_denoise_elapsed(time.perf_counter() - t0)
+                chunk_elapsed = time.perf_counter() - t0
+                rsm.add_denoise_elapsed(chunk_elapsed)
+                if chunk_idx == 0:
+                    rsm.mark_first_chunk_done(chunk_elapsed)
                 rsm.chunk_count += 1
                 rsm.frames_per_chunk.append(int(out.shape[0]))
                 drift_dict = drift_mon.to_dict()
                 rsm.identity_cosine_per_chunk = drift_dict.get("identity_cosine_per_chunk", [])
                 rsm.identity_drift_min = drift_dict.get("identity_drift_min")
                 rsm.corrective_actions = drift_dict.get("corrective_actions", [])
+            else:
+                chunk_elapsed = time.perf_counter() - t0
+
+            if context_parallel_util.get_cp_rank() == 0:
+                loguru.logger.info(
+                    "Chunked AI2V chunk_done idx={} range={}..{} frames={} elapsed_sec={:.4f} "
+                    "reuse_kv={} drift_cosine={:.4f} next_audio_scale={:.4f}",
+                    chunk_idx,
+                    start,
+                    end,
+                    int(out.shape[0]),
+                    chunk_elapsed,
+                    reuse_kv,
+                    float(cos),
+                    next_audio_scale,
+                )
 
             chunk_videos.append(out)
             if use_kv_cross_chunk:
@@ -3377,6 +3409,8 @@ class LongCatVideoAvatarPipeline:
                 for fi in range(out.shape[0]):
                     if rsm is not None:
                         rsm.mark_first_frame_emit()
+                        if fi == 0 and chunk_idx == 1 and context_parallel_util.get_cp_rank() == 0:
+                            loguru.logger.info("Chunked AI2V first_frame_emit metrics={}", rsm.to_dict())
                     yield out[fi]
 
         if yield_frames:
@@ -3512,6 +3546,18 @@ class LongCatVideoAvatarPipeline:
             use_distill_flag = bool(num_inference_steps <= 16)
 
         if use_chunked and int(num_frames) > int(chunk_frames):
+            rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+            if rsm_stream is not None:
+                rsm_stream.streaming_mode = "chunked_ai2v"
+            if context_parallel_util.get_cp_rank() == 0:
+                loguru.logger.info(
+                    "Streaming AI2V selected chunked path frames={} chunk_frames={} overlap={} steps={} distill={}",
+                    int(num_frames),
+                    int(chunk_frames),
+                    int(chunk_overlap),
+                    int(num_inference_steps),
+                    use_distill_flag,
+                )
             for frame_np in self.generate_chunked_ai2v(
                 image=image,
                 prompt=prompt,
@@ -3542,6 +3588,20 @@ class LongCatVideoAvatarPipeline:
             return
 
         # Legacy: monolithic denoise then stream VAE decode
+        rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+        if rsm_stream is not None:
+            rsm_stream.streaming_mode = "legacy_monolithic"
+        if context_parallel_util.get_cp_rank() == 0:
+            loguru.logger.warning(
+                "Streaming AI2V selected legacy monolithic path frames={} chunk_frames={} chunked={} legacy_env={} "
+                "steps={} distill={}; TTFF waits for full denoise before first frame.",
+                int(num_frames),
+                int(chunk_frames),
+                use_chunked,
+                legacy_streaming,
+                int(num_inference_steps),
+                use_distill_flag,
+            )
         latents = self.generate_ai2v(
             image=image,
             prompt=prompt,
@@ -3622,6 +3682,9 @@ class LongCatVideoAvatarPipeline:
 
             frame_np = (frame_tensor[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
             frame_times.append(time.time() - frame_time)
+            rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+            if rsm_stream is not None:
+                rsm_stream.mark_first_frame_emit()
             yield frame_np
         
         # 4. Log performance

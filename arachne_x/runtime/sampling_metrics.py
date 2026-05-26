@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 @dataclass
 class RuntimeSamplingMetrics:
     runtime_profile: Optional[str] = None
+    streaming_mode: Optional[str] = None
     dit_forwards: int = 0
     cfg_passes_per_step: int = 3
     chunk_count: int = 0
@@ -20,6 +21,7 @@ class RuntimeSamplingMetrics:
     kv_cache_hits: int = 0
     cross_chunk_kv_frames: int = 0
     denoise_wall_sec: float = 0.0
+    first_chunk_sec: Optional[float] = None
     ttff_sec: Optional[float] = None
     silence_ratio: Optional[float] = None
     audio_guidance_scale_effective: Optional[float] = None
@@ -38,6 +40,10 @@ class RuntimeSamplingMetrics:
     def add_denoise_elapsed(self, sec: float) -> None:
         self.denoise_wall_sec += float(sec)
 
+    def mark_first_chunk_done(self, sec: float) -> None:
+        if self.first_chunk_sec is None:
+            self.first_chunk_sec = float(sec)
+
     def mark_first_frame_emit(self) -> None:
         if self._first_emit:
             return
@@ -48,6 +54,7 @@ class RuntimeSamplingMetrics:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "runtime_profile": self.runtime_profile,
+            "streaming_mode": self.streaming_mode,
             "dit_forwards": self.dit_forwards,
             "cfg_passes_per_step": self.cfg_passes_per_step,
             "chunk_count": self.chunk_count,
@@ -61,5 +68,6 @@ class RuntimeSamplingMetrics:
             "identity_drift_min": self.identity_drift_min,
             "corrective_actions": list(self.corrective_actions),
             "denoise_wall_sec": round(self.denoise_wall_sec, 4),
+            "first_chunk_sec": round(self.first_chunk_sec, 4) if self.first_chunk_sec is not None else None,
             "ttff_sec": round(self.ttff_sec, 4) if self.ttff_sec is not None else None,
         }
