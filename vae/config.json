@@ -47,6 +47,8 @@
     1.916
   ],
   "num_res_blocks": 2,
+  "scale_factor_spatial": 8,
+  "scale_factor_temporal": 4,
   "temperal_downsample": [
     false,
     true,

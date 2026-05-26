@@ -39,7 +39,6 @@ def _service_key() -> str:
     for env_name in (
         "NULLXES_INFERENCE_SERVICE_KEY",
         INFERENCE_KEY_ENV,
-        "LONGCAT_INFERENCE_SERVICE_KEY",
     ):
         v = os.environ.get(env_name, "").strip()
         if v:

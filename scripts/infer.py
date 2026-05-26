@@ -177,8 +177,17 @@ def main():
         action="store_true",
         help="Disable hybrid mouth postprocess even if --mouth_mask is set.",
     )
-    parser.add_argument("--disable_phoneme_conditioning", action="store_true")
-    parser.add_argument("--phoneme_stream_scale", type=float, default=None)
+    parser.add_argument(
+        "--disable_phoneme_conditioning",
+        action="store_true",
+        help="Deprecated no-op: pseudo-phoneme conditioning was removed from the avatar runtime.",
+    )
+    parser.add_argument(
+        "--phoneme_stream_scale",
+        type=float,
+        default=None,
+        help="Deprecated no-op: pseudo-phoneme conditioning was removed from the avatar runtime.",
+    )
     parser.add_argument(
         "--skip_audio_noise_floor",
         action="store_true",

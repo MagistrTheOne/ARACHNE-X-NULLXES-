@@ -348,7 +348,7 @@ async def handle_avatar_preview(request: web.Request) -> web.Response:
     if err is not None:
         return err
 
-    # Optional for future at2v/infer: employeeId, sessionId, imageUrl, speakText (snake_case ok).
+    # Optional for future at2v/infer: employeeId, sessionId, imageUrl (snake_case ok).
 
     payload = {**preview_fields, "status": "ready"}
     return web.json_response(payload, headers=cors)

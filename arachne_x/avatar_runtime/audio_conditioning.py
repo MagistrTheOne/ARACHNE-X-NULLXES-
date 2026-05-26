@@ -1,4 +1,4 @@
-"""Audio, phoneme, and emotion conditioning helpers for avatar inference."""
+"""Audio and emotion conditioning helpers for avatar inference."""
 from __future__ import annotations
 
 import os
@@ -9,13 +9,12 @@ import numpy as np
 import pyloudnorm as pyln
 import scipy.signal as ss
 import torch
-import torch.nn.functional as F
 
 from arachne_x.utils.monitoring import sha256_of_audio_array
 
 
 class AudioConditioningMixin:
-    """Audio embedding, phoneme stream, and emotion-channel methods."""
+    """Audio embedding and emotion-channel methods."""
 
     def _loudness_norm(self, audio_array, sr=16000, lufs=-23, threshold=100):
         meter = pyln.Meter(sr)
@@ -33,147 +32,6 @@ class AudioConditioningMixin:
     def _smooth_transients(self, audio, sr=16000):
         b, a = ss.butter(3, 3000 / (sr/2))
         return ss.lfilter(b, a, audio)
-
-    def _apply_multistream_fusion(
-        self,
-        audio_emb: torch.Tensor,
-        fused_emb: Optional[torch.Tensor],
-        device: torch.device
-    ) -> torch.Tensor:
-        if fused_emb is None:
-            return audio_emb
-        if audio_emb.dim() == 3:
-            audio_bt = audio_emb.permute(1, 0, 2).contiguous()
-        elif audio_emb.dim() == 2:
-            audio_bt = audio_emb.unsqueeze(0)
-        else:
-            return audio_emb
-
-        fused = fused_emb.to(device=device, dtype=audio_bt.dtype)
-        proj = self.multi_stream_fusion_proj.to(device=device, dtype=audio_bt.dtype)
-        fused_proj = proj(fused)  # [B, min_t, 768]
-        fused_proj = fused_proj.permute(0, 2, 1)
-        fused_proj = F.interpolate(
-            fused_proj, size=audio_bt.shape[1], mode="linear", align_corners=False
-        )
-        fused_proj = fused_proj.permute(0, 2, 1)
-        audio_bt = audio_bt + self.multi_stream_fusion_scale * fused_proj
-
-        if audio_emb.dim() == 3:
-            return audio_bt.permute(1, 0, 2).contiguous()
-        return audio_bt.squeeze(0)
-
-    @torch.no_grad()
-    def _extract_phoneme_timeline(
-        self,
-        speech_array: np.ndarray,
-        sample_rate: int,
-        target_len: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> Optional[Dict[str, Any]]:
-        if not self.phoneme_enabled or self.phoneme_aligner is None or target_len <= 0:
-            return None
-
-        try:
-            with self.metrics.timeit("phoneme_extract"):
-                phoneme_out = self.phoneme_aligner.extract(
-                    speech_array,
-                    sample_rate=sample_rate,
-                    target_len=target_len,
-                )
-
-            phoneme_probs = phoneme_out["phoneme_probs"].to(device=device, dtype=dtype)
-            phoneme_ids = phoneme_out["phoneme_ids"].to(device=device, dtype=torch.long)
-            confidence = phoneme_out["confidence"].to(device=device, dtype=dtype)
-
-            self.metrics.record("phoneme_voiced_ratio", float(phoneme_out.get("voiced_ratio", 0.0)))
-            self.metrics.record("phoneme_silence_ratio", float(phoneme_out.get("silence_ratio", 0.0)))
-            self.metrics.record("phoneme_fricative_ratio", float(phoneme_out.get("fricative_ratio", 0.0)))
-            self.metrics.record("phoneme_plosive_ratio", float(phoneme_out.get("plosive_ratio", 0.0)))
-            self.metrics.record("phoneme_confidence_mean", float(confidence.mean().item()))
-
-            return {
-                "phoneme_probs": phoneme_probs,
-                "phoneme_ids": phoneme_ids,
-                "confidence": confidence,
-            }
-        except Exception as exc:
-            self.metrics.record("phoneme_fallback_count", 1)
-            if not self.phoneme_fallback_to_wav2vec:
-                raise
-            loguru.logger.warning(
-                "Phoneme extraction failed; using wav2vec fallback only. Error: {}",
-                exc,
-            )
-            return None
-
-    def _inject_phoneme_conditioning(
-        self,
-        audio_emb: torch.Tensor,
-        phoneme_probs: torch.Tensor,
-        confidence: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        if audio_emb.dim() not in (2, 3):
-            return audio_emb
-
-        phoneme_proj = self.phoneme_proj.to(device=device, dtype=audio_emb.dtype)
-        phoneme_ctx = phoneme_proj(phoneme_probs.to(device=device, dtype=audio_emb.dtype))
-        conf = confidence.to(device=device, dtype=audio_emb.dtype).clamp(
-            min=float(self.phoneme_confidence_floor), max=1.0
-        )
-        phoneme_ctx = phoneme_ctx * conf.unsqueeze(-1)
-
-        if audio_emb.dim() == 3:
-            phoneme_ctx = phoneme_ctx.unsqueeze(1).expand(-1, audio_emb.shape[1], -1)
-
-        conditioned = audio_emb + float(self.phoneme_stream_scale) * phoneme_ctx
-        return conditioned.contiguous()
-
-    def _compute_phoneme_alignment_metrics(
-        self,
-        audio_emb: torch.Tensor,
-        phoneme_probs: torch.Tensor,
-        phoneme_ids: torch.Tensor,
-        device: torch.device,
-    ) -> Optional[Dict[str, float]]:
-        if audio_emb.dim() == 3:
-            frame_repr = audio_emb.mean(dim=1)
-        elif audio_emb.dim() == 2:
-            frame_repr = audio_emb
-        else:
-            return None
-
-        target_len = phoneme_probs.shape[0]
-        if target_len <= 0:
-            return None
-
-        if frame_repr.shape[0] != target_len:
-            frame_repr = frame_repr.transpose(0, 1).unsqueeze(0)
-            frame_repr = F.interpolate(frame_repr, size=target_len, mode="linear", align_corners=False)
-            frame_repr = frame_repr.squeeze(0).transpose(0, 1).contiguous()
-
-        frame_repr = frame_repr.to(device=device, dtype=torch.float32)
-        probs = phoneme_probs.to(device=device, dtype=torch.float32)
-        ids = phoneme_ids.to(device=device, dtype=torch.long)
-
-        head = self.phoneme_alignment_head.to(device=device, dtype=frame_repr.dtype)
-        logits = head(frame_repr)
-        log_probs = F.log_softmax(logits, dim=-1)
-
-        kl = F.kl_div(log_probs, probs, reduction="batchmean")
-        ce = F.nll_loss(log_probs, ids, reduction="mean")
-        loss = 0.5 * (kl + ce)
-        pred = torch.argmax(log_probs, dim=-1)
-        acc = (pred == ids).float().mean()
-
-        return {
-            "loss": float(loss.item()),
-            "kl": float(kl.item()),
-            "ce": float(ce.item()),
-            "acc": float(acc.item()),
-        }
 
     def _normalize_emotion_ids(
         self,
@@ -280,11 +138,10 @@ class AudioConditioningMixin:
 
         from arachne_x.modules.audio.nullxes_audio_encoder import resolve_audio_encoder_backend
 
-        phoneme_scale_tag = str(round(float(self.phoneme_stream_scale), 4)).replace(".", "p")
         enc_tag = resolve_audio_encoder_backend()
         key = (
             sha256_of_audio_array(np.ascontiguousarray(speech_array))
-            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_enc{enc_tag}_v3"
+            + f"_fps{fps}_sr{sample_rate}_enc{enc_tag}_wav2vec_only_v4"
         )
         cache_path = os.path.join(cache_dir, key + '.npz')
 
@@ -313,69 +170,11 @@ class AudioConditioningMixin:
             sample_rate=sample_rate,
         )
 
-        # try to compute fused multi-stream features and persist to cache
-        try:
-            fused_emb = None
-            try:
-                # audio_emb shape may be [T, B, D] or [T, D]
-                a = audio_emb
-                if a.dim() == 3:
-                    # [T, B, D] -> [B, T, D]
-                    wav2vec_feats = a.permute(1, 0, 2).contiguous()
-                elif a.dim() == 2:
-                    wav2vec_feats = a.unsqueeze(0)
-                else:
-                    wav2vec_feats = a
-
-                processor_in = wav2vec_feats.cpu()
-                proc_out = self.audio_processor(processor_in)
-                fused_emb = proc_out.get('fused_embeddings', None)
-            except Exception as exc:
-                loguru.logger.debug(
-                    "Audio multi-stream processor step failed; fused embeddings disabled. Error: {}",
-                    exc,
-                )
-                fused_emb = None
-
-            if fused_emb is not None:
-                audio_emb = self._apply_multistream_fusion(audio_emb, fused_emb, device=device)
-        except Exception as exc:
-            loguru.logger.debug("Multi-stream fusion failed; continuing with wav2vec stream only. Error: {}", exc)
-
-        phoneme_ctx = self._extract_phoneme_timeline(
-            speech_array=speech_array,
-            sample_rate=sample_rate,
-            target_len=audio_emb.shape[0],
-            device=device,
-            dtype=audio_emb.dtype,
-        )
-        if phoneme_ctx is not None:
-            audio_emb = self._inject_phoneme_conditioning(
-                audio_emb=audio_emb,
-                phoneme_probs=phoneme_ctx["phoneme_probs"],
-                confidence=phoneme_ctx["confidence"],
-                device=device,
-            )
-            align_metrics = self._compute_phoneme_alignment_metrics(
-                audio_emb=audio_emb,
-                phoneme_probs=phoneme_ctx["phoneme_probs"],
-                phoneme_ids=phoneme_ctx["phoneme_ids"],
-                device=device,
-            )
-            if align_metrics is not None:
-                self.metrics.record("phoneme_alignment_loss", align_metrics["loss"])
-                self.metrics.record("phoneme_alignment_kl", align_metrics["kl"])
-                self.metrics.record("phoneme_alignment_ce", align_metrics["ce"])
-                self.metrics.record("phoneme_alignment_acc", align_metrics["acc"])
-
         try:
             payload = {
                 "audio_emb": audio_emb.cpu().numpy(),
                 "audio_emb_final": audio_emb.cpu().numpy(),
             }
-            if phoneme_ctx is not None:
-                payload["phoneme_probs"] = phoneme_ctx["phoneme_probs"].cpu().numpy()
-                payload["phoneme_confidence"] = phoneme_ctx["confidence"].cpu().numpy()
             np.savez_compressed(cache_path, **payload)
             self.metrics.record('audio_cache_saved', 1)
         except Exception as exc:

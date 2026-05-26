@@ -259,7 +259,6 @@ SPEC = {
                                     "employeeId": {"type": "string"},
                                     "sessionId": {"type": "string"},
                                     "imageUrl": {"type": "string"},
-                                    "speakText": {"type": "string"},
                                 },
                             }
                         }

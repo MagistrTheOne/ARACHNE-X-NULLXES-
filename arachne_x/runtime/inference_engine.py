@@ -77,9 +77,9 @@ def build_audio_emb(
 
 def configure_avatar_pipe(pipe, args: argparse.Namespace) -> None:
     if hasattr(pipe, "phoneme_enabled"):
-        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
-    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
-        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
+        pipe.phoneme_enabled = False
+    if hasattr(pipe, "phoneme_stream_scale"):
+        pipe.phoneme_stream_scale = 0.0
     pipe.skip_audio_noise_floor = bool(getattr(args, "skip_audio_noise_floor", False))
     if getattr(args, "no_hybrid_renderer", False):
         pipe.hybrid_renderer_enabled = False

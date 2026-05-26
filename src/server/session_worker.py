@@ -42,6 +42,8 @@ class SessionWorker:
         self._cancel = asyncio.Event()
         self._turn_cancel: Optional[asyncio.Event] = None
         self._turn_task: Optional[asyncio.Task[None]] = None
+        self._mic_cancel: Optional[asyncio.Event] = None
+        self._mic_task: Optional[asyncio.Task[None]] = None
         self._main_task: Optional[asyncio.Task[None]] = None
         self._pcm_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
         self._work_queue: asyncio.Queue[WorkItem] = asyncio.Queue(maxsize=64)

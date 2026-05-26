@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Omit optional "engine" JSON field for NULLXES core path (and legacy client aliases).
-_CORE_AVATAR_ENGINES = frozenset({"", "arachne", "nullxes", "longcat", "core"})
+# Omit optional "engine" JSON field for NULLXES core path.
+_CORE_AVATAR_ENGINES = frozenset({"", "arachne", "nullxes", "core"})
 
 
 def _emotion_hint(vec: np.ndarray) -> str:

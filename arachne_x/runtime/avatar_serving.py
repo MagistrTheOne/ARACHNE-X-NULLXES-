@@ -12,7 +12,6 @@ import io
 import logging
 import os
 import sys
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Generator, Iterator, List, Optional
@@ -172,53 +171,6 @@ def _attach_pipe_sampling_metrics(pipe, profile_name: Optional[str]) -> None:
     rsm = RuntimeSamplingMetrics(runtime_profile=profile_name)
     rsm.mark_start()
     pipe.runtime_sampling_metrics = rsm
-
-
-def synthesize_speak_text_to_wav(
-    text: str,
-    *,
-    work_dir: str,
-    tts_provider: str,
-    input_json: Optional[dict[str, Any]] = None,
-) -> str:
-    """MODE B: TTS -> WAV on disk (16 kHz conditioning via librosa downstream)."""
-    import torch
-
-    from arachne_x.tts import create_speech_synthesizer
-
-    ij = dict(input_json or {})
-
-    def pick(*ks: str) -> Any:
-        for k in ks:
-            if k in ij and ij[k] not in (None, ""):
-                return ij[k]
-        return None
-
-    provider = (tts_provider or "qwen").strip().lower()
-    dm = pick("ttsDeviceMap", "tts_device_map") or ("cuda:0" if torch.cuda.is_available() else "cpu")
-    mid = pick("ttsModel", "tts_model")
-    language = str(pick("ttsLanguage", "tts_language") or "English")
-    speaker = str(pick("ttsSpeaker", "tts_speaker") or "Ryan")
-    instruct = pick("ttsInstruct", "tts_instruct")
-    attn = pick("ttsAttn", "tts_attn", "tts_attn_implementation")
-    synth = create_speech_synthesizer(
-        provider,
-        model_id=mid,
-        device_map=dm,
-        language=language,
-        speaker=speaker,
-        instruct=instruct,
-        attn_implementation=attn,
-        audiodit_nfe=pick("audioditNfe", "audiodit_nfe"),
-        audiodit_guidance_strength=pick("audioditGuidanceStrength", "audiodit_guidance_strength"),
-        audiodit_guidance_method=pick("audioditGuidanceMethod", "audiodit_guidance_method"),
-        audiodit_prompt_audio=pick("audioditPromptAudio", "audiodit_prompt_audio"),
-        audiodit_prompt_text=pick("audioditPromptText", "audiodit_prompt_text"),
-        audiodit_seed=pick("audioditSeed", "audiodit_seed"),
-    )
-    out = os.path.join(work_dir, "tts_generated.wav")
-    synth.synthesize_to_path(text.strip(), out)
-    return out
 
 
 def audio_chunks_from_f32(audio_f32: np.ndarray, chunk_samples: int = 3200) -> Generator[np.ndarray, None, None]:

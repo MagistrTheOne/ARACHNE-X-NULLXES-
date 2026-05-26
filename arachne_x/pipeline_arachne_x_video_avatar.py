@@ -19,8 +19,6 @@ from arachne_x.context_parallel import context_parallel_util
 
 # -------- avatar related --------
 from arachne_x.audio_process.wav2vec2 import Wav2Vec2ModelWrapper
-from arachne_x.audio_process.multi_stream_processor import MultiStreamAudioProcessor
-from arachne_x.audio_process.phoneme_aligner import PhonemeTemporalAligner
 from arachne_x.utils.monitoring import MetricsLogger
 from arachne_x.streaming_inference import StreamingVAEDecoder, CUDAOptimizer
 from transformers import Wav2Vec2FeatureExtractor
@@ -87,7 +85,7 @@ def preprocess_video(self, video, height: Optional[int] = None, width: Optional[
 
     return video
 
-class LongCatVideoAvatarPipeline(
+class ArachneXVideoAvatarPipeline(
     TextConditioningMixin,
     IdentityBankMixin,
     AudioConditioningMixin,
@@ -139,24 +137,21 @@ class LongCatVideoAvatarPipeline(
 
         self.audio_encoder=audio_encoder
         self.wav2vec_feature_extractor = wav2vec_feature_extractor
-        # audio processing and monitoring
-        self.audio_processor = MultiStreamAudioProcessor()
-        self.multi_stream_fusion_proj = nn.Linear(1024, 768)
-        self.multi_stream_fusion_scale = 0.2
-        # Step 3: phoneme-conditioned stream with robust wav2vec fallback.
-        self.phoneme_enabled = True
+        # Keep avatar audio conditioning deterministic: production uses wav2vec
+        # embeddings directly. Removed random multi-stream and pseudo-phoneme
+        # adapters from the runtime graph.
+        self.audio_processor = None
+        self.multi_stream_fusion_proj = None
+        self.multi_stream_fusion_scale = 0.0
+        self.phoneme_enabled = False
         self.phoneme_num_classes = 10
-        self.phoneme_stream_scale = 0.20
+        self.phoneme_stream_scale = 0.0
         self.phoneme_confidence_floor = 0.10
         self.phoneme_fallback_to_wav2vec = False
-        self.phoneme_aligner = PhonemeTemporalAligner(num_phonemes=self.phoneme_num_classes)
+        self.phoneme_aligner = None
+        self.phoneme_proj = None
+        self.phoneme_alignment_head = None
         audio_embed_dim = 768
-        self.phoneme_proj = nn.Sequential(
-            nn.Linear(self.phoneme_num_classes, audio_embed_dim),
-            nn.SiLU(),
-            nn.Linear(audio_embed_dim, audio_embed_dim),
-        )
-        self.phoneme_alignment_head = nn.Linear(audio_embed_dim, self.phoneme_num_classes)
         # Step 4: explicit emotion control channel with lip-sync safety guard.
         self.emotion_enabled = True
         self.emotion_num_classes = 8
@@ -2162,6 +2157,5 @@ class LongCatVideoAvatarPipeline(
             self.emotion_proj = self.emotion_proj.to(device, non_blocking=True)
         return self
     
-ArachneXVideoAvatarPipeline = LongCatVideoAvatarPipeline
 
-
+LongCatVideoAvatarPipeline = ArachneXVideoAvatarPipeline

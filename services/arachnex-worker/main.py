@@ -76,9 +76,6 @@ class GenerateBody(BaseModel):
     refImgIndex: Optional[int] = Field(default=None, ge=0)
     negative_prompt: Optional[str] = Field(default=None, max_length=8000)
     inputJson: Optional[dict[str, Any]] = None
-    # NIGHT FURY: orchestration + mux (no DiT change)
-    speakText: Optional[str] = Field(default=None, max_length=16000)
-    ttsProvider: str = Field(default="qwen", max_length=64)
     embedAudio: bool = Field(default=True)
     outputMode: str = Field(default="mp4", max_length=32)
     numInferenceSteps: int = Field(default=8, ge=1, le=64)
@@ -127,19 +124,15 @@ def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid inference key")
 
 
-def _has_audio_or_speech(body: GenerateBody) -> bool:
-    return bool((body.audioBase64 or "").strip() or (body.speakText or "").strip())
-
-
 def _validate_body(body: GenerateBody) -> None:
     if body.task == "image-to-video" and not (body.imageBase64 or "").strip():
         raise ValueError("imageBase64 required for image-to-video")
     if body.task == "audio-text-to-video":
-        if not _has_audio_or_speech(body):
-            raise ValueError("audioBase64 or speakText required for audio-text-to-video")
+        if not (body.audioBase64 or "").strip():
+            raise ValueError("audioBase64 required for audio-text-to-video")
     if body.task == "audio-image-to-video":
-        if not _has_audio_or_speech(body):
-            raise ValueError("audioBase64 or speakText required for audio-image-to-video")
+        if not (body.audioBase64 or "").strip():
+            raise ValueError("audioBase64 required for audio-image-to-video")
         if not (body.imageBase64 or "").strip():
             raise ValueError("imageBase64 required for audio-image-to-video")
     if body.task == "video-continuation" and not (body.continuationState or "").strip():
@@ -180,24 +173,11 @@ def run_generate_sync(body: GenerateBody) -> bytes:
                 ip = os.path.join(work, "neutral.png")
                 Image.new("RGB", (832, 480), (40, 40, 48)).save(ip, format="PNG")
                 job["image_path"] = ip
-            if (body.audioBase64 or "").strip():
-                raw_a = base64.b64decode(body.audioBase64 or "")
-                ap = os.path.join(work, "in.wav")
-                with open(ap, "wb") as f:
-                    f.write(raw_a)
-                job["audio_path"] = ap
-            else:
-                from arachne_x.runtime.avatar_serving import synthesize_speak_text_to_wav
-
-                st = (body.speakText or "").strip()
-                if not st:
-                    raise ValueError("speakText is empty")
-                job["audio_path"] = synthesize_speak_text_to_wav(
-                    st,
-                    work_dir=work,
-                    tts_provider=body.ttsProvider,
-                    input_json=body.inputJson,
-                )
+            raw_a = base64.b64decode(body.audioBase64 or "")
+            ap = os.path.join(work, "in.wav")
+            with open(ap, "wb") as f:
+                f.write(raw_a)
+            job["audio_path"] = ap
             return generate_mp4_bytes_from_job(job)
         finally:
             shutil.rmtree(work, ignore_errors=True)

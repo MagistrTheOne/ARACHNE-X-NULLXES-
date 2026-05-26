@@ -86,8 +86,6 @@ def _build_payload(
     ref_img_index: Optional[int],
     negative_prompt: Optional[str],
     input_json: Optional[dict[str, Any]],
-    speak_text: Optional[str] = None,
-    tts_provider: Optional[str] = None,
     embed_audio: Optional[bool] = None,
     output_mode: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
@@ -115,10 +113,6 @@ def _build_payload(
         payload["negative_prompt"] = negative_prompt
     if input_json is not None:
         payload["inputJson"] = input_json
-    if speak_text:
-        payload["speakText"] = speak_text[:8000]
-    if tts_provider:
-        payload["ttsProvider"] = tts_provider
     if embed_audio is not None:
         payload["embedAudio"] = bool(embed_audio)
     if output_mode:
@@ -191,8 +185,6 @@ async def avatar_generate_mp4_bytes(
     ref_img_index: Optional[int] = None,
     negative_prompt: Optional[str] = None,
     input_json: Optional[dict[str, Any]] = None,
-    speak_text: Optional[str] = None,
-    tts_provider: Optional[str] = None,
     embed_audio: Optional[bool] = None,
     output_mode: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
@@ -217,8 +209,6 @@ async def avatar_generate_mp4_bytes(
         ref_img_index=ref_img_index,
         negative_prompt=negative_prompt,
         input_json=input_json,
-        speak_text=speak_text,
-        tts_provider=tts_provider,
         embed_audio=embed_audio,
         output_mode=output_mode,
         num_inference_steps=num_inference_steps,
@@ -279,8 +269,6 @@ async def longcat_generate_mp4_bytes(
     ref_img_index: Optional[int] = None,
     negative_prompt: Optional[str] = None,
     input_json: Optional[dict[str, Any]] = None,
-    speak_text: Optional[str] = None,
-    tts_provider: Optional[str] = None,
     embed_audio: Optional[bool] = None,
     output_mode: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
@@ -302,8 +290,6 @@ async def longcat_generate_mp4_bytes(
         ref_img_index=ref_img_index,
         negative_prompt=negative_prompt,
         input_json=input_json,
-        speak_text=speak_text,
-        tts_provider=tts_provider,
         embed_audio=embed_audio,
         output_mode=output_mode,
         num_inference_steps=num_inference_steps,

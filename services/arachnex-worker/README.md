@@ -7,16 +7,13 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 | Method | Path | Описание |
 |--------|------|----------|
 | GET | `/health` | Liveness; **не** грузит веса на GPU. |
-| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. JSON body: `engine` — `arachne` (core), `arachne_ultra_avatar` / `arachne_ultra_video` (aliases to core, NULLXES HR AI), `nullxes` / `longcat` / `core` / `""`. **Default sampling:** `runtimeProfile=operational` (chunked denoise + distill 12 steps) unless body/env overrides; rollback `runtimeProfile=cinematic` or `ARACHNE_LEGACY_STREAMING=1`. |
+| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. JSON body: `engine` — `arachne` (core), `arachne_ultra_avatar` / `arachne_ultra_video` (aliases to core, NULLXES HR AI), `nullxes` / `core` / `""`. **Default sampling:** `runtimeProfile=operational` (chunked denoise + distill 12 steps) unless body/env overrides; rollback `runtimeProfile=cinematic` or `ARACHNE_LEGACY_STREAMING=1`. |
 | POST | `/v1/arachne/generate` | Синхронный MP4 (`video/mp4`) для поддерживаемых audio-* задач. |
-| POST | `/v1/longcat/generate` | **Legacy alias** того же handler (не в OpenAPI schema). |
 | POST | `/v1/infer/jobs` | Async очередь MP4 → poll status → one-shot result. |
 
 ## Канонические модули DiT (библиотека `arachne_x`)
 
-Инференс грузит веса через `arachne_x.loader` из **`arachne_x/modules/arachne_video_dit.py`** (базовое видео) и **`arachne_x/modules/avatar/arachne_avatar_dit.py`** (аватар). Файлы `longcat_video_dit*.py` — **thin shim** для обратной совместимости импортов; публичные имена классов (`LongCatVideoTransformer3DModel`, …) не менялись (ABI чекпоинтов).
-
-Скрипт **`longcat_generate_once.py`** в этом каталоге — **deprecated**: ориентирован на внешний пакет `longcat_video.*`, не на `arachne_x`; **не** использовать в RunPod / `GTM_ONE_SHOT_DEPLOY` (см. docstring в файле).
+Инференс грузит веса через `arachne_x.loader` из **`arachne_x/modules/arachne_video_dit.py`** (базовое видео) и **`arachne_x/modules/avatar/arachne_avatar_dit.py`** (аватар). Исторические ABI-имена классов (`LongCatVideoTransformer3DModel`, …) сохраняются только для совместимости чекпоинтов.
 
 ## Обязательные переменные (prod)
 
@@ -33,7 +30,6 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 
 1. `NULLXES_INFERENCE_SERVICE_KEY` (канон)
 2. `NULLXES_AVATAR_INFERENCE_SERVICE_KEY` (совместимость с aiohttp-клиентом в `src/server`)
-3. `LONGCAT_INFERENCE_SERVICE_KEY` (legacy имя env)
 
 ## Зависимости HTTP-слоя
 
@@ -61,7 +57,7 @@ uvicorn main:app --host 0.0.0.0 --port 9090
 
 ## Поле `engine` (NDJSON)
 
-Канонические core-значения: `arachne` (default в теле запроса), `nullxes`, пустая строка, legacy `longcat`, `core`. Значение `wan_s2v` отклоняется с понятной ошибкой, если не развёрнут отдельный сервис.
+Канонические core-значения: `arachne` (default в теле запроса), `nullxes`, пустая строка, `core`. Значение `wan_s2v` отклоняется с понятной ошибкой, если не развёрнут отдельный сервис.
 
 ## Очередь jobs
 
@@ -69,7 +65,7 @@ uvicorn main:app --host 0.0.0.0 --port 9090
 
 ## Dev / mock (только с явным флагом)
 
-Исторические переменные вида `LONGCAT_MOCK_MP4_PATH` не должны использоваться в prod без **`ALLOW_INFERENCE_DEV_MOCK=1`** (см. код воркера / политику в `GTM_PRE_RELEASE_AUDIT.md`).
+Mock-пути не должны использоваться в prod без явного dev-флага и отдельного ревью.
 
 ## Дополнительно
 
