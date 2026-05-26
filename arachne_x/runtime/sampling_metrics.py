@@ -18,8 +18,14 @@ class RuntimeSamplingMetrics:
     frames_total: int = 0
     frames_per_chunk: list[int] = field(default_factory=list)
     kv_cache_hits: int = 0
+    cross_chunk_kv_frames: int = 0
     denoise_wall_sec: float = 0.0
     ttff_sec: Optional[float] = None
+    silence_ratio: Optional[float] = None
+    audio_guidance_scale_effective: Optional[float] = None
+    identity_cosine_per_chunk: list[float] = field(default_factory=list)
+    identity_drift_min: Optional[float] = None
+    corrective_actions: list[str] = field(default_factory=list)
     _t0: Optional[float] = None
     _first_emit: bool = False
 
@@ -48,6 +54,12 @@ class RuntimeSamplingMetrics:
             "frames_total": self.frames_total,
             "frames_per_chunk": list(self.frames_per_chunk),
             "kv_cache_hits": self.kv_cache_hits,
+            "cross_chunk_kv_frames": self.cross_chunk_kv_frames,
+            "silence_ratio": self.silence_ratio,
+            "audio_guidance_scale_effective": self.audio_guidance_scale_effective,
+            "identity_cosine_per_chunk": list(self.identity_cosine_per_chunk),
+            "identity_drift_min": self.identity_drift_min,
+            "corrective_actions": list(self.corrective_actions),
             "denoise_wall_sec": round(self.denoise_wall_sec, 4),
             "ttff_sec": round(self.ttff_sec, 4) if self.ttff_sec is not None else None,
         }

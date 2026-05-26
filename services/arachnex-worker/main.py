@@ -113,6 +113,9 @@ class StreamFramesBody(BaseModel):
     chunkOverlap: Optional[int] = Field(default=None, ge=0, le=64)
     useChunkedDenoise: Optional[bool] = Field(default=None)
     useDistill: Optional[bool] = Field(default=None)
+    identityId: Optional[int] = Field(default=None, ge=0, le=1023)
+    identityBankPath: Optional[str] = Field(default=None, max_length=4096)
+    mouthMaskBase64: Optional[str] = Field(default=None)
     engine: str = Field(default="arachne", max_length=64)
 
 
@@ -268,6 +271,9 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             chunk_overlap=body.chunkOverlap,
             use_chunked_denoise=body.useChunkedDenoise,
             use_distill=body.useDistill,
+            identity_id=body.identityId,
+            identity_bank_path=body.identityBankPath,
+            mouth_mask_base64=body.mouthMaskBase64,
         ):
             # Use monotonic clock to timestamp frames for sync downstream.
             ts_ms = int((time.monotonic_ns() - t0_ns) / 1_000_000)

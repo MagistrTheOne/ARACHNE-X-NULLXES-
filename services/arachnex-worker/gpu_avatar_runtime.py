@@ -31,6 +31,9 @@ def stream_avatar_frames_raw_sync(
     chunk_overlap: int | None = None,
     use_chunked_denoise: bool | None = None,
     use_distill: bool | None = None,
+    identity_id: int | None = None,
+    identity_bank_path: str | None = None,
+    mouth_mask_base64: str | None = None,
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from arachne_x.runtime.avatar_serving import stream_avatar_frames_raw_sync as _impl
 
@@ -49,6 +52,9 @@ def stream_avatar_frames_raw_sync(
         chunk_overlap=chunk_overlap,
         use_chunked_denoise=use_chunked_denoise,
         use_distill=use_distill,
+        identity_id=identity_id,
+        identity_bank_path=identity_bank_path,
+        mouth_mask_base64=mouth_mask_base64,
     )
 
 

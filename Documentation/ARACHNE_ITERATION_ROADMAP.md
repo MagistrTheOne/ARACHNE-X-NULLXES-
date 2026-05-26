@@ -29,26 +29,26 @@
 
 ---
 
-## Sprint 2 — Stability OS 🔄 (active)
+## Sprint 2 — Stability OS 🔄 (code landed; H200 gate pending)
 
 **Цель:** LiveKit-ready — identity не плывёт, рот под контролем, chunk chain стабилен.
 
 | Этап | ID | Статус | PR / commit |
 |------|-----|--------|-------------|
-| 0 | [S2-0](ARACHNE_STABILITY_OS_SPRINT2.md#этап-0--долги-sprint-1-s2-0) | pending | |
-| 1 | [S2-1](ARACHNE_STABILITY_OS_SPRINT2.md#этап-1--cross-chunk-continuity-s2-1) | pending | |
-| 2 | [S2-2](ARACHNE_STABILITY_OS_SPRINT2.md#этап-2--per-chunk-identity-s2-2) | pending | |
-| 3 | [S2-3](ARACHNE_STABILITY_OS_SPRINT2.md#этап-3--silence--audio-motion-gate-s2-3) | pending | |
-| 4 | [S2-4](ARACHNE_STABILITY_OS_SPRINT2.md#этап-4--identity-drift-monitor-s2-4) | pending | |
-| 5 | [S2-5](ARACHNE_STABILITY_OS_SPRINT2.md#этап-5--mouth-motion-budget-s2-5) | pending | |
-| 6 | [S2-6](ARACHNE_STABILITY_OS_SPRINT2.md#этап-6--livekit-worker-contract-s2-6) | pending | |
-| 7 | [S2-7](ARACHNE_STABILITY_OS_SPRINT2.md#этап-7--eval-gate-s2-7) | pending | |
+| 0 | [S2-0](ARACHNE_STABILITY_OS_SPRINT2.md#этап-0--долги-sprint-1-s2-0) | skipped (user H200 run) | |
+| 1 | [S2-1](ARACHNE_STABILITY_OS_SPRINT2.md#этап-1--cross-chunk-continuity-s2-1) | code done | |
+| 2 | [S2-2](ARACHNE_STABILITY_OS_SPRINT2.md#этап-2--per-chunk-identity-s2-2) | code done | |
+| 3 | [S2-3](ARACHNE_STABILITY_OS_SPRINT2.md#этап-3--silence--audio-motion-gate-s2-3) | code done | |
+| 4 | [S2-4](ARACHNE_STABILITY_OS_SPRINT2.md#этап-4--identity-drift-monitor-s2-4) | code done | |
+| 5 | [S2-5](ARACHNE_STABILITY_OS_SPRINT2.md#этап-5--mouth-motion-budget-s2-5) | code done | |
+| 6 | [S2-6](ARACHNE_STABILITY_OS_SPRINT2.md#этап-6--livekit-worker-contract-s2-6) | code done | |
+| 7 | [S2-7](ARACHNE_STABILITY_OS_SPRINT2.md#этап-7--eval-gate-s2-7) | script done; GPU gate pending | |
 
-### Текущий фокус (итерация N+1)
+### Следующий шаг (с тобой на H200)
 
-1. `S2-0-EVAL` — H200 smoke operational vs cinematic  
-2. `S2-1-AI2V-KV` + `S2-1-CHUNK-CONSUME` — закрыть seed-only долг  
-3. `S2-2-REFRESH` — per-chunk `_refresh_identity_tokens`
+1. `scripts/gpu/eval_stability_bench.py` — operational vs cinematic + JSON gate  
+2. Визуальный lipsync/identity на internal bench-клипе  
+3. При green — worker operational default в prod
 
 ---
 

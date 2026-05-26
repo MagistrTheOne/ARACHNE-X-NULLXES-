@@ -10,14 +10,14 @@
 
 ## Live checklist (обновлять в PR)
 
-- [ ] **S2-0** H200 eval + KV debt
-- [ ] **S2-1** KV consume в `generate_ai2v`
-- [ ] **S2-2** Per-chunk identity refresh
-- [ ] **S2-3** Silence / audio motion gate
-- [ ] **S2-4** Drift monitor + corrective policy
-- [ ] **S2-5** Mouth mask + hybrid worker default
-- [ ] **S2-6** LiveKit worker schema
-- [ ] **S2-7** `eval_stability_bench.py` green
+- [ ] **S2-0** H200 eval (skipped in agent; user run)
+- [x] **S2-1** KV consume в `generate_ai2v`
+- [x] **S2-2** Per-chunk identity refresh
+- [x] **S2-3** Silence / audio motion gate
+- [x] **S2-4** Drift monitor + corrective policy
+- [x] **S2-5** Mouth mask + hybrid worker default
+- [x] **S2-6** LiveKit worker schema
+- [x] **S2-7** `eval_stability_bench.py` (GPU gate pending)
 
 ---
 

@@ -47,6 +47,38 @@ def _checkpoint_dir() -> str:
     )
 
 
+def _default_identity_bank_path() -> Optional[str]:
+    for env_key in ("NULLXES_IDENTITY_BANK_PATH", "ARACHNE_IDENTITY_BANK_PATH"):
+        p = (os.environ.get(env_key) or "").strip()
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def ensure_identity_bank_loaded(pipe: Any, bank_path: Optional[str] = None) -> None:
+    path = (bank_path or "").strip() or _default_identity_bank_path()
+    if path and os.path.isfile(path):
+        pipe.load_identity_bank(path, strict=False)
+        logger.info("Identity bank loaded from %s", path)
+
+
+def load_mouth_mask_from_base64(mask_b64: Optional[str]) -> Optional[torch.Tensor]:
+    if not mask_b64 or not str(mask_b64).strip():
+        return None
+    import base64
+    from PIL import Image
+
+    raw = base64.b64decode(str(mask_b64).strip())
+    img = Image.open(io.BytesIO(raw)).convert("L")
+    arr = np.array(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)
+
+
+def configure_realtime_pipe(pipe: Any, mouth_mask_tensor: Optional[torch.Tensor] = None) -> None:
+    if mouth_mask_tensor is not None:
+        pipe.hybrid_renderer_enabled = True
+
+
 def get_avatar_pipeline():
     """Singleton avatar pipeline for the current checkpoint dir (CUDA required)."""
     global _pipe, _pipe_key
@@ -63,6 +95,7 @@ def get_avatar_pipeline():
 
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
         _pipe = load_avatar_pipeline(ckpt, variant="single", device=device, torch_dtype=dtype)
+        ensure_identity_bank_loaded(_pipe)
         _pipe_key = key
         logger.info("Avatar pipeline loaded from %s", ckpt)
         return _pipe
@@ -202,6 +235,9 @@ def generate_frames_numpy(
     chunk_overlap: Optional[int] = None,
     use_chunked_denoise: Optional[bool] = None,
     use_distill: Optional[bool] = None,
+    identity_id: Optional[int] = None,
+    identity_bank_path: Optional[str] = None,
+    mouth_mask_base64: Optional[str] = None,
 ) -> List[np.ndarray]:
     from PIL import Image
 
@@ -224,6 +260,9 @@ def generate_frames_numpy(
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    ensure_identity_bank_loaded(pipe, identity_bank_path)
+    mouth_mask = load_mouth_mask_from_base64(mouth_mask_base64)
+    configure_realtime_pipe(pipe, mouth_mask)
     _attach_pipe_sampling_metrics(pipe, getattr(samp, "_sampling_profile_name", None))
     audio_dur = float(audio_f32.size) / 16000.0 if audio_f32.size > 0 else None
     compiled_pos, compiled_neg = compile_prompt_for_job(
@@ -254,6 +293,8 @@ def generate_frames_numpy(
             chunk_frames=int(samp.chunk_frames),
             chunk_overlap=int(samp.chunk_overlap),
             use_chunked_denoise=bool(samp.use_chunked_denoise),
+            identity_id=identity_id,
+            mouth_zone_masks=mouth_mask,
         ):
             arr = np.asarray(frame)
             if arr.dtype != np.uint8:
@@ -279,6 +320,9 @@ def stream_avatar_frames_raw_sync(
     chunk_overlap: Optional[int] = None,
     use_chunked_denoise: Optional[bool] = None,
     use_distill: Optional[bool] = None,
+    identity_id: Optional[int] = None,
+    identity_bank_path: Optional[str] = None,
+    mouth_mask_base64: Optional[str] = None,
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from PIL import Image
 
@@ -302,6 +346,9 @@ def stream_avatar_frames_raw_sync(
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    ensure_identity_bank_loaded(pipe, identity_bank_path)
+    mouth_mask = load_mouth_mask_from_base64(mouth_mask_base64)
+    configure_realtime_pipe(pipe, mouth_mask)
     _attach_pipe_sampling_metrics(pipe, getattr(samp, "_sampling_profile_name", None))
     audio_dur = float(audio_f32.size) / 16000.0
     compiled_pos, _compiled_neg = compile_prompt_for_job(
@@ -332,6 +379,8 @@ def stream_avatar_frames_raw_sync(
             chunk_frames=int(samp.chunk_frames),
             chunk_overlap=int(samp.chunk_overlap),
             use_chunked_denoise=bool(samp.use_chunked_denoise),
+            identity_id=identity_id,
+            mouth_zone_masks=mouth_mask,
         ):
             seq += 1
             arr = np.asarray(frame)
@@ -374,6 +423,9 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
     chunk_overlap = _job_get(job, "chunkOverlap", "chunk_overlap", default=None)
     use_chunked = _job_get(job, "useChunkedDenoise", "use_chunked_denoise", default=None)
     use_distill = _job_get(job, "useDistill", "use_distill", default=None)
+    identity_id = _job_get(job, "identityId", "identity_id", default=None)
+    identity_bank_path = _job_get(job, "identityBankPath", "identity_bank_path", default=None)
+    mouth_mask_b64 = _job_get(job, "mouthMaskBase64", "mouth_mask_base64", default=None)
     frames = generate_frames_numpy(
         image_bytes=image_bytes,
         prompt=prompt,
@@ -389,6 +441,9 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
         chunk_overlap=int(chunk_overlap) if chunk_overlap is not None else None,
         use_chunked_denoise=bool(use_chunked) if use_chunked is not None else None,
         use_distill=bool(use_distill) if use_distill is not None else None,
+        identity_id=int(identity_id) if identity_id is not None else None,
+        identity_bank_path=str(identity_bank_path) if identity_bank_path else None,
+        mouth_mask_base64=str(mouth_mask_b64) if mouth_mask_b64 else None,
     )
     if not frames:
         raise RuntimeError("avatar produced zero frames")

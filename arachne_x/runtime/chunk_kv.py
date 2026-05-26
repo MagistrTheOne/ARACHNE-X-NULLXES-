@@ -1,9 +1,8 @@
 """
-Cross-chunk KV cache helpers (Sprint 1.5 wedge).
+Cross-chunk KV cache helpers (Stability OS).
 
-Seeds ``pipe.kv_cache_dict`` from the tail of a decoded chunk so a future
-``generate_ai2v(use_kv_cache=True)`` pass can reuse temporal context.
-Chunked ai2v does not consume KV yet; enable with ``ARACHNE_CHUNK_KV=1``.
+Seeds ``pipe.kv_cache_dict`` from the tail of a decoded chunk for the next
+``generate_ai2v(use_kv_cache=True, reuse_kv_cache=True)`` pass.
 """
 
 from __future__ import annotations
@@ -17,7 +16,10 @@ import torch
 def chunk_kv_enabled() -> bool:
     import os
 
-    return os.environ.get("ARACHNE_CHUNK_KV", "").strip().lower() in ("1", "true", "yes")
+    v = os.environ.get("ARACHNE_CHUNK_KV", "1").strip().lower()
+    if v in ("0", "false", "no"):
+        return False
+    return v in ("1", "true", "yes", "")
 
 
 def seed_kv_from_chunk_tail(
@@ -66,5 +68,6 @@ def seed_kv_from_chunk_tail(
         rsm = getattr(pipe, "runtime_sampling_metrics", None)
         if rsm is not None:
             rsm.kv_cache_hits += 1
+            rsm.cross_chunk_kv_frames += int(n_cond)
         return True
     return False
