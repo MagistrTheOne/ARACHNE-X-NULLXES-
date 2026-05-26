@@ -60,7 +60,7 @@ flowchart LR
 | **4** | [§4](#4-оцифровка-и-тесты-режимов-cli) — enroll | 2 мин | `output/*_identity_bank.pt` |
 | **5** | [§4.2](#42-ai2v--image--audio--prompt-основной-elena) operational | 5–15 мин | MP4 + `.run.json` с `sampling_metrics` |
 | **6** | `scripts/gpu/eval_stability_bench.py` | 15–30 мин | `eval_stability_report.json` |
-| **7** | [§5](#5-arachnex-worker-http--позже-не-текущий-этап) | по необходимости | `curl /health` |
+| **7** | [§5](#5-arachnex-worker--включение-http-9090) worker `:9090` | 5 мин + warmup | `curl /health` + NDJSON smoke |
 
 **Параллельно пока качаются веса (фаза 2):** можно делать фазы 0–1 и 3 (torch/flash только после layout §2.5).
 
@@ -310,17 +310,50 @@ cat /tmp/arachne_eval/eval_stability_report.json
 
 ---
 
-### Фаза 7 — Worker HTTP (опционально, LiveKit)
+### Фаза 7 — Worker HTTP `:9090` (когда нужен realtime / HR)
+
+**Кому включать:** backend / ML ops после зелёного CLI smoke (§4–§6). **Не нужен** для одноразовой оцифровки MP4 через `infer.py`.
+
+| Роль | Действие |
+| ---- | -------- |
+| ML ops (RunPod) | Запуск `uvicorn :9090`, проброс порта, warmup |
+| Backend (gateway) | `AVATAR_POD_URL` → публичный URL пода |
+| Frontend | **ничего** — ходит через gateway/LiveKit |
+
+**Предусловие:** §3 `FLASH OK`, §4/§5 CLI `ai2v` или `smoke_ai2v_480p.sh` прошли.
 
 ```bash
-pip install -r services/arachnex-worker/requirements.txt
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
 export PYTHONPATH="$ARACHNE_ROOT:$ARACHNE_ROOT/services/arachnex-worker"
-export NULLXES_IDENTITY_BANK_PATH="$ARACHNE_ROOT/output/elena_identity_bank.pt"
-cd services/arachnex-worker
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+export ARACHNE_RUNTIME_PROFILE=operational
+export ARACHNE_CHUNK_KV=1
+export NULLXES_IDENTITY_BANK_PATH="$ARACHNE_ROOT/output/katya_identity_bank.pt"
+
+pip install -r services/arachnex-worker/requirements.txt
+
+# опционально — секрет для gateway/kaira (один ключ на pod и в HR):
+# export NULLXES_INFERENCE_SERVICE_KEY="your-secret"
+
+tmux new -s arachne-worker
+cd "$ARACHNE_ROOT/services/arachnex-worker"
 uvicorn main:app --host 0.0.0.0 --port 9090
+# Ctrl+B, D — отсоединиться
 ```
 
-Другой терминал: `curl -fsS http://127.0.0.1:9090/health`. NDJSON: `identityId`, `runtimeProfile`, `mouthMaskBase64` — §5.
+**RunPod:** в UI pod → **TCP Port 9090** → скопировать `https://<pod-id>-9090.proxy.runpod.net` (или Connect → HTTP 9090).
+
+Проверка на pod:
+
+```bash
+curl -fsS http://127.0.0.1:9090/health
+export NULLXES_URL=http://127.0.0.1:9090
+export NULLXES_SMOKE_ENGINE=arachne_ultra_avatar
+bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
+```
+
+Полный контракт NDJSON, gateway `.env`, MP4 jobs — **§5** ниже.
 
 ---
 
@@ -1641,41 +1674,161 @@ python scripts/infer.py --checkpoint_dir "$VIDEO_CKPT" --mode t2v \
 
 ---
 
-## 5. `arachnex-worker` (HTTP) — **позже, не текущий этап**
+## 5. `arachnex-worker` — включение HTTP `:9090`
 
-Когда CLI-оцифровка стабильна и нужен NDJSON/realtime для NULLXES HR — §3.4 + запуск:
+Inference Worker — **отдельный контур** после CLI. Отдаёт NDJSON-кадры и MP4 jobs для **realtime-gateway**, **kaira-agent**, `src/server` (оркестратор). CLI `infer.py` worker **не заменяет**.
+
+### 5.0 Кому и когда включать
+
+| Контур | Нужен worker `:9090`? | Кто поднимает |
+| ------ | ---------------------- | ------------- |
+| Оцифровка MP4 (`infer.py`, RunPod QA) | **нет** | ML ops — только CLI |
+| HR плашка / LiveKit NDJSON | **да** | ML ops на pod + backend прописывает URL |
+| KAIRA Landing (bridge → worker) | **да** | ML ops + `kaira-agent` config |
+| RTMP audio-only (без DiT) | **нет** | gateway ffmpeg |
+
+**Включать worker только если:**
+
+1. §3 — `torch` + `FLASH OK`
+2. §2.5 — merged runtime `missing: none`
+3. CLI smoke прошёл (`bash scripts/gpu/smoke_ai2v_480p.sh` или ручной `ai2v`)
+4. Есть ref image + identity bank (опц.) для сессии
+
+### 5.1 Зависимости (один `.venv` с §3)
 
 ```bash
 cd "$ARACHNE_ROOT"
 source .venv/bin/activate
-export ARACHNE_ROOT
-export NULLXES_CHECKPOINT_DIR
+pip install -r services/arachnex-worker/requirements.txt
+# fastapi + uvicorn — поверх уже установленного torch/flash-attn/ARACHNE stack
+```
+
+### 5.2 Env перед запуском
+
+```bash
+export ARACHNE_ROOT=/workspace/ARACHNE-X
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+
 export PYTHONPATH="$ARACHNE_ROOT:$ARACHNE_ROOT/services/arachnex-worker"
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+export ARACHNE_RUNTIME_PROFILE=operational
+export ARACHNE_CHUNK_KV=1
+export NULLXES_IDENTITY_BANK_PATH="$ARACHNE_ROOT/output/katya_identity_bank.pt"
 
-# опционально:
-# export NULLXES_INFERENCE_SERVICE_KEY=your-secret
+# опционально — один секрет на pod и в HR/gateway:
+# export NULLXES_INFERENCE_SERVICE_KEY="your-secret"
+```
 
-cd services/arachnex-worker
+| Переменная | Обяз. | Назначение |
+| ---------- | ----- | ---------- |
+| `NULLXES_CHECKPOINT_DIR` | да | merged avatar runtime |
+| `PYTHONPATH` | да | корень + `services/arachnex-worker` |
+| `ARACHNE_RUNTIME_PROFILE` | нет | default worker realtime: `operational` |
+| `NULLXES_IDENTITY_BANK_PATH` | нет | preload `.pt` на старт pipe |
+| `NULLXES_INFERENCE_SERVICE_KEY` | нет | заголовок `X-NULLXES-Avatar-Inference-Key` |
+
+### 5.3 Запуск на pod (порт **9090**)
+
+```bash
+tmux new -s arachne-worker
+cd "$ARACHNE_ROOT/services/arachnex-worker"
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
 
-### 5.1 Health
+| Параметр | Значение |
+| -------- | -------- |
+| Bind | `0.0.0.0:9090` (обязательно `0.0.0.0`, не `127.0.0.1`) |
+| Процесс | один uvicorn на GPU — lazy load DiT при первом inference |
+| Первый запрос | 60–180 s норма (загрузка весов) |
+
+**RunPod — проброс наружу:**
+
+1. Pod → **Edit** / **Connect** → expose **TCP port 9090**
+2. Публичный base URL вида `https://<pod-id>-9090.proxy.runpod.net`
+3. Backend: `AVATAR_POD_URL=<base>` **без** trailing `/`
+
+Вернуться в tmux: `tmux attach -t arachne-worker`. Остановить: `Ctrl+C` в сессии.
+
+### 5.4 Health (liveness, без GPU load)
 
 ```bash
 curl -fsS http://127.0.0.1:9090/health
+# ожидание: {"status":"ok"} или аналог
 ```
 
-### 5.2 Warmup + NDJSON smoke
+Снаружи (после proxy RunPod):
+
+```bash
+curl -fsS "https://<pod-id>-9090.proxy.runpod.net/health"
+```
+
+### 5.5 Warmup + NDJSON smoke
 
 ```bash
 export NULLXES_URL=http://127.0.0.1:9090
 export NULLXES_SMOKE_ENGINE=arachne_ultra_avatar
-# export X_NULLXES_KEY=...   # если задан NULLXES_INFERENCE_SERVICE_KEY
+# если задан NULLXES_INFERENCE_SERVICE_KEY на pod:
+# export X_NULLXES_KEY="$NULLXES_INFERENCE_SERVICE_KEY"
 
 bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 ```
 
-Тело запроса worker: `imageBase64` + `audioFloat32Base64` + `prompt` — тот же контур **image+audio+prompt**, что и CLI `ai2v`.
+Ожидание: `200`, `Content-Type: application/x-ndjson`, строки JSON с `seq` и кадром.
+
+**Prod-контракт тела** `POST /v1/realtime/avatar_frames`:
+
+| Поле | Назначение |
+| ---- | ---------- |
+| `sessionId` | id turn / room |
+| `imageBase64` | ref face (JPEG/PNG) |
+| `audioPcm16Base64` | **предпочтительно** — TTS PCM mono 16 kHz |
+| `audioFloat32Base64` | legacy float32 mono 16 kHz |
+| `prompt` / `negativePrompt` | сцена |
+| `runtimeProfile` | `operational` \| `cinematic` |
+| `identityId` / `identityBankPath` | Stability OS |
+| `mouthMaskBase64` | hybrid mouth (опц.) |
+| `engine` | `arachne` или HR-алиасы `arachne_ultra_avatar` |
+
+Тот же audio-driven контур, что CLI `streaming_ai2v` / operational `ai2v`.
+
+### 5.6 Подключение HR / gateway (кто прописывает URL)
+
+**На поде** — только uvicorn + URL в RunPod UI.
+
+**В `realtime-gateway` (backend, не на pod):**
+
+| `.env` | Пример |
+| ------ | ------ |
+| `AVATAR_VIDEO_ENABLED` | `true` |
+| `VIDEO_ENGINE` | `arachne_ultra_avatar` |
+| `AVATAR_POD_URL` | `https://<pod-id>-9090.proxy.runpod.net` |
+| `AVATAR_FRAMES_PATH` | `/v1/realtime/avatar_frames` |
+| `NULLXES_AVATAR_INFERENCE_SERVICE_KEY` | = `NULLXES_INFERENCE_SERVICE_KEY` на pod |
+
+**KAIRA / Landing:** bridge читает URL воркера из env агента; pod не трогает фронт.
+
+Схема потока: [`Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md`](Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md).  
+Детали HTTP: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md), [`Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md`](Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md).
+
+### 5.7 MP4 через worker (опционально)
+
+| Endpoint | Назначение |
+| -------- | ---------- |
+| `POST /v1/arachne/generate` | sync MP4 |
+| `POST /v1/infer/jobs` | async очередь MP4 |
+
+Для QA на pod чаще проще `scripts/infer.py --mode ai2v`.
+
+### 5.8 Типовые проблемы worker
+
+| Симптом | Действие |
+| ------- | -------- |
+| `Connection refused` снаружи | `0.0.0.0:9090`, RunPod TCP 9090 открыт |
+| `401` | заголовок `X-NULLXES-Avatar-Inference-Key` |
+| `503 queue full` | `INFERENCE_MAX_QUEUE` или меньше параллелизма |
+| Первый NDJSON 2+ мин | warmup нормален; `/health` не грузит GPU |
+| OOM | `resolution=480p`, меньше `numFrames` в теле |
 
 ---
 
@@ -1738,9 +1891,10 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | `ARACHNE_RUNTIME_PROFILE`       | `operational` \| `cinematic` (см. также CLI)   |
 | `ARACHNE_CHUNK_KV`              | `1` — cross-chunk KV (Stability OS; default on) |
 | `NULLXES_IDENTITY_BANK_PATH`    | Путь к `.pt` для worker preload               |
+| `NULLXES_INFERENCE_SERVICE_KEY` | Секрет worker (pod); header `X-NULLXES-Avatar-Inference-Key` |
+| `AVATAR_POD_URL`                | **Backend/gateway** — публичный base URL pod `:9090` |
 | `PYTHONPATH`                    | `$ARACHNE_ROOT` (+ worker: `services/arachnex-worker`) |
-| `NULLXES_INFERENCE_SERVICE_KEY` | Опциональный секрет HTTP                     |
-| `NULLXES_URL`                   | Base URL для smoke script                    |
+| `NULLXES_URL`                   | Base URL для `smoke_avatar_frames.sh` (`http://127.0.0.1:9090`) |
 | `ARACHNE_LEGACY_STREAMING`      | `1` — monolithic + stream VAE (rollback)     |
 
 
