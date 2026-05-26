@@ -2,7 +2,7 @@
 
 **Документ:** статический обзор по дереву исходников и внутренней документации репозитория.  
 **Веса:** в данной рабочей копии **не хранятся**; полный бандл скачивается отдельно (см. раздел 2). Веса — **proprietary NULLXES**, **independently trained**, **production checkpoints**.  
-**Ограничение:** без запуска окружения, без импорта Python и без проверки рантайма — только структура и контракты.
+**Ограничение:** обзор по дереву и контрактам; smoke-тесты Python — `tests/` и [`Documentation/REQUIREMENTS.md`](../REQUIREMENTS.md). Полный GPU infer — только Linux CUDA (RunPod).
 
 ---
 
@@ -16,7 +16,7 @@
 
 1. **Библиотека `arachne_x/`** (включая **`runtime/`**) — загрузка весов (`loader.py`), базовый и аватарный пайплайны, **программный инференс** (`InferenceEngine`, `execute_infer`), стриминговый движок, модули DiT/VAE/scheduler, аватарные блоки, обучение/экспорт латентов (скрипты в `scripts/`, демо-конфиги в `Demo/`).
 2. **`scripts/infer.py`** — тонкая CLI-обёртка над `arachne_x.runtime`.
-3. **`services/longcat-worker/`** — **Inference Worker**: FastAPI, **in-process** загрузка аватар-пайплайна и генерация (см. `gpu_avatar_runtime.py`). Канон исполнения DiT/VAE на GPU для HTTP-контрактов воркера. Переменные окружения см. в коде воркера (`NULLXES_CHECKPOINT_DIR` / `ARACHNE_CHECKPOINT_DIR` и др.).
+3. **`services/arachnex-worker/`** — **Inference Worker**: FastAPI, **in-process** загрузка аватар-пайплайна и генерация (см. `gpu_avatar_runtime.py`). Канон исполнения DiT/VAE на GPU для HTTP-контрактов воркера. Переменные окружения: `NULLXES_CHECKPOINT_DIR` / `ARACHNE_CHECKPOINT_DIR` и др.
 4. **`src/server/`** — **internal**: оркестрация продукта, вызов Inference Worker по URL (`NULLXES_AVATAR_INFERENCE_URL` и связанные ключи); не дублировать второй полноценный GPU-процесс с теми же весами в целевой топологии. Детали маршрутов — фактическое дерево `src/server/*.py`.
 
 Публичный API пакета (по `arachne_x/__init__.py`): `WeightsLayout`, `load_base_pipeline`, `load_avatar_pipeline`, `get_vocal_separator_path`. Дополнительно для интеграций: **`arachne_x.runtime`**.
@@ -44,7 +44,7 @@
 | Загрузка | `loader.py`, `weights_resolve.py` | Единая точка загрузки компонентов для инференса; опционально HF Hub → локальный root. |
 | Runtime | `runtime/inference_engine.py` | Программный инференс (контракт CLI без дублирования). |
 | Пайплайны | `pipeline_arachne_x_video.py`, `pipeline_arachne_x_video_avatar.py` | Базовое видео (T2V/I2V/VC) и аватар (ai2v/at2v/avc, streaming). |
-| Стриминг | `streaming_inference.py`, `config_realtime.py` | KV-cache, буферы, real-time параметры. |
+| Стриминг | `streaming_inference.py` | KV-cache, буферы, real-time параметры (см. ARCHITECTURE.md → Runtime). |
 | 3D DiT (видео) | `modules/arachne_video_dit.py` (legacy shim: `longcat_video_dit.py`), `attention.py`, `blocks.py`, `rope_3d.py` | Трансформер 3D + внимание. Класс публичного ABI: `LongCatVideoTransformer3DModel` (имя сохранено для чекпоинтов). |
 | Аватар DiT | `modules/avatar/arachne_avatar_dit.py` (legacy shim: `longcat_video_dit_avatar.py`), `modules/avatar_losses.py` | Аудио-условие, anchors, потери. ABI: `LongCatVideoAvatarTransformer3DModel`. |
 | VAE / scheduler | `modules/autoencoder_kl_wan.py`, `modules/scheduling_flow_match_euler_discrete.py` | Латенты, шаги диффузии. |
@@ -58,10 +58,20 @@
 - Сессии, HTTP/WebSocket поверх продукта, вызов Inference Worker для кадров аватара.
 - Конфиг: `config/pipeline_config.defaults.json` и переменные `NULLXES_AVATAR_*`.
 
-### 3.3 `services/longcat-worker/` — Inference Worker (prod GPU serving)
+### 3.3 `services/arachnex-worker/` — Inference Worker (prod GPU serving)
 
-- FastAPI; аватар: **in-process** `load_avatar_pipeline` + `generate_streaming_ai2v` / MP4 job path в `gpu_avatar_runtime.py`.
-- Задачи `text-to-video` / `image-to-video` / `video-continuation` в части HTTP API могут быть ограничены (см. сообщения `RuntimeError` в `main.py`) — канон полного VIDEO-инференса в рантайме также через **`arachne_x.runtime`** на том же чекпоинте VIDEO.
+- FastAPI; аватар: **in-process** `load_avatar_pipeline` → `avatar_serving` (lazy CUDA).
+- Эндпоинты: `GET /health`, `POST /v1/realtime/avatar_frames`, `POST /v1/arachne/generate` (legacy `/v1/longcat/generate`).
+- Запуск: см. [`services/arachnex-worker/README.md`](../../services/arachnex-worker/README.md), [`ARCHITECTURE.md`](../../ARCHITECTURE.md) §5, [`RUNPOD_H200_AVATAR_SETUP.md`](../../RUNPOD_H200_AVATAR_SETUP.md).
+- VIDEO tasks в HTTP могут быть ограничены — полный VIDEO infer через **`arachne_x.runtime`** + `ARACHNE-X-ULTRA-VIDEO` ckpt.
+
+### 3.3.1 Lineage vs production weights
+
+| | |
+|--|--|
+| **Prod weights** | [MagistrTheOne/ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR), [MagistrTheOne/ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) |
+| **Reference only** | [meituan-longcat/LongCat-Video](https://huggingface.co/meituan-longcat/LongCat-Video) — архитектурный класс / отчёт; **не** runtime checkpoint в NULLXES prod |
+| **ABI** | Имена классов `LongCatVideo*Transformer3DModel` сохранены для совместимости config/shards |
 
 ### 3.4 Прочее
 

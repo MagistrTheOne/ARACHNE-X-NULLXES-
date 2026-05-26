@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Union, Literal
 
 import gc
 import math
+import os
 import torch
 import loguru
 import numpy as np
@@ -26,6 +27,56 @@ import html
 def torch_gc():
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
+
+
+def release_modules_for_denoise(
+    pipe: "LongCatVideoPipeline",
+    *,
+    keep_text_encoder: bool = False,
+) -> None:
+    """Move modules not needed during DiT sampling off GPU."""
+    if not keep_text_encoder and pipe.text_encoder is not None:
+        pipe.text_encoder = pipe.text_encoder.to("cpu", non_blocking=True)
+    if pipe.vae is not None:
+        pipe.vae = pipe.vae.to("cpu", non_blocking=True)
+    adapter = getattr(pipe, "audio_adapter", None)
+    if adapter is not None:
+        adapter.to("cpu", non_blocking=True)
+    gc.collect()
+    torch_gc()
+    loguru.logger.info(
+        "[vram] released text_encoder={} vae=True audio_adapter={} for denoise",
+        not keep_text_encoder,
+        adapter is not None,
+    )
+
+
+def should_use_sequential_cfg(device: Union[str, torch.device] = "cuda") -> bool:
+    """
+    Run CFG as two sequential DiT forwards instead of one batched 2x forward.
+
+    Auto-enables when free VRAM < 1 GiB (typical on full H200 + VIDEO DiT load).
+    Override with ``ARACHNE_SEQUENTIAL_CFG=1|0|auto``.
+    """
+    raw = (os.environ.get("ARACHNE_SEQUENTIAL_CFG") or "auto").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if torch.cuda.is_available():
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        return free_bytes < (1024**3)
+    return False
+
+
+def restore_modules_after_denoise(pipe: "LongCatVideoPipeline") -> None:
+    device = pipe.device
+    if pipe.vae is not None:
+        pipe.vae = pipe.vae.to(device, non_blocking=True)
+    if pipe.text_encoder is not None:
+        pipe.text_encoder = pipe.text_encoder.to(device, non_blocking=True)
+    gc.collect()
+    torch_gc()
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
 def retrieve_latents(
@@ -776,6 +827,11 @@ class LongCatVideoPipeline:
         if context_parallel_util.get_cp_size() > 1:
             torch.distributed.barrier(group=context_parallel_util.get_cp_group())
 
+        release_modules_for_denoise(self)
+        sequential_cfg = should_use_sequential_cfg(device)
+        if sequential_cfg:
+            loguru.logger.info("[vram] sequential CFG enabled for i2v denoise")
+
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -783,24 +839,50 @@ class LongCatVideoPipeline:
 
                 self._current_timestep = t
 
-                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
-                latent_model_input = latent_model_input.to(dit_dtype)
+                if self.do_classifier_free_guidance and sequential_cfg:
+                    timestep = t.expand(latents.shape[0]).to(dit_dtype)
+                    timestep = timestep.unsqueeze(-1).repeat(1, latents.shape[2])
+                    timestep[:, :1] = 0
+                    pos_prompt_embeds = prompt_embeds[-batch_size:]
+                    pos_prompt_mask = prompt_attention_mask[-batch_size:]
+                    neg_prompt_embeds = prompt_embeds[:batch_size]
+                    neg_prompt_mask = prompt_attention_mask[:batch_size]
+                    noise_pred_uncond = self.dit(
+                        hidden_states=latents.to(dit_dtype),
+                        timestep=timestep,
+                        encoder_hidden_states=neg_prompt_embeds,
+                        encoder_attention_mask=neg_prompt_mask,
+                        num_cond_latents=1,
+                    )
+                    noise_pred_cond = self.dit(
+                        hidden_states=latents.to(dit_dtype),
+                        timestep=timestep,
+                        encoder_hidden_states=pos_prompt_embeds,
+                        encoder_attention_mask=pos_prompt_mask,
+                        num_cond_latents=1,
+                    )
+                else:
+                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                    latent_model_input = latent_model_input.to(dit_dtype)
 
-                timestep = t.expand(latent_model_input.shape[0]).to(dit_dtype)
-                timestep = timestep.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
-                timestep[:, :1] = 0
+                    timestep = t.expand(latent_model_input.shape[0]).to(dit_dtype)
+                    timestep = timestep.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
+                    timestep[:, :1] = 0
 
-                noise_pred = self.dit(
-                    hidden_states=latent_model_input,
-                    timestep=timestep,
-                    encoder_hidden_states=prompt_embeds,
-                    encoder_attention_mask=prompt_attention_mask,
-                    num_cond_latents=1,
-                )
+                    noise_pred = self.dit(
+                        hidden_states=latent_model_input,
+                        timestep=timestep,
+                        encoder_hidden_states=prompt_embeds,
+                        encoder_attention_mask=prompt_attention_mask,
+                        num_cond_latents=1,
+                    )
+
+                    if self.do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                    else:
+                        noise_pred_uncond = noise_pred_cond = noise_pred
 
                 if self.do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-                    
                     B = noise_pred_cond.shape[0]
                     positive = noise_pred_cond.reshape(B, -1)
                     negative = noise_pred_uncond.reshape(B, -1)
@@ -811,6 +893,8 @@ class LongCatVideoPipeline:
                     # print(f'step i: {i} --> scale: {st_star}')
 
                     noise_pred = noise_pred_uncond * st_star + guidance_scale * (noise_pred_cond - noise_pred_uncond * st_star)
+                else:
+                    noise_pred = noise_pred_cond
 
                 # negate for scheduler compatibility
                 noise_pred = -noise_pred
@@ -825,6 +909,7 @@ class LongCatVideoPipeline:
         self._current_timestep = None
 
         if not output_type == "latent":
+            restore_modules_after_denoise(self)
             latents = latents.to(self.vae.dtype)
             latents = self.denormalize_latents(latents)
             output_video = self.vae.decode(latents, return_dict=False)[0]

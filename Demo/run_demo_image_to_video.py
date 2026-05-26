@@ -11,6 +11,7 @@ from torchvision.io import write_video
 from diffusers.utils import load_image
 
 from arachne_x.loader import load_base_pipeline
+from arachne_x.infer_attention import configure_infer_bsa
 from arachne_x.context_parallel import context_parallel_util
 from arachne_x.context_parallel.context_parallel_util import init_context_parallel
 
@@ -118,7 +119,7 @@ def generate(args):
     refinement_lora_path = os.path.join(checkpoint_dir, 'lora/refinement_lora.safetensors')
     pipe.dit.load_lora(refinement_lora_path, 'refinement_lora')
     pipe.dit.enable_loras(['refinement_lora'])
-    pipe.dit.enable_bsa()
+    configure_infer_bsa(pipe.dit)
 
     if enable_compile:
         dit = torch.compile(dit)

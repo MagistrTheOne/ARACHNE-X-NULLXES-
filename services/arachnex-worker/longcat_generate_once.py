@@ -65,6 +65,19 @@ _DEFAULT_NEGATIVE = (
 )
 
 
+def _configure_infer_bsa(dit) -> None:
+    try:
+        from arachne_x.infer_attention import configure_infer_bsa
+
+        configure_infer_bsa(dit)
+    except ImportError:
+        enabled = os.environ.get("ARACHNE_INFER_ENABLE_BSA", "1").strip().lower()
+        if enabled not in ("0", "false", "no", "off") and hasattr(dit, "enable_bsa"):
+            dit.enable_bsa()
+        elif hasattr(dit, "disable_bsa"):
+            dit.disable_bsa()
+
+
 def torch_gc() -> None:
     torch.cuda.empty_cache()
     torch.cuda.ipc_collect()
@@ -230,7 +243,7 @@ def run_text_to_video(
     refinement_lora_path = os.path.join(checkpoint_dir, "lora/refinement_lora.safetensors")
     pipe.dit.load_lora(refinement_lora_path, "refinement_lora")
     pipe.dit.enable_loras(["refinement_lora"])
-    pipe.dit.enable_bsa()
+    _configure_infer_bsa(pipe.dit)
     if enable_compile:
         pipe.dit = torch.compile(pipe.dit)
 
@@ -333,7 +346,7 @@ def run_image_to_video(
     refinement_lora_path = os.path.join(checkpoint_dir, "lora/refinement_lora.safetensors")
     pipe.dit.load_lora(refinement_lora_path, "refinement_lora")
     pipe.dit.enable_loras(["refinement_lora"])
-    pipe.dit.enable_bsa()
+    _configure_infer_bsa(pipe.dit)
     if enable_compile:
         pipe.dit = torch.compile(pipe.dit)
 
@@ -459,7 +472,7 @@ def run_video_continuation(
     refinement_lora_path = os.path.join(checkpoint_dir, "lora/refinement_lora.safetensors")
     pipe.dit.load_lora(refinement_lora_path, "refinement_lora")
     pipe.dit.enable_loras(["refinement_lora"])
-    pipe.dit.enable_bsa()
+    _configure_infer_bsa(pipe.dit)
     if enable_compile:
         pipe.dit = torch.compile(pipe.dit)
 

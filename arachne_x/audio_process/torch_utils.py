@@ -170,6 +170,7 @@ def save_video_ffmpeg(
     fps=25,
     quality=5,
     high_quality_save=False,
+    export_crf: int | None = None,
     *,
     quiet: bool = False,
 ):
@@ -267,8 +268,10 @@ def save_video_ffmpeg(
                 "-c:a",
                 "aac",
                 "-shortest",
-                final_output_path,
             ]
+            if export_crf is not None:
+                final_command.extend(["-crf", str(int(export_crf)), "-preset", "slow"])
+            final_command.append(final_output_path)
         subprocess.run(final_command, check=True)
     finally:
         for tmp_path in (save_path_tmp, save_path_crop_tmp, save_path_crop_audio):

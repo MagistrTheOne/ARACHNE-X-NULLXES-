@@ -2,3 +2,6 @@
 *.DS_Store
 weights/
 __pycache__/
+*.crdownload
+assets/avatar/single/**/outpu/
+assets/avatar/single/**/*.pt

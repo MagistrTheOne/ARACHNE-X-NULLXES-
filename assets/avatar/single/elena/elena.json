@@ -1,0 +1,64 @@
+{
+  "prompt": "ELENA, ultra realistic executive woman, professional digital human, realistic close-up portrait speaking naturally straight to camera, cinematic low-key lighting, stable identity, realistic facial motion, precise lipsync, sharp face details, corporate interview framing, subtle blinking, photorealistic skin texture, minimal head movement, high temporal consistency",
+  "negative_prompt": "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth, mismatched lip sync, lips out of sync",
+  "cond_image": "assets/avatar/single/elena/image.jpg",
+  "cond_audio": "assets/avatar/single/elena/audio.wav",
+  "_arachne_x_infer": {
+    "mode": "ai2v",
+    "checkpoint_dir": "/workspace/ARACHNE-X/weights/arachne-avatar-runtime",
+    "resolution": "720p",
+    "num_frames": 165,
+    "num_frames_mode": "duration",
+    "num_inference_steps": 35,
+    "text_guidance_scale": 4.0,
+    "audio_guidance_scale": 5.0,
+    "note": "Cinematic: use --num_frames_mode duration (or explicit 165+). For full lipsync without tail clamp on ~6s audio prefer _sync profile or --embedding_fps_auto."
+  },
+  "_arachne_x_infer_sync": {
+    "resolution": "720p",
+    "num_frames_mode": "sync",
+    "num_inference_steps": 35,
+    "text_guidance_scale": 4.0,
+    "audio_guidance_scale": 5.0,
+    "identity_bank_path": "output/elena_identity_bank_v2.pt",
+    "identity_id": 1,
+    "identity_strength": 1.0,
+    "note": "Stable lipsync on full audio embedding window. CLI: --num_frames_mode sync"
+  },
+  "_arachne_x_infer_cinematic_id": {
+    "resolution": "720p",
+    "num_frames_mode": "duration",
+    "num_inference_steps": 35,
+    "text_guidance_scale": 4.0,
+    "audio_guidance_scale": 5.0,
+    "identity_bank_path": "output/elena_identity_bank_v2.pt",
+    "identity_id": 1,
+    "identity_strength": 1.0,
+    "embedding_fps_auto": true,
+    "note": "6s cinematic + identity bank; add --embedding_fps_auto to reduce tail clamp."
+  },
+  "_arachne_x_infer_stream_turn": {
+    "mode": "streaming_ai2v",
+    "resolution": "720p",
+    "num_frames": 49,
+    "num_inference_steps": 20,
+    "text_guidance_scale": 4.0,
+    "audio_guidance_scale": 5.0,
+    "audio_chunk_sec": 2.0,
+    "note": "Micro-turn / latency smoke only. Output length is NOT full WAV duration."
+  },
+  "_arachne_x_infer_smoke": {
+    "resolution": "480p",
+    "num_frames": 17,
+    "num_inference_steps": 2,
+    "text_guidance_scale": 3.0,
+    "audio_guidance_scale": 3.0,
+    "note": "Fast sanity only (~0.5s if audio short). Not cinematic."
+  },
+  "_arachne_x_lora_dataset": {
+    "pairs_manifest": "assets/avatar/single/elena/elena/lora_pairs.json",
+    "audio_format": "mono 16 kHz WAV (elena/audio/elenaN.wav)",
+    "export_script": "scripts/gpu/export_elena_lora_smoke.sh",
+    "note": "5 paired samples for LoRA smoke; scale to 20–50+ pairs for production quality."
+  }
+}

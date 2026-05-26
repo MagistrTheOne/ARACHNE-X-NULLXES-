@@ -205,6 +205,7 @@ class LongCatVideoAvatarPipeline:
         self.hybrid_renderer_flicker_budget = 1.40
         self.hybrid_renderer_artifact_budget = 0.08
         self.metrics = MetricsLogger()
+        self.runtime_sampling_metrics = None
 
         # Identity token bank (Step 2): learnable per-identity vectors injected
         # into text conditioning as extra tokens.
@@ -217,6 +218,11 @@ class LongCatVideoAvatarPipeline:
             self.identity_tokens_per_id * self.identity_token_dim,
         )
         nn.init.normal_(self.identity_embedding.weight, mean=0.0, std=0.02)
+
+        # Phase B: optional planning tokens (before identity bank); disabled by default.
+        self.planning_enabled = False
+        self.planning_tokens_count = 4
+        self._planning_token_head: Optional[nn.Module] = None
         latent_dim = int(getattr(self.vae.config, "z_dim", 16))
         self.identity_latent_projector = nn.Sequential(
             nn.Linear(latent_dim, self.identity_token_dim),
@@ -581,6 +587,10 @@ class LongCatVideoAvatarPipeline:
         if compiler_ns is not None and hasattr(compiler_ns, "cudagraph_mark_step_begin"):
             compiler_ns.cudagraph_mark_step_begin()
 
+        rsm = getattr(self, "runtime_sampling_metrics", None)
+        if rsm is not None:
+            rsm.record_dit_forward(1)
+
         noise_pred = self.dit(**kwargs)
         if isinstance(noise_pred, torch.Tensor):
             return noise_pred.clone()
@@ -705,6 +715,207 @@ class LongCatVideoAvatarPipeline:
             prompt_attention_mask,
             negative_prompt_embeds,
             negative_prompt_attention_mask,
+        )
+
+    def _get_planning_token_head(self) -> nn.Module:
+        if self._planning_token_head is None:
+            from arachne_x.planning.planning_token_head import PlanningTokenHead
+
+            self._planning_token_head = PlanningTokenHead(
+                d_model=self.identity_token_dim,
+                n_tokens=self.planning_tokens_count,
+            ).to(device=self.device, dtype=self.dit.dtype)
+        return self._planning_token_head
+
+    def try_load_planning_head(self, checkpoint_dir: str) -> bool:
+        """Load ``planning/planning_head.safetensors`` when present; enables planning."""
+        path = os.path.join(checkpoint_dir, "planning", "planning_head.safetensors")
+        if not os.path.isfile(path):
+            return False
+        try:
+            from safetensors.torch import load_file
+
+            head = self._get_planning_token_head()
+            state = load_file(path, device=str(self.device))
+            head.load_state_dict(state, strict=False)
+            self.planning_enabled = True
+            loguru.logger.info("Planning token head loaded from {}", path)
+            return True
+        except Exception as exc:
+            loguru.logger.warning("Failed to load planning head from {}: {}", path, exc)
+            return False
+
+    def _append_planning_tokens(
+        self,
+        prompt_embeds: torch.Tensor,
+        prompt_attention_mask: torch.Tensor,
+        negative_prompt_embeds: Optional[torch.Tensor],
+        negative_prompt_attention_mask: Optional[torch.Tensor],
+        *,
+        audio_duration_sec: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if not self.planning_enabled or self.planning_tokens_count <= 0:
+            return (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            )
+
+        pooled = prompt_embeds.mean(dim=2).squeeze(1)
+        bsz = pooled.shape[0]
+        dur = float(audio_duration_sec or 0.0)
+        audio_stats = torch.tensor(
+            [[dur, dur / max(bsz, 1), 0.0, 0.0]] * bsz,
+            device=pooled.device,
+            dtype=pooled.dtype,
+        )
+        head = self._get_planning_token_head()
+        plan_tokens = head(pooled, audio_stats).unsqueeze(1)
+        plan_mask = torch.ones(
+            (plan_tokens.shape[0], plan_tokens.shape[2]),
+            dtype=prompt_attention_mask.dtype,
+            device=prompt_attention_mask.device,
+        )
+        prompt_embeds = torch.cat([plan_tokens, prompt_embeds], dim=2)
+        prompt_attention_mask = torch.cat([plan_mask, prompt_attention_mask], dim=1)
+
+        if negative_prompt_embeds is not None and negative_prompt_attention_mask is not None:
+            neg_tokens = torch.zeros_like(plan_tokens)
+            neg_mask = torch.zeros_like(plan_mask)
+            negative_prompt_embeds = torch.cat([neg_tokens, negative_prompt_embeds], dim=2)
+            negative_prompt_attention_mask = torch.cat([neg_mask, negative_prompt_attention_mask], dim=1)
+
+        self.metrics.record("planning_tokens_appended", int(self.planning_tokens_count))
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        )
+
+    def _encode_prompt_with_avatar_tokens(
+        self,
+        *,
+        prompt: Union[str, List[str]],
+        negative_prompt: Optional[Union[str, List[str]]],
+        batch_size: int,
+        num_videos_per_prompt: int,
+        max_sequence_length: int,
+        dit_dtype: torch.dtype,
+        device: torch.device,
+        identity_id: Optional[Union[int, List[int], torch.Tensor]],
+        identity_strength: float,
+        identity_negative_strength: float,
+        audio_duration_sec: Optional[float] = None,
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+        int,
+        int,
+    ]:
+        """UMT5 encode → planning tokens (optional) → identity tokens (optional)."""
+        identity_token_count = (
+            self.identity_tokens_per_id
+            if self.identity_bank_enabled and identity_id is not None
+            else 0
+        )
+        planning_token_count = (
+            self.planning_tokens_count if self.planning_enabled else 0
+        )
+
+        if context_parallel_util.get_cp_rank() == 0:
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                do_classifier_free_guidance=self.do_classifier_free_guidance,
+                num_videos_per_prompt=num_videos_per_prompt,
+                max_sequence_length=max_sequence_length,
+                dtype=dit_dtype,
+                device=device,
+            )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_planning_tokens(
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+                audio_duration_sec=audio_duration_sec,
+            )
+            (
+                prompt_embeds,
+                prompt_attention_mask,
+                negative_prompt_embeds,
+                negative_prompt_attention_mask,
+            ) = self._append_identity_tokens(
+                prompt_embeds=prompt_embeds,
+                prompt_attention_mask=prompt_attention_mask,
+                negative_prompt_embeds=negative_prompt_embeds,
+                negative_prompt_attention_mask=negative_prompt_attention_mask,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                batch_size=batch_size,
+                num_videos_per_prompt=num_videos_per_prompt,
+            )
+            if context_parallel_util.get_cp_size() > 1:
+                context_parallel_util.cp_broadcast(prompt_embeds)
+                context_parallel_util.cp_broadcast(prompt_attention_mask)
+                if self.do_classifier_free_guidance:
+                    context_parallel_util.cp_broadcast(negative_prompt_embeds)
+                    context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
+        elif context_parallel_util.get_cp_size() > 1:
+            caption_channels = self.text_encoder.config.d_model
+            prompt_seq_len = max_sequence_length + planning_token_count + identity_token_count
+            effective_batch_size = batch_size * num_videos_per_prompt
+            prompt_embeds = torch.zeros(
+                [effective_batch_size, 1, prompt_seq_len, caption_channels],
+                dtype=dit_dtype,
+                device=device,
+            )
+            prompt_attention_mask = torch.zeros(
+                [effective_batch_size, prompt_seq_len],
+                dtype=torch.int64,
+                device=device,
+            )
+            context_parallel_util.cp_broadcast(prompt_embeds)
+            context_parallel_util.cp_broadcast(prompt_attention_mask)
+            negative_prompt_embeds = None
+            negative_prompt_attention_mask = None
+            if self.do_classifier_free_guidance:
+                negative_prompt_embeds = torch.zeros(
+                    [effective_batch_size, 1, prompt_seq_len, caption_channels],
+                    dtype=dit_dtype,
+                    device=device,
+                )
+                negative_prompt_attention_mask = torch.zeros(
+                    [effective_batch_size, prompt_seq_len],
+                    dtype=torch.int64,
+                    device=device,
+                )
+                context_parallel_util.cp_broadcast(negative_prompt_embeds)
+                context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
+        else:
+            raise RuntimeError("Unexpected context-parallel rank layout")
+
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+            planning_token_count,
+            identity_token_count,
         )
 
     @torch.no_grad()
@@ -1580,10 +1791,13 @@ class LongCatVideoAvatarPipeline:
         cache_dir = getattr(self, 'audio_cache_dir', './audio_cache')
         os.makedirs(cache_dir, exist_ok=True)
 
+        from arachne_x.modules.audio.nullxes_audio_encoder import resolve_audio_encoder_backend
+
         phoneme_scale_tag = str(round(float(self.phoneme_stream_scale), 4)).replace(".", "p")
+        enc_tag = resolve_audio_encoder_backend()
         key = (
             sha256_of_audio_array(np.ascontiguousarray(speech_array))
-            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_v2"
+            + f"_fps{fps}_sr{sample_rate}_ph{int(bool(self.phoneme_enabled))}_pn{self.phoneme_num_classes}_ps{phoneme_scale_tag}_enc{enc_tag}_v3"
         )
         cache_path = os.path.join(cache_dir, key + '.npz')
 
@@ -1601,28 +1815,16 @@ class LongCatVideoAvatarPipeline:
             except Exception as exc:
                 loguru.logger.debug("Audio cache load failed; recomputing. Error: {}", exc)
 
-        audio_duration = len(speech_array) / sample_rate
-        video_length = audio_duration * fps
+        from arachne_x.modules.audio.nullxes_audio_encoder import encode_avatar_audio
 
-        # speech preprocess
-        speech_array = self._loudness_norm(speech_array, sample_rate)
-        speech_array = self._add_noise_floor(speech_array)
-        speech_array = self._smooth_transients(speech_array)
-
-        # wav2vec_feature_extractor
-        audio_feature = np.squeeze(
-            self.wav2vec_feature_extractor(speech_array, sampling_rate=sample_rate).input_values
+        speech_pre = np.ascontiguousarray(speech_array)
+        audio_emb = encode_avatar_audio(
+            self,
+            speech_pre,
+            fps=fps,
+            device=device,
+            sample_rate=sample_rate,
         )
-        audio_feature = torch.from_numpy(audio_feature).float().to(device=device)
-        audio_feature = audio_feature.unsqueeze(0)
-
-        # audio embedding
-        with self.metrics.timeit('wav2vec_encode'):
-            embeddings = self.audio_encoder(audio_feature, seq_len=int(video_length), output_hidden_states=True)
-
-        audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
-        audio_emb = rearrange(audio_emb, "b s d -> s b d").contiguous() # T, 12, 768
-
 
         # try to compute fused multi-stream features and persist to cache
         try:
@@ -2135,6 +2337,12 @@ class LongCatVideoAvatarPipeline:
         emotion_intensity: float = 0.0,
         emotion_guidance_scale: float = 0.0,
         mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
+        use_kv_cache: bool = False,
+        reuse_kv_cache: bool = False,
+        offload_kv_cache: bool = False,
+        refresh_identity_tokens: bool = False,
+        silence_gate: bool = True,
     ):
         r"""
         Generates video frames from an input image and text prompt using diffusion process.
@@ -2239,62 +2447,43 @@ class LongCatVideoAvatarPipeline:
 
         # 3. Encode inputs
         dit_dtype = self.dit.dtype
-        identity_token_count = (
-            self.identity_tokens_per_id
-            if self.identity_bank_enabled and identity_id is not None
-            else 0
+        audio_duration_sec = None
+        if audio_emb is not None and hasattr(audio_emb, "shape"):
+            try:
+                audio_duration_sec = float(audio_emb.shape[0]) / 32.0
+            except Exception:
+                audio_duration_sec = None
+        (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+            _planning_token_count,
+            _identity_token_count,
+        ) = self._encode_prompt_with_avatar_tokens(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            batch_size=batch_size,
+            num_videos_per_prompt=num_videos_per_prompt,
+            max_sequence_length=max_sequence_length,
+            dit_dtype=dit_dtype,
+            device=device,
+            identity_id=identity_id,
+            identity_strength=identity_strength,
+            identity_negative_strength=identity_negative_strength,
+            audio_duration_sec=audio_duration_sec,
         )
 
-        if context_parallel_util.get_cp_rank() == 0:
-            (
-                prompt_embeds, 
-                prompt_attention_mask, 
-                negative_prompt_embeds, 
-                negative_prompt_attention_mask,
-            ) = self.encode_prompt(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
-                num_videos_per_prompt=num_videos_per_prompt,
-                max_sequence_length=max_sequence_length,
-                dtype=dit_dtype,
-                device=device,
-            )
-            (
-                prompt_embeds,
-                prompt_attention_mask,
-                negative_prompt_embeds,
-                negative_prompt_attention_mask,
-            ) = self._append_identity_tokens(
+        if refresh_identity_tokens and identity_id is not None and _identity_token_count > 0:
+            prompt_embeds, negative_prompt_embeds = self._refresh_identity_tokens(
                 prompt_embeds=prompt_embeds,
-                prompt_attention_mask=prompt_attention_mask,
                 negative_prompt_embeds=negative_prompt_embeds,
-                negative_prompt_attention_mask=negative_prompt_attention_mask,
                 identity_id=identity_id,
                 identity_strength=identity_strength,
                 identity_negative_strength=identity_negative_strength,
                 batch_size=batch_size,
                 num_videos_per_prompt=num_videos_per_prompt,
             )
-            if context_parallel_util.get_cp_size() > 1:
-                context_parallel_util.cp_broadcast(prompt_embeds)
-                context_parallel_util.cp_broadcast(prompt_attention_mask)
-                if self.do_classifier_free_guidance:
-                    context_parallel_util.cp_broadcast(negative_prompt_embeds)
-                    context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
-        elif context_parallel_util.get_cp_size() > 1:
-            caption_channels = self.text_encoder.config.d_model
-            prompt_seq_len = max_sequence_length + identity_token_count
-            effective_batch_size = batch_size * num_videos_per_prompt
-            prompt_embeds = torch.zeros([effective_batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
-            prompt_attention_mask = torch.zeros([effective_batch_size, prompt_seq_len], dtype=torch.int64, device=device)
-            context_parallel_util.cp_broadcast(prompt_embeds)
-            context_parallel_util.cp_broadcast(prompt_attention_mask)
-            if self.do_classifier_free_guidance:
-                negative_prompt_embeds = torch.zeros([effective_batch_size, 1, prompt_seq_len, caption_channels], dtype=dit_dtype, device=device)
-                negative_prompt_attention_mask = torch.zeros([effective_batch_size, prompt_seq_len], dtype=torch.int64, device=device)
-                context_parallel_util.cp_broadcast(negative_prompt_embeds)
-                context_parallel_util.cp_broadcast(negative_prompt_attention_mask)
 
         audio_base_embs = self._prepare_audio_emb_for_dit(
             audio_emb,
@@ -2303,6 +2492,17 @@ class LongCatVideoAvatarPipeline:
             num_videos_per_prompt=num_videos_per_prompt,
             device=device,
         )
+        if silence_gate:
+            from arachne_x.runtime.audio_motion_gate import apply_audio_motion_gate
+
+            audio_guidance_scale, _gate_meta = apply_audio_motion_gate(
+                audio_base_embs, float(audio_guidance_scale)
+            )
+            rsm_gate = getattr(self, "runtime_sampling_metrics", None)
+            if rsm_gate is not None:
+                rsm_gate.silence_ratio = _gate_meta.get("silence_ratio")
+                rsm_gate.audio_guidance_scale_effective = _gate_meta.get("audio_guidance_scale_effective")
+
         audio_cond_embs, emotion_active = self._apply_emotion_channel(
             audio_emb=audio_base_embs,
             emotion_id=emotion_id,
@@ -2355,7 +2555,7 @@ class LongCatVideoAvatarPipeline:
                     latents=latents[:, :, :1],
                     momentum=identity_update_momentum,
                 )
-                if identity_token_count > 0:
+                if _identity_token_count > 0:
                     prompt_embeds, negative_prompt_embeds = self._refresh_identity_tokens(
                         prompt_embeds=prompt_embeds,
                         negative_prompt_embeds=negative_prompt_embeds,
@@ -2379,6 +2579,36 @@ class LongCatVideoAvatarPipeline:
         if context_parallel_util.get_cp_size() > 1:
             torch.distributed.barrier(group=context_parallel_util.get_cp_group())
 
+        cache_num_cond_latents = 1
+        cond_latents = None
+        kv_cache_dict: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        active_num_cond_latents = cache_num_cond_latents
+
+        if use_kv_cache:
+            if reuse_kv_cache and self.kv_cache_dict:
+                kv_cache_dict = self._get_kv_cache_dict() or {}
+                cond_latents = latents[:, :, :cache_num_cond_latents]
+                latents = latents[:, :, cache_num_cond_latents:]
+                active_num_cond_latents = cache_num_cond_latents
+                rsm_kv = getattr(self, "runtime_sampling_metrics", None)
+                if rsm_kv is not None:
+                    rsm_kv.kv_cache_hits += 1
+            else:
+                cond_latents = latents[:, :, :cache_num_cond_latents]
+                active_num_cond_latents = self._cache_clean_latents(
+                    cond_latents,
+                    max_sequence_length,
+                    offload_kv_cache=offload_kv_cache,
+                    device=device,
+                    dtype=dit_dtype,
+                    audio_embs=audio_base_embs,
+                    num_cond_latents=cache_num_cond_latents,
+                    num_ref_latents=0,
+                    ref_img_index=None,
+                )
+                kv_cache_dict = self._get_kv_cache_dict() or {}
+                latents = latents[:, :, cache_num_cond_latents:]
+
         with tqdm(total=len(timesteps), desc="Denoising") as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -2391,14 +2621,19 @@ class LongCatVideoAvatarPipeline:
 
                 timestep = t.expand(latent_model_input.shape[0]).to(dit_dtype)
                 timestep = timestep.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
-                timestep[:, :1] = 0
+                if not use_kv_cache:
+                    timestep[:, :1] = 0
+                else:
+                    timestep[:, :active_num_cond_latents] = 0
 
+                _kv = kv_cache_dict if use_kv_cache else None
                 noise_pred_cond = self._predict_avatar_noise(
                     hidden_states=latents,
                     timestep=timestep[: latents.shape[0]],
                     encoder_hidden_states=prompt_embeds[latents.shape[0] :] if self.do_classifier_free_guidance else prompt_embeds,
                     encoder_attention_mask=prompt_attention_mask[latents.shape[0] :] if self.do_classifier_free_guidance else prompt_attention_mask,
-                    num_cond_latents=1,
+                    num_cond_latents=active_num_cond_latents,
+                    kv_cache_dict=_kv,
                     audio_embs=audio_cond_embs[latents.shape[0] :] if self.do_classifier_free_guidance else audio_cond_embs,
                     ref_target_masks=ref_target_masks,
                 )
@@ -2406,14 +2641,18 @@ class LongCatVideoAvatarPipeline:
                 if self.do_classifier_free_guidance:
                     timestep_uncond = t.expand(latents.shape[0]).to(dit_dtype)
                     timestep_uncond = timestep_uncond.unsqueeze(-1).repeat(1, latent_model_input.shape[2])
-                    timestep_uncond[:, :1] = 0
+                    if not use_kv_cache:
+                        timestep_uncond[:, :1] = 0
+                    else:
+                        timestep_uncond[:, :active_num_cond_latents] = 0
 
                     noise_pred_uncond = self._predict_avatar_noise(
                         hidden_states=latents,
                         timestep=timestep_uncond,
                         encoder_hidden_states=negative_prompt_embeds,
                         encoder_attention_mask=negative_prompt_attention_mask,
-                        num_cond_latents=1,
+                        num_cond_latents=active_num_cond_latents,
+                        kv_cache_dict=_kv,
                         audio_embs=audio_unond_embs,
                         ref_target_masks=ref_target_masks,
                     )
@@ -2422,7 +2661,8 @@ class LongCatVideoAvatarPipeline:
                         timestep=timestep_uncond,
                         encoder_hidden_states=prompt_embeds[latents.shape[0] :],
                         encoder_attention_mask=prompt_attention_mask[latents.shape[0] :],
-                        num_cond_latents=1,
+                        num_cond_latents=active_num_cond_latents,
+                        kv_cache_dict=_kv,
                         audio_embs=audio_unond_embs,
                         ref_target_masks=ref_target_masks,
                     )
@@ -2433,7 +2673,8 @@ class LongCatVideoAvatarPipeline:
                             timestep=timestep_uncond,
                             encoder_hidden_states=prompt_embeds[latents.shape[0] :],
                             encoder_attention_mask=prompt_attention_mask[latents.shape[0] :],
-                            num_cond_latents=1,
+                            num_cond_latents=active_num_cond_latents,
+                            kv_cache_dict=_kv,
                             audio_embs=audio_guidance_embs,
                             ref_target_masks=ref_target_masks,
                         )
@@ -2442,6 +2683,17 @@ class LongCatVideoAvatarPipeline:
                             + text_guidance_scale * (noise_pred_text - noise_pred_uncond)
                             + audio_guidance_scale * (noise_pred_audio - noise_pred_text)
                             + self.emotion_guidance_scale * (noise_pred_cond - noise_pred_audio)
+                        )
+                    elif use_cfg_zero:
+                        b = noise_pred_text.shape[0]
+                        st_star = self.optimized_scale(
+                            noise_pred_text.reshape(b, -1),
+                            noise_pred_uncond.reshape(b, -1),
+                        ).view(b, 1, 1, 1)
+                        noise_pred = (
+                            noise_pred_uncond * st_star
+                            + text_guidance_scale * (noise_pred_text - noise_pred_uncond * st_star)
+                            + audio_guidance_scale * (noise_pred_cond - noise_pred_text)
                         )
                     else:
                         noise_pred = (
@@ -2452,15 +2704,20 @@ class LongCatVideoAvatarPipeline:
                 else:
                     noise_pred = noise_pred_cond
 
-                # negate for scheduler compatibility
                 noise_pred = -noise_pred
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents[:, :, 1:] = self.scheduler.step(noise_pred[:, :, 1:], t, latents[:, :, 1:], return_dict=False)[0]
+                if use_kv_cache:
+                    latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                else:
+                    latents[:, :, 1:] = self.scheduler.step(
+                        noise_pred[:, :, 1:], t, latents[:, :, 1:], return_dict=False
+                    )[0]
 
-                # call the callback, if provided
                 if i == len(timesteps) - 1 or (i + 1) % self.scheduler.order == 0:
                     progress_bar.update()
+
+        if use_kv_cache and cond_latents is not None:
+            latents = torch.cat([cond_latents, latents], dim=2)
 
         self._current_timestep = None
 
@@ -2482,9 +2739,9 @@ class LongCatVideoAvatarPipeline:
 
         if output_type == 'both':
             return (output_video, latents_)
-        else: 
+        else:
             return output_video
-
+    
 
     @torch.no_grad()
     def generate_avc(
@@ -2952,6 +3209,253 @@ class LongCatVideoAvatarPipeline:
             return output_video
     
     @torch.no_grad()
+    def generate_chunked_ai2v(
+        self,
+        image: PipelineImageInput,
+        prompt: Union[str, List[str]] = None,
+        negative_prompt: Union[str, List[str]] = None,
+        resolution: Literal["480p", "720p"] = "480p",
+        num_frames: int = 93,
+        num_inference_steps: int = 12,
+        use_distill: bool = True,
+        text_guidance_scale: float = 4.0,
+        audio_guidance_scale: float = 5.0,
+        generator: Optional[torch.Generator] = None,
+        max_sequence_length: int = 512,
+        audio_emb: torch.Tensor = None,
+        resize_mode: Optional[str] = "crop",
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
+        chunk_frames: int = 33,
+        first_chunk_frames: Optional[int] = None,
+        chunk_overlap: int = 8,
+        yield_frames: bool = False,
+        use_kv_cross_chunk: Optional[bool] = None,
+        kv_keep_last: int = 24,
+    ):
+        """
+        Chunked ai2v: multiple ``generate_ai2v`` passes with pixel-space stitch (Sampling OS wedge).
+
+        When ``yield_frames=True``, yields uint8 frames as each chunk completes (TTFF path).
+        Otherwise returns stacked video ``[T,H,W,C]`` numpy.
+        """
+        import time
+
+        from arachne_x.runtime.chunk_stitch import (
+            iter_chunk_frame_ranges,
+            slice_audio_emb_temporal,
+            stitch_chunk_videos,
+        )
+        from arachne_x.inference_frames import normalize_ai2v_video_output, round_to_4n_plus_1
+
+        if audio_emb is None:
+            raise ValueError("generate_chunked_ai2v requires pre-built `audio_emb` for full clip.")
+
+        total_frames = int(num_frames)
+        if total_frames % self.vae_scale_factor_temporal != 1:
+            total_frames = total_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+        total_frames = max(total_frames, 1)
+
+        if not torch.is_tensor(audio_emb):
+            audio_emb = torch.as_tensor(audio_emb)
+        if audio_emb.dim() == 3:
+            full_prepared = self._prepare_audio_emb_for_dit(
+                audio_emb,
+                num_frames=total_frames,
+                batch_size=1,
+                num_videos_per_prompt=1,
+                device=self.device,
+            )
+        elif audio_emb.dim() >= 5:
+            full_prepared = audio_emb
+            if full_prepared.shape[1] < total_frames:
+                total_frames = int(full_prepared.shape[1])
+        else:
+            raise ValueError(f"Unsupported audio_emb shape for chunked ai2v: {tuple(audio_emb.shape)}")
+
+        rsm = getattr(self, "runtime_sampling_metrics", None)
+        if rsm is not None:
+            rsm.streaming_mode = "chunked_ai2v"
+            rsm.frames_total = total_frames
+            rsm.cfg_passes_per_step = 4 if emotion_id and float(emotion_guidance_scale) > 0 else 3
+
+        from arachne_x.runtime.chunk_kv import chunk_kv_enabled, seed_kv_from_chunk_tail
+        from arachne_x.runtime.identity_drift_monitor import IdentityDriftMonitor
+
+        chunk_videos: list = []
+        chunk_idx = 0
+        emitted_until = 0
+        use_distill_flag = bool(use_distill or num_inference_steps <= 16)
+        if use_kv_cross_chunk is None:
+            use_kv_cross_chunk = chunk_kv_enabled()
+        else:
+            use_kv_cross_chunk = bool(use_kv_cross_chunk)
+
+        drift_mon = IdentityDriftMonitor()
+        next_refresh_identity = True
+        next_audio_scale = float(audio_guidance_scale)
+
+        def _iter_realtime_chunk_ranges():
+            if first_chunk_frames is None or int(first_chunk_frames) <= 0:
+                yield from iter_chunk_frame_ranges(total_frames, chunk_frames, chunk_overlap)
+                return
+
+            first = round_to_4n_plus_1(min(int(first_chunk_frames), total_frames))
+            first = max(1, first)
+            first = min(first, total_frames)
+            yield 0, first, first
+
+            if first >= total_frames:
+                return
+
+            chunk = round_to_4n_plus_1(chunk_frames)
+            ov = max(0, min(int(chunk_overlap), chunk - 1))
+            # Keep a small bridge into chunk 2 without making a 9-frame first
+            # chunk duplicate almost entirely.
+            first_overlap = min(ov, max(0, first - 1), 4)
+            step = max(1, chunk - ov)
+            start = max(0, first - first_overlap)
+            while start < total_frames:
+                end = min(start + chunk, total_frames)
+                n = end - start
+                if n <= 0:
+                    break
+                yield start, end, n
+                if end >= total_frames:
+                    break
+                start += step
+
+        if context_parallel_util.get_cp_rank() == 0:
+            loguru.logger.info(
+                "Chunked AI2V start: frames={} chunk_frames={} first_chunk_frames={} overlap={} steps={} distill={} kv_cross_chunk={} "
+                "identity_id={}",
+                total_frames,
+                int(chunk_frames),
+                first_chunk_frames,
+                int(chunk_overlap),
+                int(num_inference_steps),
+                use_distill_flag,
+                use_kv_cross_chunk,
+                identity_id,
+            )
+
+        for start, end, n_chunk in _iter_realtime_chunk_ranges():
+            if chunk_idx == 0:
+                self.kv_cache_dict = None
+            n_gen = round_to_4n_plus_1(n_chunk)
+            audio_slice = slice_audio_emb_temporal(full_prepared, start, min(end, full_prepared.shape[1]))
+            if audio_slice.shape[1] < n_gen:
+                n_gen = int(audio_slice.shape[1])
+                n_gen = round_to_4n_plus_1(max(1, n_gen))
+
+            t0 = time.perf_counter()
+            reuse_kv = bool(use_kv_cross_chunk and chunk_idx > 0 and getattr(self, "kv_cache_dict", None))
+
+            out = normalize_ai2v_video_output(
+                self.generate_ai2v(
+                    image=image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or "",
+                    resolution=resolution,
+                    num_frames=n_gen,
+                    num_inference_steps=num_inference_steps,
+                    use_distill=use_distill_flag,
+                    text_guidance_scale=text_guidance_scale,
+                    audio_guidance_scale=next_audio_scale,
+                    generator=generator,
+                    max_sequence_length=max_sequence_length,
+                    audio_emb=audio_slice,
+                    resize_mode=resize_mode,
+                    identity_id=identity_id,
+                    identity_strength=identity_strength,
+                    identity_negative_strength=identity_negative_strength,
+                    emotion_id=emotion_id,
+                    emotion_intensity=emotion_intensity,
+                    emotion_guidance_scale=emotion_guidance_scale,
+                    mouth_zone_masks=mouth_zone_masks,
+                    use_cfg_zero=use_cfg_zero,
+                    use_kv_cache=bool(use_kv_cross_chunk and reuse_kv),
+                    reuse_kv_cache=reuse_kv,
+                    refresh_identity_tokens=next_refresh_identity,
+                    silence_gate=True,
+                    update_identity_bank=False,
+                )
+            )
+
+            if chunk_idx == 0:
+                drift_mon.set_anchor_from_frame(out[0])
+            cos = drift_mon.score_chunk_tail(out)
+            pol = drift_mon.policy_for_next_chunk(cos)
+            next_refresh_identity = bool(pol.get("refresh_identity_tokens", True))
+            next_audio_scale = float(audio_guidance_scale) * float(
+                pol.get("audio_guidance_scale_multiplier", 1.0)
+            )
+
+            if rsm is not None:
+                chunk_elapsed = time.perf_counter() - t0
+                rsm.add_denoise_elapsed(chunk_elapsed)
+                if chunk_idx == 0:
+                    rsm.mark_first_chunk_done(chunk_elapsed)
+                rsm.chunk_count += 1
+                rsm.frames_per_chunk.append(int(out.shape[0]))
+                drift_dict = drift_mon.to_dict()
+                rsm.identity_cosine_per_chunk = drift_dict.get("identity_cosine_per_chunk", [])
+                rsm.identity_drift_min = drift_dict.get("identity_drift_min")
+                rsm.corrective_actions = drift_dict.get("corrective_actions", [])
+            else:
+                chunk_elapsed = time.perf_counter() - t0
+
+            if context_parallel_util.get_cp_rank() == 0:
+                loguru.logger.info(
+                    "Chunked AI2V chunk_done idx={} range={}..{} frames={} elapsed_sec={:.4f} "
+                    "reuse_kv={} drift_cosine={:.4f} next_audio_scale={:.4f}",
+                    chunk_idx,
+                    start,
+                    end,
+                    int(out.shape[0]),
+                    chunk_elapsed,
+                    reuse_kv,
+                    float(cos),
+                    next_audio_scale,
+                )
+
+            chunk_videos.append(out)
+            if use_kv_cross_chunk:
+                try:
+                    seed_kv_from_chunk_tail(
+                        self,
+                        out,
+                        audio_emb_slice=audio_slice,
+                        kv_keep_last=kv_keep_last,
+                        max_sequence_length=max_sequence_length,
+                    )
+                except Exception as exc:
+                    loguru.logger.warning("chunk KV seed failed (continuing): {}", exc)
+            if yield_frames:
+                skip_prefix = max(0, min(int(out.shape[0]), int(emitted_until) - int(start)))
+                for fi in range(skip_prefix, out.shape[0]):
+                    if rsm is not None:
+                        rsm.mark_first_frame_emit()
+                        if fi == skip_prefix and chunk_idx == 0 and context_parallel_util.get_cp_rank() == 0:
+                            loguru.logger.info("Chunked AI2V first_frame_emit metrics={}", rsm.to_dict())
+                    yield out[fi]
+                emitted_until = max(int(emitted_until), int(end))
+
+            chunk_idx += 1
+
+        if yield_frames:
+            return
+
+        stitched = stitch_chunk_videos(chunk_videos, chunk_overlap)
+        return stitched
+
+    @torch.no_grad()
     def generate_streaming_ai2v(
         self,
         image: PipelineImageInput,
@@ -2960,6 +3464,7 @@ class LongCatVideoAvatarPipeline:
         resolution: Literal["480p", "720p"] = "480p",
         num_frames: int = 93,
         num_inference_steps: int = 8,  # Distilled: 8 steps instead of 50
+        use_distill: Optional[bool] = None,
         text_guidance_scale: float = 4.0,
         audio_guidance_scale: float = 4.0,
         generator: Optional[torch.Generator] = None,
@@ -2974,10 +3479,15 @@ class LongCatVideoAvatarPipeline:
         emotion_intensity: float = 0.0,
         emotion_guidance_scale: float = 0.0,
         mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
+        chunk_frames: int = 33,
+        first_chunk_frames: Optional[int] = None,
+        chunk_overlap: int = 8,
+        use_chunked_denoise: Optional[bool] = None,
     ):
         r"""
         Streaming-like video generation (Image-to-Video).
-        Yields video frames progressively after latent denoising is complete.
+        Operational path: chunked denoise + per-chunk emit (TTFF). Legacy: monolithic denoise + stream VAE.
         
         Args:
             image: Input image for video generation.
@@ -3032,9 +3542,14 @@ class LongCatVideoAvatarPipeline:
 
             full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32, copy=False)
             audio_stride = max(int(self.vae_scale_factor_temporal), 1)
+            emb_fps = getattr(self, "inference_embedding_fps", None)
+            if emb_fps is None:
+                emb_fps = 16 * audio_stride
+            else:
+                emb_fps = float(emb_fps)
             full_audio_emb = self.get_audio_embedding(
                 full_audio,
-                fps=16 * audio_stride,
+                fps=emb_fps,
                 device=device,
                 sample_rate=sample_rate,
             )
@@ -3052,7 +3567,80 @@ class LongCatVideoAvatarPipeline:
                 device=device,
             )
 
-        # 2. Run full generate_ai2v with output_type='latent' (image + audio conditioning)
+        import os
+
+        legacy_streaming = os.environ.get("ARACHNE_LEGACY_STREAMING", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        use_chunked = not legacy_streaming
+        if use_chunked_denoise is not None:
+            use_chunked = bool(use_chunked_denoise)
+        if use_distill is not None:
+            use_distill_flag = bool(use_distill)
+        else:
+            use_distill_flag = bool(num_inference_steps <= 16)
+
+        if use_chunked and int(num_frames) > int(chunk_frames):
+            rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+            if rsm_stream is not None:
+                rsm_stream.streaming_mode = "chunked_ai2v"
+            if context_parallel_util.get_cp_rank() == 0:
+                loguru.logger.info(
+                    "Streaming AI2V selected chunked path frames={} chunk_frames={} first_chunk_frames={} overlap={} steps={} distill={}",
+                    int(num_frames),
+                    int(chunk_frames),
+                    first_chunk_frames,
+                    int(chunk_overlap),
+                    int(num_inference_steps),
+                    use_distill_flag,
+                )
+            for frame_np in self.generate_chunked_ai2v(
+                image=image,
+                prompt=prompt,
+                negative_prompt="",
+                resolution=resolution,
+                num_frames=num_frames,
+                num_inference_steps=num_inference_steps,
+                use_distill=use_distill_flag,
+                text_guidance_scale=text_guidance_scale,
+                audio_guidance_scale=audio_guidance_scale,
+                generator=generator,
+                max_sequence_length=max_sequence_length,
+                audio_emb=audio_emb,
+                resize_mode=resize_mode,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                emotion_id=emotion_id,
+                emotion_intensity=emotion_intensity,
+                emotion_guidance_scale=emotion_guidance_scale,
+                mouth_zone_masks=mouth_zone_masks,
+                use_cfg_zero=use_cfg_zero,
+                chunk_frames=chunk_frames,
+                first_chunk_frames=first_chunk_frames,
+                chunk_overlap=chunk_overlap,
+                yield_frames=True,
+            ):
+                yield frame_np
+            return
+
+        # Legacy: monolithic denoise then stream VAE decode
+        rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+        if rsm_stream is not None:
+            rsm_stream.streaming_mode = "legacy_monolithic"
+        if context_parallel_util.get_cp_rank() == 0:
+            loguru.logger.warning(
+                "Streaming AI2V selected legacy monolithic path frames={} chunk_frames={} chunked={} legacy_env={} "
+                "steps={} distill={}; TTFF waits for full denoise before first frame.",
+                int(num_frames),
+                int(chunk_frames),
+                use_chunked,
+                legacy_streaming,
+                int(num_inference_steps),
+                use_distill_flag,
+            )
         latents = self.generate_ai2v(
             image=image,
             prompt=prompt,
@@ -3060,7 +3648,7 @@ class LongCatVideoAvatarPipeline:
             resolution=resolution,
             num_frames=num_frames,
             num_inference_steps=num_inference_steps,
-            use_distill=(num_inference_steps <= 16),
+            use_distill=use_distill_flag,
             text_guidance_scale=text_guidance_scale,
             audio_guidance_scale=audio_guidance_scale,
             generator=generator,
@@ -3075,9 +3663,10 @@ class LongCatVideoAvatarPipeline:
             emotion_intensity=emotion_intensity,
             emotion_guidance_scale=emotion_guidance_scale,
             mouth_zone_masks=mouth_zone_masks,
+            use_cfg_zero=use_cfg_zero,
         )
-        
-        # 3. Stream decode: denormalize, decode frame-by-frame, yield
+
+        # Stream decode: denormalize, decode frame-by-frame, yield
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         vae_decoder = StreamingVAEDecoder(self.vae, chunk_size=1, enable_amp=True)
@@ -3132,6 +3721,9 @@ class LongCatVideoAvatarPipeline:
 
             frame_np = (frame_tensor[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
             frame_times.append(time.time() - frame_time)
+            rsm_stream = getattr(self, "runtime_sampling_metrics", None)
+            if rsm_stream is not None:
+                rsm_stream.mark_first_frame_emit()
             yield frame_np
         
         # 4. Log performance

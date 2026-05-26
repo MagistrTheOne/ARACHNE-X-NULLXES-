@@ -1,3 +1,5 @@
-# Скачивание/подвыборки HF datasets (scripts/fetch_hf_datasets.py).
+# HF dataset fetch / prep (scripts/fetch_hf_datasets.py). Not required for prod infer.
+# See Documentation/REQUIREMENTS.md
+#
 datasets>=3.0.0
 pandas>=2.0.0

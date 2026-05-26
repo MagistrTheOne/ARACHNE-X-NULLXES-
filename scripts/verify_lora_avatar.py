@@ -34,7 +34,7 @@ assert _lora_spec.loader is not None
 _lora_spec.loader.exec_module(_lora_mod)
 build_initial_lora_state_dict = _lora_mod.build_initial_lora_state_dict
 create_lora_network = _lora_mod.create_lora_network
-default_avatar_train_lora_filter = _lora_mod.default_avatar_train_lora_filter
+avatar_attention_only_lora_filter = _lora_mod.avatar_attention_only_lora_filter
 
 
 class _Block(nn.Module):
@@ -43,13 +43,35 @@ class _Block(nn.Module):
         self.lin = nn.Linear(d, d)
 
 
+class _AttnBlock(nn.Module):
+    """Minimal attention block matching avatar DiT module naming."""
+
+    def __init__(self, d: int):
+        super().__init__()
+        self.attn = nn.Module()
+        self.attn.qkv = nn.Linear(d, d * 3)
+        self.attn.proj = nn.Linear(d, d)
+        self.cross_attn = nn.Module()
+        self.cross_attn.q_linear = nn.Linear(d, d)
+        self.cross_attn.kv_linear = nn.Linear(d, d * 2)
+        self.cross_attn.proj = nn.Linear(d, d)
+        self.audio_cross_attn = nn.Module()
+        self.audio_cross_attn.q_linear = nn.Linear(d, d)
+        self.audio_cross_attn.kv_linear = nn.Linear(d, d * 2)
+        self.audio_cross_attn.proj = nn.Linear(d, d)
+        self.ffn = nn.Module()
+        self.ffn.w1 = nn.Linear(d, d)  # must NOT receive LoRA
+
+
 class ToyAvatarLikeDiT(nn.Module):
-    """Minimal paths: blocks.* (x_embedder skipped by filter)."""
+    """Minimal paths: blocks.* (x_embedder + audio_proj skipped by filter)."""
 
     def __init__(self, d: int = 32):
         super().__init__()
         self.x_embedder = nn.Identity()
-        self.blocks = nn.ModuleList([_Block(d) for _ in range(2)])
+        self.audio_proj = nn.Linear(d, d)  # must NOT receive LoRA
+        self.final_layer = nn.Linear(d, d)  # must NOT receive LoRA
+        self.blocks = nn.ModuleList([_AttnBlock(d) for _ in range(2)])
 
 
 def _run_toy() -> None:
@@ -59,8 +81,12 @@ def _run_toy() -> None:
         m1,
         rank=4,
         alpha=8.0,
-        name_filter=lambda name, mod: default_avatar_train_lora_filter(name, mod),
+        name_filter=lambda name, mod: avatar_attention_only_lora_filter(name, mod),
     )
+    forbidden = ("audio_proj", "final_layer", "x_embedder", "ffn", "adaLN")
+    for key in st.keys():
+        for bad in forbidden:
+            assert bad not in key, f"LoRA policy violation: {key} contains {bad!r}"
     net = create_lora_network(m1, st, 1.0, 4, 8.0)
     inc = net.load_state_dict(st, strict=True)
     assert not inc.missing_keys and not inc.unexpected_keys
@@ -98,7 +124,7 @@ def _run_real_checkpoint(checkpoint_dir: str) -> None:
         dit,
         rank=8,
         alpha=16.0,
-        name_filter=lambda n, m: default_avatar_train_lora_filter(n, m),
+        name_filter=lambda n, m: avatar_attention_only_lora_filter(n, m),
         dtype=torch.float32,
     )
     net = create_lora_network(dit, st, 1.0, 8, 16.0)

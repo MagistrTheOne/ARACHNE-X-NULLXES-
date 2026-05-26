@@ -23,4 +23,7 @@ python -m pip install "huggingface_hub>=0.34,<1.0"
 
 echo "venv ready: $VENV"
 echo "Activate: source \"$VENV/bin/activate\""
-echo "Optional: export PYTHONPATH=\"\$PWD:\$PWD/services/longcat-worker\" for local uvicorn imports."
+echo "Prod deps (Linux): torch cu124 -> flash-attn --no-build-isolation -> pip install -r requirements.txt -r requirements_avatar.txt"
+echo "Optional TTS: pip install -r requirements-tts.txt"
+echo "Worker: export PYTHONPATH=\"\$PWD:\$PWD/services/arachnex-worker\""
+echo "See Documentation/REQUIREMENTS.md"

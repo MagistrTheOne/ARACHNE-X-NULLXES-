@@ -12,10 +12,24 @@ def main():
         "--mode",
         type=str,
         required=True,
-        choices=["t2v", "i2v", "vc", "ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"],
+        choices=["t2v", "i2v", "vc", "audio_i2v", "imagine_i2v", "ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"],
     )
     parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--negative_prompt", type=str, default="")
+    parser.add_argument(
+        "--prompt_compiler",
+        type=str,
+        default=None,
+        choices=["off", "openai", "gemma"],
+        help="Prompt intelligence layer before UMT5 (default: off or ARACHNE_PROMPT_COMPILER env).",
+    )
+    parser.add_argument(
+        "--prompt_compiler_fallback",
+        type=str,
+        default=None,
+        choices=["off", "openai"],
+        help="Fallback when gemma fails (default: off or ARACHNE_COMPILER_FALLBACK env).",
+    )
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--video", type=str, default=None)
     parser.add_argument("--audio", type=str, default=None)
@@ -94,10 +108,46 @@ def main():
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=832)
     parser.add_argument("--num_frames", type=int, default=93)
+    parser.add_argument(
+        "--num_frames_mode",
+        type=str,
+        default="explicit",
+        choices=["explicit", "sync", "duration", "min"],
+        help="Avatar: explicit=use --num_frames; sync=max lipsync window; duration=match audio @ mux_fps; min=min(sync,duration).",
+    )
+    parser.add_argument(
+        "--mux_fps",
+        type=int,
+        default=30,
+        help="Mux FPS for avatar MP4 export and duration frame budget.",
+    )
+    parser.add_argument(
+        "--audio_embedding_fps",
+        type=float,
+        default=None,
+        help="Wav2Vec embedding temporal fps (default 16*vae_stride, typically 64).",
+    )
+    parser.add_argument(
+        "--embedding_fps_auto",
+        action="store_true",
+        help="Raise embedding fps when num_frames exceeds sync cap (long clips, no retrain).",
+    )
     parser.add_argument("--num_cond_frames", type=int, default=13)
     parser.add_argument("--num_inference_steps", type=int, default=50)
     parser.add_argument("--text_guidance_scale", type=float, default=4.0)
     parser.add_argument("--audio_guidance_scale", type=float, default=4.0)
+    parser.add_argument(
+        "--audio_conditioning_adapter",
+        type=str,
+        default=None,
+        help="Experimental audio_i2v: path to trained adapter .safetensors (optional; uses zero-init adapter if omitted).",
+    )
+    parser.add_argument(
+        "--audio_conditioning_scale",
+        type=float,
+        default=0.0,
+        help="Experimental audio_i2v / imagine_i2v: adapter strength. 0.0 delegates to base i2v (audio_i2v only). imagine_i2v defaults to 1.0 when unset/zero.",
+    )
     parser.add_argument("--identity_id", type=int, default=None)
     parser.add_argument("--identity_strength", type=float, default=1.0)
     parser.add_argument("--identity_negative_strength", type=float, default=0.0)
@@ -110,8 +160,100 @@ def main():
     parser.add_argument("--emotion_intensity", type=float, default=0.0)
     parser.add_argument("--emotion_guidance_scale", type=float, default=0.0)
     parser.add_argument("--mouth_mask", type=str, default=None)
+    parser.add_argument(
+        "--hybrid_mouth_strength",
+        type=float,
+        default=None,
+        help="Hybrid mouth renderer strength (default pipe 0.35). Requires --mouth_mask.",
+    )
+    parser.add_argument(
+        "--hybrid_temporal_alpha",
+        type=float,
+        default=None,
+        help="Hybrid seam temporal blend alpha (default pipe 0.70).",
+    )
+    parser.add_argument(
+        "--no_hybrid_renderer",
+        action="store_true",
+        help="Disable hybrid mouth postprocess even if --mouth_mask is set.",
+    )
     parser.add_argument("--disable_phoneme_conditioning", action="store_true")
     parser.add_argument("--phoneme_stream_scale", type=float, default=None)
+    parser.add_argument(
+        "--skip_audio_noise_floor",
+        action="store_true",
+        help="Skip synthetic noise floor in get_audio_embedding (clean studio WAV).",
+    )
+    parser.add_argument(
+        "--use_cfg_zero",
+        action="store_true",
+        help="CFG-zero style scale on text branch in generate_ai2v (experimental A/B).",
+    )
+    parser.add_argument(
+        "--runtime_profile",
+        type=str,
+        default=None,
+        choices=["operational", "cinematic"],
+        help="Sampling OS profile (operational=chunk+distill+12 steps; cinematic=legacy monolithic). "
+        "Overridden by ARACHNE_RUNTIME_PROFILE env when unset.",
+    )
+    parser.add_argument(
+        "--use_distill",
+        action="store_true",
+        default=None,
+        help="Use distilled timestep schedule (50 indices). Profile sets default; also auto when steps<=16.",
+    )
+    parser.add_argument(
+        "--chunk_frames",
+        type=int,
+        default=33,
+        help="Chunked ai2v: frames per denoise window (4n+1).",
+    )
+    parser.add_argument(
+        "--chunk_overlap",
+        type=int,
+        default=8,
+        help="Pixel overlap between chunks for cosine stitch.",
+    )
+    parser.add_argument(
+        "--use_chunked_denoise",
+        action="store_true",
+        default=None,
+        help="Pipeline-level chunked denoise for long ai2v clips.",
+    )
+    parser.add_argument(
+        "--no_chunked_denoise",
+        action="store_true",
+        help="Force monolithic denoise even under operational profile.",
+    )
+    parser.add_argument(
+        "--export_crf",
+        type=int,
+        default=None,
+        help="Final ffmpeg libx264 CRF for avatar MP4 mux (e.g. 18).",
+    )
+    parser.add_argument(
+        "--high_quality_save",
+        action="store_true",
+        help="Lossless-ish final mux (libx264 crf 0, veryslow).",
+    )
+    parser.add_argument(
+        "--run_metadata_json",
+        type=str,
+        default=None,
+        help="Write run metadata JSON (default: <output>.run.json).",
+    )
+    parser.add_argument(
+        "--no_run_metadata",
+        action="store_true",
+        help="Do not write run metadata sidecar.",
+    )
+    parser.add_argument(
+        "--preset_hint",
+        type=str,
+        default=None,
+        help="Optional label stored in run metadata (e.g. elena_sync).",
+    )
     parser.add_argument("--output", type=str, default="output.mp4")
     parser.add_argument(
         "--lora_path",
@@ -140,6 +282,8 @@ def main():
     )
     add_resolve_args(parser)
     args = parser.parse_args()
+    if args.no_chunked_denoise:
+        args.use_chunked_denoise = False
     execute_infer(args)
 
 

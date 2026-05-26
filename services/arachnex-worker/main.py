@@ -104,6 +104,19 @@ class StreamFramesBody(BaseModel):
     audioGuidanceScale: float = Field(default=4.0)
     resolution: str = Field(default="480p")
     numFrames: int = Field(default=93, ge=1, le=256)
+    runtimeProfile: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="operational (default) | cinematic. Env ARACHNE_RUNTIME_PROFILE when omitted.",
+    )
+    chunkFrames: Optional[int] = Field(default=None, ge=5, le=256)
+    firstChunkFrames: Optional[int] = Field(default=None, ge=5, le=65)
+    chunkOverlap: Optional[int] = Field(default=None, ge=0, le=64)
+    useChunkedDenoise: Optional[bool] = Field(default=None)
+    useDistill: Optional[bool] = Field(default=None)
+    identityId: Optional[int] = Field(default=None, ge=0, le=1023)
+    identityBankPath: Optional[str] = Field(default=None, max_length=4096)
+    mouthMaskBase64: Optional[str] = Field(default=None)
     engine: str = Field(default="arachne", max_length=64)
 
 
@@ -244,6 +257,7 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
         else:
             raise ValueError("audioPcm16Base64 or audioFloat32Base64 is required")
         t0_ns = time.monotonic_ns()
+        first_line_logged = False
         for seq, frame_bytes, w, h in stream_avatar_frames_raw_sync(
             image_bytes=img,
             prompt=body.prompt,
@@ -254,9 +268,28 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             audio_guidance_scale=body.audioGuidanceScale,
             resolution=body.resolution,
             num_frames=body.numFrames,
+            runtime_profile=body.runtimeProfile,
+            chunk_frames=body.chunkFrames,
+            first_chunk_frames=body.firstChunkFrames,
+            chunk_overlap=body.chunkOverlap,
+            use_chunked_denoise=body.useChunkedDenoise,
+            use_distill=body.useDistill,
+            identity_id=body.identityId,
+            identity_bank_path=body.identityBankPath,
+            mouth_mask_base64=body.mouthMaskBase64,
         ):
             # Use monotonic clock to timestamp frames for sync downstream.
             ts_ms = int((time.monotonic_ns() - t0_ns) / 1_000_000)
+            if not first_line_logged:
+                first_line_logged = True
+                logger.info(
+                    "avatar_frames ndjson_first_line session_id=%s seq=%s ttff_ms=%s width=%s height=%s",
+                    body.sessionId,
+                    seq,
+                    ts_ms,
+                    w,
+                    h,
+                )
             frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
             line = (
                 json.dumps(

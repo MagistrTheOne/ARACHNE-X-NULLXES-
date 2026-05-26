@@ -25,10 +25,12 @@ def build_avatar_latent_training_sample(
     audio_path: str,
     prompt: str,
     negative_prompt: str = "",
+    compiled_prompt: Optional[str] = None,
     resolution: str = "480p",
     num_frames: int = 93,
     seed: Optional[int] = None,
     device: Optional[str] = None,
+    timestep_bias_power: float = 2.0,
 ) -> Dict[str, torch.Tensor]:
     """
     Return CPU float tensors: latents, noise, timesteps, prompt_embeds, prompt_mask, audio_embs.
@@ -51,8 +53,9 @@ def build_avatar_latent_training_sample(
         nf = adj
 
     dit_dtype = pipe.dit.dtype
+    encode_prompt_text = (compiled_prompt or prompt).strip()
     prompt_embeds, prompt_attention_mask, _, _ = pipe.encode_prompt(
-        prompt=prompt,
+        prompt=encode_prompt_text,
         negative_prompt=negative_prompt,
         do_classifier_free_guidance=False,
         num_videos_per_prompt=1,
@@ -87,7 +90,13 @@ def build_avatar_latent_training_sample(
     idx_gen = torch.Generator()
     if seed is not None:
         idx_gen.manual_seed(int(seed) + 1)
-    idx = int(torch.randint(0, n_sched, (1,), generator=idx_gen).item())
+    # Bias away from high-noise (low index): u^power → more clean-timestep samples for LoRA.
+    u = torch.rand(1, generator=idx_gen).item()
+    power = max(0.0, float(timestep_bias_power))
+    if power <= 0:
+        idx = int(torch.randint(0, n_sched, (1,), generator=idx_gen).item())
+    else:
+        idx = int((1.0 - u**power) * (n_sched - 1))
     t = sched.timesteps[idx].view(1).to(device=device, dtype=torch.float32)
     noisy = sched.scale_noise(z0, t, eps)
 
@@ -119,13 +128,42 @@ def export_avatar_latent_training_pt(
     prompt: str,
     output_path: str,
     negative_prompt: str = "",
+    compiled_prompt: Optional[str] = None,
+    prompt_compiler: Optional[str] = None,
+    image_path: Optional[str] = None,
     resolution: str = "480p",
     num_frames: int = 93,
     seed: Optional[int] = None,
     device: Optional[str] = None,
+    timestep_bias_power: float = 2.0,
 ) -> None:
-    """Build sample and ``torch.save`` to ``output_path``."""
+    """
+    Build sample and ``torch.save`` to ``output_path``.
+
+    ``timestep_bias_power``: anti-snow timestep sampling (Min-SNR friendly).
+    0.0 = uniform; 2.0 = quadratic bias toward clean (low-sigma) timesteps.
+    Do not disable — uniform sampling causes LoRA to learn high-noise grain.
+    """
     import os
+
+    from arachne_x.inference_frames import audio_duration_sec
+    from arachne_x.prompt_compiler import compile_avatar_turn, resolve_compiler_backend
+
+    effective_compiled = compiled_prompt
+    if effective_compiled is None and prompt_compiler:
+        backend = resolve_compiler_backend(prompt_compiler)
+        if backend != "off":
+            dur = audio_duration_sec(audio_path)
+            plan = compile_avatar_turn(
+                prompt,
+                mode="ai2v",
+                image_path=image_path,
+                audio_duration_sec=dur,
+                backend=backend,
+                negative_prompt=negative_prompt,
+            )
+            effective_compiled = plan.positive_prompt
+            negative_prompt = plan.negative_prompt
 
     sample = build_avatar_latent_training_sample(
         pipe,
@@ -133,10 +171,12 @@ def export_avatar_latent_training_pt(
         audio_path=audio_path,
         prompt=prompt,
         negative_prompt=negative_prompt,
+        compiled_prompt=effective_compiled,
         resolution=resolution,
         num_frames=num_frames,
         seed=seed,
         device=device,
+        timestep_bias_power=timestep_bias_power,
     )
     out_abs = os.path.abspath(output_path)
     parent = os.path.dirname(out_abs)

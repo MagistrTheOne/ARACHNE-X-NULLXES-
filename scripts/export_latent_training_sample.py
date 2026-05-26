@@ -35,6 +35,13 @@ def main():
     parser.add_argument("--audio", type=str, required=True)
     parser.add_argument("--prompt", type=str, required=True)
     parser.add_argument("--negative_prompt", type=str, default="")
+    parser.add_argument(
+        "--prompt_compiler",
+        type=str,
+        default=None,
+        choices=["off", "openai", "gemma"],
+        help="Compile prompt before encode_prompt (train ≡ infer).",
+    )
     parser.add_argument("--resolution", type=str, default="480p", choices=["480p", "720p"])
     parser.add_argument("--num_frames", type=int, default=93)
     parser.add_argument("--output", type=str, default="sample.pt")
@@ -63,6 +70,8 @@ def main():
         prompt=args.prompt,
         output_path=args.output,
         negative_prompt=args.negative_prompt,
+        prompt_compiler=args.prompt_compiler,
+        image_path=args.image,
         resolution=args.resolution,
         num_frames=args.num_frames,
         seed=args.seed,

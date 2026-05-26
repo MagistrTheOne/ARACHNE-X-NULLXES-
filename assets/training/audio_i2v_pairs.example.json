@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "description": "Minimal dataset contract for frozen-base audio-conditioned I2V adapter training.",
+  "sample_rate": 16000,
+  "pairs": [
+    {
+      "id": "sample_001",
+      "image": "assets/avatar/single/elena/image.jpg",
+      "audio": "assets/avatar/single/elena/audio.wav",
+      "video": "path/to/target_clip.mp4",
+      "prompt": "Professional woman portrait speaking naturally, stable identity, subtle motion.",
+      "negative_prompt": "blurry, low quality, watermark, flicker"
+    }
+  ],
+  "notes": [
+    "video: ground-truth MP4 aligned with audio (5-20s clips for smoke; scale to 100+ for quality)",
+    "image: first-frame reference or portrait matching video subject",
+    "audio: mono 16kHz WAV",
+    "Export latents optional for faster training (see train script --latents_dir)"
+  ]
+}

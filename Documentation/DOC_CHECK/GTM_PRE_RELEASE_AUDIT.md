@@ -8,7 +8,7 @@
 
 ## Runtime
 
-- [ ] Единый runtime facade: `arachne_x.runtime.avatar_serving` — канон кэша пайплайна, NDJSON, MP4 job; воркер проксирует через `services/longcat-worker/gpu_avatar_runtime.py` (lazy), без второй реализации forward.
+- [ ] Единый runtime facade: `arachne_x.runtime.avatar_serving` — канон кэша пайплайна, NDJSON, MP4 job; воркер проксирует через `services/arachnex-worker/gpu_avatar_runtime.py` (lazy), без второй реализации forward.
 - [ ] Нет дублированного inference glue вне worker → `avatar_serving` → `loader.load_avatar_pipeline`.
 - [ ] Worker → runtime path only: HTTP слой не оркестрирует torchrun subprocess для текущего in-process avatar path.
 - [ ] Нет параллельной оркестрации пайплайна в `src/server` для DiT/VAE (оркестратор вызывает HTTP к воркеру).

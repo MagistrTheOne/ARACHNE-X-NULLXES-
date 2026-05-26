@@ -4,14 +4,22 @@ Shared audio embedding windowing for avatar inference / export (matches scripts/
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import librosa
 import numpy as np
 import torch
 
+from arachne_x.inference_frames import DEFAULT_EMBEDDING_FPS
+
 if TYPE_CHECKING:
     from arachne_x.pipeline_arachne_x_video_avatar import ArachneXVideoAvatarPipeline
+
+
+def default_embedding_fps(pipe: "ArachneXVideoAvatarPipeline") -> float:
+    audio_stride = int(getattr(pipe, "vae_scale_factor_temporal", 4))
+    audio_stride = max(audio_stride, 1)
+    return float(16 * audio_stride)
 
 
 def build_avatar_windowed_audio_emb(
@@ -20,6 +28,7 @@ def build_avatar_windowed_audio_emb(
     num_frames: int,
     device: Union[str, torch.device],
     sample_rate: int = 16000,
+    embedding_fps: Optional[float] = None,
 ) -> torch.Tensor:
     """
     Load wav, run ``get_audio_embedding``, build [1, T, W, S, C] windows (same as ``scripts/infer._build_audio_emb``).
@@ -27,9 +36,10 @@ def build_avatar_windowed_audio_emb(
     speech_array, sr = librosa.load(audio_path, sr=sample_rate)
     audio_stride = int(getattr(pipe, "vae_scale_factor_temporal", 4))
     audio_stride = max(audio_stride, 1)
+    fps = float(embedding_fps) if embedding_fps is not None else default_embedding_fps(pipe)
     full_audio_emb = pipe.get_audio_embedding(
         speech_array,
-        fps=16 * audio_stride,
+        fps=fps,
         device=device,
         sample_rate=sr,
     )

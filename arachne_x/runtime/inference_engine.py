@@ -11,7 +11,8 @@ import argparse
 import json
 import os
 import tempfile
-from typing import Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -19,14 +20,27 @@ from PIL import Image
 from torchvision.io import write_video
 from diffusers.utils import load_image, load_video
 
-from arachne_x.loader import load_avatar_pipeline, load_base_pipeline
+from arachne_x.loader import load_avatar_pipeline, load_base_pipeline, load_audio_i2v_pipeline
 from arachne_x.audio_process.torch_utils import save_video_ffmpeg
-from arachne_x.inference_audio import build_avatar_windowed_audio_emb
+from arachne_x.inference_audio import build_avatar_windowed_audio_emb, default_embedding_fps
+from arachne_x.inference_frames import (
+    audio_duration_sec,
+    resolve_num_frames,
+    suggest_embedding_fps,
+)
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 from arachne_x.tts import create_speech_synthesizer
 from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
 from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
+from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
+from arachne_x.prompt_compiler.gemma_backend import release_gemma_compiler
 from arachne_x.weights_resolve import resolve_weights_root
+from arachne_x.runtime.sampling_profiles import (
+    apply_sampling_profile,
+    cap_num_frames_for_profile,
+    resolve_use_distill,
+)
+from arachne_x.runtime.sampling_metrics import RuntimeSamplingMetrics
 
 
 def save_video_numpy(frames: np.ndarray, path: str, fps: int = 30) -> None:
@@ -49,8 +63,194 @@ def get_hw_for_resolution(resolution: str, height: int, width: int) -> tuple[int
     return (height, width)
 
 
-def build_audio_emb(pipe, audio_path: str, num_frames: int, device: str, sample_rate: int = 16000) -> torch.Tensor:
-    return build_avatar_windowed_audio_emb(pipe, audio_path, num_frames, device, sample_rate)
+def build_audio_emb(
+    pipe,
+    audio_path: str,
+    num_frames: int,
+    device: str,
+    sample_rate: int = 16000,
+    embedding_fps: Optional[float] = None,
+) -> torch.Tensor:
+    return build_avatar_windowed_audio_emb(
+        pipe, audio_path, num_frames, device, sample_rate, embedding_fps=embedding_fps
+    )
+
+
+def configure_avatar_pipe(pipe, args: argparse.Namespace) -> None:
+    if hasattr(pipe, "phoneme_enabled"):
+        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
+    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
+        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
+    pipe.skip_audio_noise_floor = bool(getattr(args, "skip_audio_noise_floor", False))
+    if getattr(args, "no_hybrid_renderer", False):
+        pipe.hybrid_renderer_enabled = False
+    if getattr(args, "hybrid_mouth_strength", None) is not None:
+        pipe.hybrid_renderer_mouth_strength = float(args.hybrid_mouth_strength)
+    if getattr(args, "hybrid_temporal_alpha", None) is not None:
+        pipe.hybrid_renderer_temporal_alpha = float(args.hybrid_temporal_alpha)
+
+
+def apply_avatar_frame_budget(
+    args: argparse.Namespace, pipe, wav_path: Optional[str]
+) -> Dict[str, Any]:
+    """Resolve ``args.num_frames`` and embedding fps from audio duration (avatar modes)."""
+    if not wav_path or not os.path.isfile(wav_path):
+        return {}
+    mode = getattr(args, "num_frames_mode", "explicit") or "explicit"
+    mux_fps = float(getattr(args, "mux_fps", 30))
+    base_fps = getattr(args, "audio_embedding_fps", None)
+    base_fps = float(base_fps) if base_fps is not None else default_embedding_fps(pipe)
+    dur = audio_duration_sec(wav_path)
+
+    if mode == "explicit":
+        _, info = resolve_num_frames("explicit", dur, base_fps, explicit=args.num_frames, mux_fps=mux_fps)
+        info["chosen"] = int(args.num_frames)
+        chosen = int(args.num_frames)
+    else:
+        chosen, info = resolve_num_frames(
+            mode, dur, base_fps, explicit=args.num_frames, mux_fps=mux_fps
+        )
+        args.num_frames = chosen
+
+    embedding_fps = base_fps
+    if getattr(args, "embedding_fps_auto", False) or (
+        mode == "duration" and chosen > info.get("sync_max_frames", chosen)
+    ):
+        embedding_fps = suggest_embedding_fps(dur, chosen, base_fps)
+
+    if chosen > info.get("sync_max_frames", chosen) and embedding_fps <= base_fps:
+        print(
+            f"[frame-budget] warning: num_frames={chosen} exceeds sync_max={info.get('sync_max_frames')} "
+            f"at embedding_fps={base_fps:.1f}; tail may clamp (try --embedding_fps_auto)"
+        )
+
+    info["embedding_fps_final"] = embedding_fps
+    chosen = cap_num_frames_for_profile(args, int(chosen))
+    args.num_frames = chosen
+    info["chosen"] = chosen
+    pipe.inference_embedding_fps = embedding_fps
+    args._resolved_embedding_fps = embedding_fps
+
+    print(
+        "[frame-budget] "
+        f"mode={mode} duration_sec={dur:.3f} sync_max={info.get('sync_max_frames')} "
+        f"duration_frames={info.get('duration_frames')} chosen={chosen} embedding_fps={embedding_fps:.1f}"
+    )
+    return info
+
+
+def resolved_embedding_fps(args: argparse.Namespace, pipe) -> Optional[float]:
+    fps = getattr(args, "_resolved_embedding_fps", None)
+    if fps is not None:
+        return float(fps)
+    if getattr(args, "audio_embedding_fps", None) is not None:
+        return float(args.audio_embedding_fps)
+    return getattr(pipe, "inference_embedding_fps", None)
+
+
+def save_avatar_mp4(
+    frames,
+    output_path: str,
+    wav_path: Optional[str],
+    args: argparse.Namespace,
+) -> None:
+    from arachne_x.inference_frames import normalize_ai2v_video_output
+
+    frames = normalize_ai2v_video_output(frames)
+    fps = int(getattr(args, "mux_fps", 30))
+    export_crf = getattr(args, "export_crf", None)
+    save_video_ffmpeg(
+        frames,
+        output_path,
+        wav_path,
+        fps=fps,
+        high_quality_save=bool(getattr(args, "high_quality_save", False)),
+        export_crf=export_crf,
+    )
+
+
+def write_run_metadata(
+    args: argparse.Namespace,
+    frame_budget: Optional[Dict[str, Any]] = None,
+) -> None:
+    if getattr(args, "no_run_metadata", False):
+        return
+    path = getattr(args, "run_metadata_json", None)
+    if not path:
+        base, _ = os.path.splitext(args.output)
+        path = base + ".run.json"
+    payload: Dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": args.mode,
+        "output": os.path.abspath(args.output),
+        "resolution": args.resolution,
+        "num_frames": args.num_frames,
+        "num_frames_mode": getattr(args, "num_frames_mode", "explicit"),
+        "mux_fps": getattr(args, "mux_fps", 30),
+        "num_inference_steps": args.num_inference_steps,
+        "text_guidance_scale": args.text_guidance_scale,
+        "audio_guidance_scale": args.audio_guidance_scale,
+        "embedding_fps": getattr(args, "_resolved_embedding_fps", None),
+        "audio_embedding_fps_cli": getattr(args, "audio_embedding_fps", None),
+        "embedding_fps_auto": bool(getattr(args, "embedding_fps_auto", False)),
+        "identity_id": args.identity_id,
+        "identity_strength": args.identity_strength,
+        "identity_bank_path": args.identity_bank_path,
+        "use_cfg_zero": bool(getattr(args, "use_cfg_zero", False)),
+        "export_crf": getattr(args, "export_crf", None),
+        "high_quality_save": bool(getattr(args, "high_quality_save", False)),
+        "mouth_mask": args.mouth_mask,
+        "preset_hint": getattr(args, "preset_hint", None),
+    }
+    if frame_budget:
+        payload["frame_budget"] = frame_budget
+    compiler_meta = getattr(args, "_prompt_compiler_meta", None)
+    if compiler_meta:
+        payload["prompt_compiler"] = compiler_meta
+    sampling = getattr(args, "_runtime_sampling_metrics", None)
+    if sampling is not None:
+        payload["sampling_metrics"] = sampling
+    payload["runtime_profile"] = getattr(args, "_sampling_profile_name", None)
+    payload["use_distill"] = bool(getattr(args, "use_distill", False))
+    payload["use_chunked_denoise"] = bool(getattr(args, "use_chunked_denoise", False))
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[run-metadata] wrote {path}")
+
+
+def resolve_imagine_speak_text(args: argparse.Namespace, *, source_user_text: str = "") -> str:
+    """
+    TTS line for imagine_i2v: explicit --speak_text, else short user intent, else --audio forbidden path.
+    """
+    explicit = (getattr(args, "speak_text", None) or "").strip()
+    if explicit:
+        return explicit
+    if getattr(args, "audio", None):
+        raise ValueError("imagine_i2v generates speech internally; omit --audio or use --mode audio_i2v")
+    source = (source_user_text or args.prompt or "").strip()
+    if not source:
+        raise ValueError("imagine_i2v requires --prompt or --speak_text")
+    if len(source) > 320:
+        raise ValueError(
+            "imagine_i2v: user prompt too long for auto TTS; pass --speak_text with the spoken line"
+        )
+    return source
+
+
+def synthesize_imagine_wav(args: argparse.Namespace, speak_text: str) -> Tuple[str, bool]:
+    """TTS for imagine_i2v (temp wav)."""
+    saved = dict(
+        speak_text=args.speak_text,
+        audio=args.audio,
+    )
+    try:
+        args.speak_text = speak_text
+        args.audio = None
+        return resolve_avatar_wav_path(args)
+    finally:
+        args.speak_text = saved["speak_text"]
+        args.audio = saved["audio"]
 
 
 def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
@@ -87,6 +287,10 @@ def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
     fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="arachne_tts_")
     os.close(fd)
     synth.synthesize_to_path(speak, tmp_path)
+    if prov == "qwen":
+        from arachne_x.tts.qwen import release_qwen_tts_cache
+
+        release_qwen_tts_cache()
     return tmp_path, True
 
 
@@ -123,9 +327,23 @@ def resolve_lora_rank_alpha(
     return rank, alpha
 
 
+def _disable_torch_compile_for_lora_infer() -> None:
+    """LoRA patches DiT forwards; torch.compile/inductor often fails on denoise (fallback eager)."""
+    try:
+        import torch._dynamo as dynamo
+
+        dynamo.config.suppress_errors = True
+        if hasattr(dynamo, "reset"):
+            dynamo.reset()
+        print("[lora] torch._dynamo suppress_errors=True (eager fallback for LoRA infer)")
+    except Exception:
+        pass
+
+
 def maybe_load_avatar_lora(pipe, args: argparse.Namespace) -> None:
     if not getattr(args, "lora_path", None):
         return
+    _disable_torch_compile_for_lora_infer()
     path = args.lora_path
     if not os.path.isfile(path):
         raise FileNotFoundError(f"--lora_path not found: {path}")
@@ -154,10 +372,24 @@ def build_video_latent(pipe, video, num_cond_frames: int, height: int, width: in
     return pipe.normalize_latents(cond_videos_latents)
 
 
+def attach_runtime_sampling_metrics(pipe, args: argparse.Namespace) -> RuntimeSamplingMetrics:
+    rsm = RuntimeSamplingMetrics(
+        runtime_profile=getattr(args, "_sampling_profile_name", None),
+    )
+    rsm.mark_start()
+    pipe.runtime_sampling_metrics = rsm
+    args._runtime_sampling_metrics = rsm.to_dict()
+    return rsm
+
+
 def execute_infer(args: argparse.Namespace) -> None:
     """
     Run one inference job from a populated ``argparse.Namespace`` (same contract as ``scripts/infer.py`` CLI).
     """
+    apply_sampling_profile(args)
+    if getattr(args, "use_distill", None) is None:
+        args.use_distill = resolve_use_distill(args)
+
     emotion_id = args.emotion_id
     if isinstance(emotion_id, str):
         s = emotion_id.strip()
@@ -175,6 +407,16 @@ def execute_infer(args: argparse.Namespace) -> None:
         allow_hub=args.allow_hub_download,
         cache_dir=args.weights_cache_dir,
     )
+
+    if args.mode in ("t2v", "i2v", "vc", "audio_i2v", "imagine_i2v"):
+        if args.mode == "imagine_i2v":
+            args._imagine_source_prompt = (args.prompt or "").strip()
+            if getattr(args, "prompt_compiler", None) is None:
+                args.prompt_compiler = resolve_imagine_compiler_backend(args)
+        try:
+            args._prompt_compiler_meta = apply_prompt_compiler(args)
+        finally:
+            release_gemma_compiler()
 
     if args.mode in ("t2v", "i2v", "vc"):
         pipe = load_base_pipeline(checkpoint_dir, device=device, torch_dtype=torch_dtype)
@@ -226,6 +468,97 @@ def execute_infer(args: argparse.Namespace) -> None:
 
         return
 
+    if args.mode == "audio_i2v":
+        if not args.image:
+            raise ValueError("--image is required for audio_i2v")
+        if not args.audio:
+            raise ValueError("--audio is required for audio_i2v")
+        pipe = load_audio_i2v_pipeline(
+            checkpoint_dir,
+            device=device,
+            torch_dtype=torch_dtype,
+            audio_adapter_path=getattr(args, "audio_conditioning_adapter", None),
+        )
+        scale = float(getattr(args, "audio_conditioning_scale", 0.0))
+        image = load_image(args.image)
+        out = pipe.generate_audio_i2v(
+            image=image,
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            audio_path=args.audio,
+            resolution=args.resolution,
+            num_frames=args.num_frames,
+            num_inference_steps=args.num_inference_steps,
+            text_guidance_scale=args.text_guidance_scale,
+            audio_conditioning_scale=scale,
+            embedding_fps=getattr(args, "audio_embedding_fps", None),
+        )[0]
+        write_run_metadata(
+            args,
+            {
+                "mode": "audio_i2v",
+                "audio_conditioning_scale": scale,
+                "audio_conditioning_adapter": getattr(args, "audio_conditioning_adapter", None),
+                "num_frames": args.num_frames,
+            },
+        )
+        save_video_numpy(out, args.output, fps=30)
+        return
+
+    if args.mode == "imagine_i2v":
+        if not args.image:
+            raise ValueError("--image is required for imagine_i2v")
+        compiler_meta = getattr(args, "_prompt_compiler_meta", {}) or {}
+        source_prompt = (
+            (getattr(args, "_imagine_source_prompt", None) or "").strip()
+            or (compiler_meta.get("source_user_text") or "").strip()
+        )
+        speak_text = resolve_imagine_speak_text(args, source_user_text=source_prompt)
+        wav_path, wav_is_temp = synthesize_imagine_wav(args, speak_text)
+        try:
+            pipe = load_audio_i2v_pipeline(
+                checkpoint_dir,
+                device=device,
+                torch_dtype=torch_dtype,
+                audio_adapter_path=getattr(args, "audio_conditioning_adapter", None),
+            )
+            scale = float(getattr(args, "audio_conditioning_scale", 1.0))
+            if scale == 0.0:
+                scale = 1.0
+            image = load_image(args.image)
+            out = pipe.generate_audio_i2v(
+                image=image,
+                prompt=args.prompt,
+                negative_prompt=args.negative_prompt,
+                audio_path=wav_path,
+                resolution=args.resolution,
+                num_frames=args.num_frames,
+                num_inference_steps=args.num_inference_steps,
+                text_guidance_scale=args.text_guidance_scale,
+                audio_conditioning_scale=scale,
+                embedding_fps=getattr(args, "audio_embedding_fps", None),
+            )[0]
+            write_run_metadata(
+                args,
+                {
+                    "mode": "imagine_i2v",
+                    "speak_text": speak_text,
+                    "source_user_text": source_prompt,
+                    "audio_conditioning_scale": scale,
+                    "audio_conditioning_adapter": getattr(args, "audio_conditioning_adapter", None),
+                    "prompt_compiler": getattr(args, "prompt_compiler", None),
+                    "compiler_meta": compiler_meta,
+                    "num_frames": args.num_frames,
+                    "tts_provider": args.tts_provider,
+                },
+            )
+            save_avatar_mp4(out, args.output, wav_path, args)
+            print(f"[imagine-i2v] muxed TTS audio speak_text={speak_text[:96]!r}")
+        finally:
+            if wav_is_temp:
+                maybe_unlink(wav_path)
+        return
+
     pipe = load_avatar_pipeline(
         checkpoint_dir,
         variant="multi" if args.mode == "avc" else "single",
@@ -233,10 +566,8 @@ def execute_infer(args: argparse.Namespace) -> None:
         torch_dtype=torch_dtype,
     )
     maybe_load_avatar_lora(pipe, args)
-    if hasattr(pipe, "phoneme_enabled"):
-        pipe.phoneme_enabled = not args.disable_phoneme_conditioning
-    if args.phoneme_stream_scale is not None and hasattr(pipe, "phoneme_stream_scale"):
-        pipe.phoneme_stream_scale = float(args.phoneme_stream_scale)
+    configure_avatar_pipe(pipe, args)
+    attach_runtime_sampling_metrics(pipe, args)
 
     if args.identity_bank_path and os.path.exists(args.identity_bank_path):
         loaded = pipe.load_identity_bank(
@@ -280,57 +611,92 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.image:
             raise ValueError("--image is required for ai2v / streaming_ai2v")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         image = load_image(args.image)
+        use_cfg_zero = bool(getattr(args, "use_cfg_zero", False))
         try:
+            use_distill = resolve_use_distill(args)
+            audio_emb = build_audio_emb(
+                pipe,
+                audio_path=wav_path,
+                num_frames=args.num_frames,
+                device=device,
+                embedding_fps=emb_fps,
+            )
             if args.mode == "ai2v":
-                audio_emb = build_audio_emb(
-                    pipe,
-                    audio_path=wav_path,
-                    num_frames=args.num_frames,
-                    device=device,
-                )
-                out = pipe.generate_ai2v(
-                    image=image,
-                    prompt=args.prompt,
-                    negative_prompt=args.negative_prompt,
-                    resolution=args.resolution,
-                    num_frames=args.num_frames,
-                    num_inference_steps=args.num_inference_steps,
-                    text_guidance_scale=args.text_guidance_scale,
-                    audio_guidance_scale=args.audio_guidance_scale,
-                    audio_emb=audio_emb,
-                    identity_id=args.identity_id,
-                    identity_strength=args.identity_strength,
-                    identity_negative_strength=args.identity_negative_strength,
-                    update_identity_bank=args.identity_update_bank,
-                    identity_update_momentum=args.identity_update_momentum,
-                    emotion_id=emotion_id,
-                    emotion_intensity=args.emotion_intensity,
-                    emotion_guidance_scale=args.emotion_guidance_scale,
-                    mouth_zone_masks=mouth_mask_tensor,
-                )[0]
-                save_video_ffmpeg(out, args.output, wav_path, fps=30)
+                if bool(getattr(args, "use_chunked_denoise", False)) and int(args.num_frames) > int(
+                    getattr(args, "chunk_frames", 33)
+                ):
+                    out = pipe.generate_chunked_ai2v(
+                        image=image,
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        resolution=args.resolution,
+                        num_frames=args.num_frames,
+                        num_inference_steps=args.num_inference_steps,
+                        use_distill=use_distill,
+                        text_guidance_scale=args.text_guidance_scale,
+                        audio_guidance_scale=args.audio_guidance_scale,
+                        audio_emb=audio_emb,
+                        identity_id=args.identity_id,
+                        identity_strength=args.identity_strength,
+                        identity_negative_strength=args.identity_negative_strength,
+                        emotion_id=emotion_id,
+                        emotion_intensity=args.emotion_intensity,
+                        emotion_guidance_scale=args.emotion_guidance_scale,
+                        mouth_zone_masks=mouth_mask_tensor,
+                        use_cfg_zero=use_cfg_zero,
+                        chunk_frames=int(getattr(args, "chunk_frames", 33)),
+                        chunk_overlap=int(getattr(args, "chunk_overlap", 8)),
+                        yield_frames=False,
+                    )
+                else:
+                    out = pipe.generate_ai2v(
+                        image=image,
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        resolution=args.resolution,
+                        num_frames=args.num_frames,
+                        num_inference_steps=args.num_inference_steps,
+                        use_distill=use_distill,
+                        text_guidance_scale=args.text_guidance_scale,
+                        audio_guidance_scale=args.audio_guidance_scale,
+                        audio_emb=audio_emb,
+                        identity_id=args.identity_id,
+                        identity_strength=args.identity_strength,
+                        identity_negative_strength=args.identity_negative_strength,
+                        update_identity_bank=args.identity_update_bank,
+                        identity_update_momentum=args.identity_update_momentum,
+                        emotion_id=emotion_id,
+                        emotion_intensity=args.emotion_intensity,
+                        emotion_guidance_scale=args.emotion_guidance_scale,
+                        mouth_zone_masks=mouth_mask_tensor,
+                        use_cfg_zero=use_cfg_zero,
+                    )
+                save_avatar_mp4(out, args.output, wav_path, args)
+                if pipe.runtime_sampling_metrics is not None:
+                    args._runtime_sampling_metrics = pipe.runtime_sampling_metrics.to_dict()
+                write_run_metadata(args, frame_budget)
                 if args.identity_update_bank:
                     save_path = args.identity_bank_save_path or args.identity_bank_path
                     if save_path:
                         pipe.save_identity_bank(save_path)
                         print(f"[identity-bank] updated and saved to {save_path}")
             else:
-                audio_gen = iter_audio_micro_turns_from_file(
-                    wav_path,
-                    chunk_duration_sec=args.audio_chunk_sec,
-                    sample_rate=16000,
-                )
                 frames = []
                 for frame in pipe.generate_streaming_ai2v(
                     image=image,
                     prompt=args.prompt,
-                    audio_stream=audio_gen,
+                    audio_stream=None,
                     resolution=args.resolution,
                     num_frames=args.num_frames,
                     num_inference_steps=args.num_inference_steps,
+                    use_distill=use_distill,
                     text_guidance_scale=args.text_guidance_scale,
                     audio_guidance_scale=args.audio_guidance_scale,
+                    audio_emb=audio_emb,
                     identity_id=args.identity_id,
                     identity_strength=args.identity_strength,
                     identity_negative_strength=args.identity_negative_strength,
@@ -338,9 +704,16 @@ def execute_infer(args: argparse.Namespace) -> None:
                     emotion_intensity=args.emotion_intensity,
                     emotion_guidance_scale=args.emotion_guidance_scale,
                     mouth_zone_masks=mouth_mask_tensor,
+                    use_cfg_zero=use_cfg_zero,
+                    chunk_frames=int(getattr(args, "chunk_frames", 33)),
+                    chunk_overlap=int(getattr(args, "chunk_overlap", 8)),
+                    use_chunked_denoise=bool(getattr(args, "use_chunked_denoise", True)),
                 ):
                     frames.append(frame)
-                save_video_ffmpeg(np.stack(frames, axis=0), args.output, wav_path, fps=30)
+                save_avatar_mp4(np.stack(frames, axis=0), args.output, wav_path, args)
+                if pipe.runtime_sampling_metrics is not None:
+                    args._runtime_sampling_metrics = pipe.runtime_sampling_metrics.to_dict()
+                write_run_metadata(args, frame_budget)
                 if args.identity_bank_save_path:
                     pipe.save_identity_bank(args.identity_bank_save_path)
                     print(f"[identity-bank] saved to {args.identity_bank_save_path}")
@@ -351,12 +724,16 @@ def execute_infer(args: argparse.Namespace) -> None:
 
     if args.mode == "at2v":
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         try:
             audio_emb = build_audio_emb(
                 pipe,
                 audio_path=wav_path,
                 num_frames=args.num_frames,
                 device=device,
+                embedding_fps=emb_fps,
             )
             out = pipe.generate_at2v(
                 prompt=args.prompt,
@@ -365,6 +742,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 width=args.width,
                 num_frames=args.num_frames,
                 num_inference_steps=args.num_inference_steps,
+                use_distill=resolve_use_distill(args),
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
                 audio_emb=audio_emb,
@@ -376,7 +754,8 @@ def execute_infer(args: argparse.Namespace) -> None:
                 emotion_guidance_scale=args.emotion_guidance_scale,
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
-            save_video_ffmpeg(out, args.output, wav_path, fps=30)
+            save_avatar_mp4(out, args.output, wav_path, args)
+            write_run_metadata(args, frame_budget)
         finally:
             if wav_is_temp:
                 maybe_unlink(wav_path)
@@ -386,6 +765,9 @@ def execute_infer(args: argparse.Namespace) -> None:
         if not args.video:
             raise ValueError("--video is required for avc")
         wav_path, wav_is_temp = resolve_avatar_wav_path(args)
+        args._prompt_compiler_meta = apply_prompt_compiler(args, wav_path=wav_path)
+        frame_budget = apply_avatar_frame_budget(args, pipe, wav_path)
+        emb_fps = resolved_embedding_fps(args, pipe)
         try:
             video = load_video(args.video)
             audio_emb = build_audio_emb(
@@ -393,6 +775,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 audio_path=wav_path,
                 num_frames=args.num_frames,
                 device=device,
+                embedding_fps=emb_fps,
             )
             video_latent = build_video_latent(
                 pipe,
@@ -413,6 +796,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 num_frames=args.num_frames,
                 num_cond_frames=args.num_cond_frames,
                 num_inference_steps=args.num_inference_steps,
+                use_distill=resolve_use_distill(args),
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
                 identity_id=args.identity_id,
@@ -425,7 +809,8 @@ def execute_infer(args: argparse.Namespace) -> None:
                 emotion_guidance_scale=args.emotion_guidance_scale,
                 mouth_zone_masks=mouth_mask_tensor,
             )[0]
-            save_video_ffmpeg(out, args.output, wav_path, fps=30)
+            save_avatar_mp4(out, args.output, wav_path, args)
+            write_run_metadata(args, frame_budget)
             if args.identity_update_bank:
                 save_path = args.identity_bank_save_path or args.identity_bank_path
                 if save_path:

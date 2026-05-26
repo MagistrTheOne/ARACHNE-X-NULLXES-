@@ -1,0 +1,1334 @@
+{
+  "id": "nullxes-arachne-elena-ai2v-flow-linear",
+  "revision": 0,
+  "last_node_id": 21,
+  "last_link_id": 23,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MarkdownNote",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        480,
+        280
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "NULLXES — linear AI2V flow",
+      "properties": {},
+      "widgets_values": [
+        "# NULLXES ARACHNE Elena AI2V (linear flow)\n\nCustom nodes: ComfyUI-WanVideoWrapper (branch longcat_avatar), MelBandRoFormer, KJNodes, VideoHelperSuite.\n\nWeights: Kijai LongCat-Avatar comfy safetensors (NOT RunPod arachne-avatar-runtime shards).\n\nDefaults: 960x960 Elena, distill LoRA, audio_cfg=5 in MultiTalk, 16 fps out.\nQuality: scheduler steps 35, disable distill LoRA, cfg=4 in sampler widget.\n\nProduction: scripts/infer.py + NULLXES_CHECKPOINT_DIR on H200."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [
+        40,
+        380
+      ],
+      "size": [
+        274,
+        314
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage",
+        "cnr_id": "comfy-core"
+      },
+      "widgets_values": [
+        "5.png",
+        "image"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "LoadAudio",
+      "pos": [
+        40,
+        760
+      ],
+      "size": [
+        405,
+        136
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            2,
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "cnr_id": "comfy-core"
+      },
+      "widgets_values": [
+        "elena6.wav",
+        null,
+        null
+      ]
+    },
+    {
+      "id": 4,
+      "type": "ImageResizeKJv2",
+      "pos": [
+        360,
+        380
+      ],
+      "size": [
+        270,
+        336
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ImageResizeKJv2",
+        "cnr_id": "comfyui-kjnodes"
+      },
+      "widgets_values": [
+        960,
+        960,
+        "lanczos",
+        "crop",
+        "0, 0, 0",
+        "center",
+        16,
+        "cpu",
+        ""
+      ]
+    },
+    {
+      "id": 5,
+      "type": "WanVideoVAELoader",
+      "pos": [
+        720,
+        40
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vae",
+          "type": "WANVAE",
+          "slot_index": 0,
+          "links": [
+            5,
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoVAELoader",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "Wan2_1_VAE_bf16.safetensors",
+        "bf16",
+        false
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 6,
+      "type": "WanVideoLoraSelect",
+      "pos": [
+        720,
+        200
+      ],
+      "size": [
+        503,
+        200
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prev_lora",
+          "type": "WANVIDLORA",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "blocks",
+          "type": "SELECTEDBLOCKS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lora",
+          "type": "WANVIDLORA",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoLoraSelect",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "LongCat_distill_lora_rank128_bf16.safetensors",
+        1,
+        false,
+        false,
+        ""
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 7,
+      "type": "WanVideoBlockSwap",
+      "pos": [
+        720,
+        440
+      ],
+      "size": [
+        281,
+        202
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "block_swap_args",
+          "type": "BLOCKSWAPARGS",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoBlockSwap",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        20,
+        false,
+        false,
+        true,
+        0,
+        1,
+        false
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 8,
+      "type": "WanVideoModelLoader",
+      "pos": [
+        720,
+        680
+      ],
+      "size": [
+        668,
+        338
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "compile_args",
+          "type": "WANCOMPILEARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "block_swap_args",
+          "type": "BLOCKSWAPARGS",
+          "link": 8
+        },
+        {
+          "name": "lora",
+          "type": "WANVIDLORA",
+          "link": 7
+        },
+        {
+          "name": "vram_management_args",
+          "type": "VRAM_MANAGEMENTARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "extra_model",
+          "type": "VACEPATH",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "fantasytalking_model",
+          "type": "FANTASYTALKINGMODEL",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "multitalk_model",
+          "type": "MULTITALKMODEL",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "fantasyportrait_model",
+          "type": "FANTASYPORTRAITMODEL",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "vace_model",
+          "type": "VACEPATH",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "WANVIDEOMODEL",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoModelLoader",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "LongCat/LongCat-Avatar-single_fp8_e4m3fn_scaled_mixed_KJ.safetensors",
+        "bf16",
+        "disabled",
+        "offload_device",
+        "sageattn",
+        "default"
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 9,
+      "type": "DownloadAndLoadWav2VecModel",
+      "pos": [
+        40,
+        960
+      ],
+      "size": [
+        331,
+        106
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "wav2vec_model",
+          "type": "WAV2VECMODEL",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "DownloadAndLoadWav2VecModel",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "TencentGameMate/chinese-wav2vec2-base",
+        "fp16",
+        "main_device"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "MelBandRoFormerModelLoader",
+      "pos": [
+        40,
+        1100
+      ],
+      "size": [
+        331,
+        58
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MELROFORMERMODEL",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MelBandRoFormerModelLoader",
+        "cnr_id": "ComfyUI-MelBandRoFormer"
+      },
+      "widgets_values": [
+        "MelBandRoformer_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "MelBandRoFormerSampler",
+      "pos": [
+        400,
+        960
+      ],
+      "size": [
+        274,
+        46
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MELROFORMERMODEL",
+          "link": 11
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "vocals",
+          "type": "AUDIO",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "instruments",
+          "type": "AUDIO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MelBandRoFormerSampler",
+        "cnr_id": "ComfyUI-MelBandRoFormer"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 12,
+      "type": "INTConstant",
+      "pos": [
+        400,
+        1100
+      ],
+      "size": [
+        210,
+        58
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "links": [
+            13,
+            14
+          ]
+        }
+      ],
+      "title": "max_num_frames",
+      "properties": {
+        "Node name for S&R": "INTConstant",
+        "cnr_id": "comfyui-kjnodes"
+      },
+      "widgets_values": [
+        1000
+      ],
+      "color": "#1b4669",
+      "bgcolor": "#29699c"
+    },
+    {
+      "id": 13,
+      "type": "MultiTalkWav2VecEmbeds",
+      "pos": [
+        720,
+        960
+      ],
+      "size": [
+        291,
+        326
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "wav2vec_model",
+          "type": "WAV2VECMODEL",
+          "link": 10
+        },
+        {
+          "name": "audio_1",
+          "type": "AUDIO",
+          "link": 12
+        },
+        {
+          "name": "audio_2",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "audio_3",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "audio_4",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "ref_target_masks",
+          "type": "MASK",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "num_frames",
+          "type": "INT",
+          "link": 13,
+          "widget": {
+            "name": "num_frames"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "multitalk_embeds",
+          "type": "MULTITALK_EMBEDS",
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "num_frames",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MultiTalkWav2VecEmbeds",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        true,
+        400,
+        32,
+        1,
+        5,
+        "para",
+        true,
+        true
+      ],
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 14,
+      "type": "WanVideoTextEncodeCached",
+      "pos": [
+        1080,
+        680
+      ],
+      "size": [
+        466,
+        386
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "extender_args",
+          "type": "WANVIDEOPROMPTEXTENDER_ARGS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text_embeds",
+          "type": "WANVIDEOTEXTEMBEDS",
+          "links": [
+            17
+          ]
+        },
+        {
+          "name": "negative_text_embeds",
+          "type": "WANVIDEOTEXTEMBEDS",
+          "links": null
+        },
+        {
+          "name": "positive_prompt",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoTextEncodeCached",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "Professional woman, short ash-brown layered hair, fair skin, realistic green-hazel eyes, soft calm expression, elegant mature facial features, natural lips, subtle makeup, corporate HR executive aesthetic, blue polo shirt, relaxed close-up portrait, slight head tilt held fixed throughout clip, photorealistic DSLR photography, premium recruitment agency style, seamless gray studio background, soft cinematic studio lighting, realistic skin texture, natural proportions, luxury corporate portrait atmosphere, ultra realistic details, high-end studio quality. Close-up speaking with precise audio-driven lipsync, mouth and jaw follow audio only, do not increase head tilt or shift pose, steady fixed camera no zoom no dolly, minimal head movement, high temporal consistency, calm natural speech pace not rapid motion.",
+        "bf16",
+        "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth, mismatched lip sync, lips out of sync",
+        "anime, cartoon, blurry, low quality, distorted face, duplicated mouth, frozen lips, extra teeth, bad anatomy, warped eyes, lowres, deformed face, flicker, watermark, text, jitter, frozen mouth, mismatched lip sync, lips out of sync",
+        "disabled",
+        true,
+        "gpu"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 15,
+      "type": "FloatConstant",
+      "pos": [
+        1080,
+        1100
+      ],
+      "size": [
+        200,
+        58
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "FLOAT",
+          "links": [
+            18
+          ]
+        }
+      ],
+      "title": "text_cfg",
+      "properties": {
+        "Node name for S&R": "FloatConstant",
+        "cnr_id": "comfyui-kjnodes"
+      },
+      "widgets_values": [
+        1.0
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 16,
+      "type": "WanVideoEncode",
+      "pos": [
+        1080,
+        380
+      ],
+      "size": [
+        274,
+        242
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "WANVAE",
+          "link": 5
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 4
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "links": [
+            19
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoEncode",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        false,
+        272,
+        272,
+        144,
+        128,
+        0,
+        1
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 17,
+      "type": "WanVideoLongCatAvatarExtendEmbeds",
+      "pos": [
+        1400,
+        680
+      ],
+      "size": [
+        379,
+        170
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prev_latents",
+          "type": "LATENT",
+          "link": 19
+        },
+        {
+          "name": "audio_embeds",
+          "type": "MULTITALK_EMBEDS",
+          "link": 15
+        },
+        {
+          "name": "ref_latent",
+          "type": "LATENT",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "num_frames",
+          "type": "INT",
+          "link": 14,
+          "widget": {
+            "name": "num_frames"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image_embeds",
+          "type": "WANVIDIMAGE_EMBEDS",
+          "links": [
+            20
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoLongCatAvatarExtendEmbeds",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        93,
+        1,
+        0,
+        "pad_with_start"
+      ],
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 18,
+      "type": "WanVideoSchedulerv2",
+      "pos": [
+        1400,
+        900
+      ],
+      "size": [
+        273,
+        353
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scheduler",
+          "type": "WANVIDEOSCHEDULER",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoSchedulerv2",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        "euler",
+        10,
+        12,
+        0,
+        -1,
+        false,
+        " "
+      ]
+    },
+    {
+      "id": 19,
+      "type": "WanVideoSamplerv2",
+      "pos": [
+        1800,
+        680
+      ],
+      "size": [
+        295,
+        427
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "WANVIDEOMODEL",
+          "link": 9
+        },
+        {
+          "name": "image_embeds",
+          "type": "WANVIDIMAGE_EMBEDS",
+          "link": 20
+        },
+        {
+          "name": "scheduler",
+          "type": "WANVIDEOSCHEDULER",
+          "link": 21
+        },
+        {
+          "name": "text_embeds",
+          "type": "WANVIDEOTEXTEMBEDS",
+          "link": 17,
+          "shape": 7
+        },
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "extra_args",
+          "type": "WANVIDSAMPLEREXTRAARGS",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "link": 18,
+          "widget": {
+            "name": "cfg"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "links": [
+            22
+          ]
+        },
+        {
+          "name": "denoised_samples",
+          "type": "LATENT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoSamplerv2",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        1,
+        1,
+        "fixed",
+        true,
+        false
+      ]
+    },
+    {
+      "id": 20,
+      "type": "WanVideoDecode",
+      "pos": [
+        2160,
+        680
+      ],
+      "size": [
+        270,
+        198
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae",
+          "type": "WANVAE",
+          "link": 6
+        },
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WanVideoDecode",
+        "cnr_id": "ComfyUI-WanVideoWrapper"
+      },
+      "widgets_values": [
+        false,
+        272,
+        272,
+        144,
+        128,
+        "default"
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 21,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2520,
+        680
+      ],
+      "size": [
+        520,
+        320
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 23
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 16,
+          "shape": 7
+        },
+        {
+          "name": "meta_batch",
+          "type": "VHS_BatchManager",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine",
+        "cnr_id": "comfyui-videohelpersuite"
+      },
+      "widgets_values": {
+        "frame_rate": 16,
+        "loop_count": 0,
+        "filename_prefix": "NULLXES_Elena_AI2V",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": true,
+        "pingpong": false,
+        "save_output": true
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      2,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      3,
+      0,
+      11,
+      1,
+      "AUDIO"
+    ],
+    [
+      4,
+      4,
+      0,
+      16,
+      1,
+      "IMAGE"
+    ],
+    [
+      5,
+      5,
+      0,
+      16,
+      0,
+      "WANVAE"
+    ],
+    [
+      6,
+      5,
+      0,
+      20,
+      0,
+      "WANVAE"
+    ],
+    [
+      7,
+      6,
+      0,
+      8,
+      2,
+      "WANVIDLORA"
+    ],
+    [
+      8,
+      7,
+      0,
+      8,
+      1,
+      "BLOCKSWAPARGS"
+    ],
+    [
+      9,
+      8,
+      0,
+      19,
+      0,
+      "WANVIDEOMODEL"
+    ],
+    [
+      10,
+      9,
+      0,
+      13,
+      0,
+      "WAV2VECMODEL"
+    ],
+    [
+      11,
+      10,
+      0,
+      11,
+      0,
+      "MELROFORMERMODEL"
+    ],
+    [
+      12,
+      11,
+      0,
+      13,
+      1,
+      "AUDIO"
+    ],
+    [
+      13,
+      12,
+      0,
+      13,
+      6,
+      "INT"
+    ],
+    [
+      14,
+      12,
+      0,
+      17,
+      3,
+      "INT"
+    ],
+    [
+      15,
+      13,
+      0,
+      17,
+      1,
+      "MULTITALK_EMBEDS"
+    ],
+    [
+      16,
+      13,
+      1,
+      21,
+      1,
+      "AUDIO"
+    ],
+    [
+      17,
+      14,
+      0,
+      19,
+      3,
+      "WANVIDEOTEXTEMBEDS"
+    ],
+    [
+      18,
+      15,
+      0,
+      19,
+      6,
+      "FLOAT"
+    ],
+    [
+      19,
+      16,
+      0,
+      17,
+      0,
+      "LATENT"
+    ],
+    [
+      20,
+      17,
+      0,
+      19,
+      1,
+      "WANVIDIMAGE_EMBEDS"
+    ],
+    [
+      21,
+      18,
+      0,
+      19,
+      2,
+      "WANVIDEOSCHEDULER"
+    ],
+    [
+      22,
+      19,
+      0,
+      20,
+      1,
+      "LATENT"
+    ],
+    [
+      23,
+      20,
+      0,
+      21,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Input",
+      "bounding": [
+        20,
+        340,
+        650,
+        820
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Models",
+      "bounding": [
+        700,
+        0,
+        720,
+        1040
+      ],
+      "color": "#88A",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Audio + embeds",
+      "bounding": [
+        20,
+        920,
+        1020,
+        520
+      ],
+      "color": "#a1309b",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "Sample + mux",
+      "bounding": [
+        1380,
+        640,
+        1680,
+        420
+      ],
+      "color": "#8A8",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.85,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "workflowRendererVersion": "LG",
+    "note": "NULLXES linear AI2V — no GetNode/SetNode. Extend/multi-segment: see NULLXES_Elena_AI2V_avatar.json"
+  },
+  "version": 0.4
+}
