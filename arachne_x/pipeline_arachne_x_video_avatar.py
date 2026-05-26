@@ -127,6 +127,15 @@ class LongCatVideoAvatarPipeline(
 
         self._num_timesteps = 1000
         self._num_distill_sample_steps = 50
+        # Baseline runtime state. Generation calls overwrite guidance scales,
+        # but mixins/properties must be safe immediately after construction.
+        self._text_guidance_scale = 4.0
+        self._audio_guidance_scale = 4.0
+        self._emotion_guidance_scale = 0.0
+        self._attention_kwargs = None
+        self._current_timestep = None
+        self._interrupt = False
+        self.kv_cache_dict = None
 
         self.audio_encoder=audio_encoder
         self.wav2vec_feature_extractor = wav2vec_feature_extractor
@@ -212,7 +221,6 @@ class LongCatVideoAvatarPipeline(
         self.temporal_memory_enabled = True
         self.temporal_memory_window_frames = 8
         self.temporal_memory_summary_frames = 2
-        self._emotion_guidance_scale = 0.0
         
         # CUDA optimizations for H200
         CUDAOptimizer.enable_flash_attention()

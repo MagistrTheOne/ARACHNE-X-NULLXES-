@@ -1,4 +1,4 @@
-# Optional: text-to-speech for avatar CLI (--speak_text) and orchestration adapters.
+# Optional: text-to-speech for avatar CLI (--speak_text).
 # Install on top of requirements.txt + requirements_avatar.txt (pins aligned with core).
 # See Documentation/REQUIREMENTS.md
 #
