@@ -16,7 +16,7 @@ _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
 
 
 def _has_expected_layout(root: Path) -> bool:
-    """Heuristic: ARACHNE / LongCat style bundle has tokenizer + vae."""
+    """Heuristic: ARACHNE-X ULTRA bundle has tokenizer + vae."""
     return (root / "tokenizer").is_dir() and (root / "vae").is_dir()
 
 

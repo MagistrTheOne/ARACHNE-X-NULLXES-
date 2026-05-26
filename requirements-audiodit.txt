@@ -1,5 +1,6 @@
-# Optional: AudioDiT as --tts_provider audiodit (legacy CLI alias: longcat_audiodit).# NOT compatible in the same venv as core ARACHNE-X (transformers>=5.3 vs 4.41.0).
-# Use a dedicated environment or container layer.
+# Optional: AudioDiT as --tts_provider audiodit (legacy CLI alias: longcat_audiodit).
+# NOT compatible in the same venv as core ARACHNE-X (transformers>=5.3 vs 4.41.0).
+# Use a dedicated environment or container layer. See Documentation/REQUIREMENTS.md
 #
 transformers>=5.3.0
 torchaudio>=2.0.0

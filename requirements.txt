@@ -1,3 +1,7 @@
+# ARACHNE-X core (DiT / VAE / diffusers / training iterable).
+# Prod Linux: install torch 2.6+cu124 FIRST, then flash-attn with --no-build-isolation, then this file.
+# See Documentation/REQUIREMENTS.md
+#
 torch==2.6.0
 torchvision==0.21.0
 numpy==1.26.4

@@ -190,6 +190,43 @@ def main():
         help="CFG-zero style scale on text branch in generate_ai2v (experimental A/B).",
     )
     parser.add_argument(
+        "--runtime_profile",
+        type=str,
+        default=None,
+        choices=["operational", "cinematic"],
+        help="Sampling OS profile (operational=chunk+distill+12 steps; cinematic=legacy monolithic). "
+        "Overridden by ARACHNE_RUNTIME_PROFILE env when unset.",
+    )
+    parser.add_argument(
+        "--use_distill",
+        action="store_true",
+        default=None,
+        help="Use distilled timestep schedule (50 indices). Profile sets default; also auto when steps<=16.",
+    )
+    parser.add_argument(
+        "--chunk_frames",
+        type=int,
+        default=33,
+        help="Chunked ai2v: frames per denoise window (4n+1).",
+    )
+    parser.add_argument(
+        "--chunk_overlap",
+        type=int,
+        default=8,
+        help="Pixel overlap between chunks for cosine stitch.",
+    )
+    parser.add_argument(
+        "--use_chunked_denoise",
+        action="store_true",
+        default=None,
+        help="Pipeline-level chunked denoise for long ai2v clips.",
+    )
+    parser.add_argument(
+        "--no_chunked_denoise",
+        action="store_true",
+        help="Force monolithic denoise even under operational profile.",
+    )
+    parser.add_argument(
         "--export_crf",
         type=int,
         default=None,
@@ -245,6 +282,8 @@ def main():
     )
     add_resolve_args(parser)
     args = parser.parse_args()
+    if args.no_chunked_denoise:
+        args.use_chunked_denoise = False
     execute_infer(args)
 
 

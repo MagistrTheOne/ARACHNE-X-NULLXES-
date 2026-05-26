@@ -1,9 +1,34 @@
 # ARACHNE-X Avatar Architecture (NULLXES)
 
-Operational doctrine for the avatar stack: what trains, what infers, what is forbidden, and why.
+Operational doctrine for the avatar stack: what trains, what infers, what is forbidden, and why.  
 This document is policy. Code is enforced from this contract — not the other way around.
 
-Lineage: derives from upstream [`meituan-longcat/LongCat-Video-Avatar`](https://huggingface.co/meituan-longcat/LongCat-Video-Avatar) (MIT). Components below extend that base for production HR / realtime avatar use.
+**Install / deps:** [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md)  
+**Classification:** [`Documentation/ARACHNE_X_CLASSIFICATION_2026-05-21.md`](Documentation/ARACHNE_X_CLASSIFICATION_2026-05-21.md)  
+**Engine iteration (GPT handoff):** [`Documentation/ARACHNE_ENGINE_ITERATION_HANDOFF_2026.md`](Documentation/ARACHNE_ENGINE_ITERATION_HANDOFF_2026.md)  
+**Stability OS (Sprint 2 / LiveKit):** [`Documentation/ARACHNE_STABILITY_OS_SPRINT2.md`](Documentation/ARACHNE_STABILITY_OS_SPRINT2.md)
+
+---
+
+## Weights & lineage (production)
+
+| | |
+|--|--|
+| **Runtime checkpoints** | NULLXES production only — [ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR) (HR avatar), [ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) (T2V/I2V/VC) |
+| **Not used in prod** | Hugging Face weights from [meituan-longcat/LongCat-Video](https://huggingface.co/meituan-longcat/LongCat-Video) / LongCat-Video-Avatar as runtime source |
+| **Architecture reference** | 3D ACV-DiT family (~13.6B, d4096, L48) — same *class* of model as public LongCat-Video reports ([arXiv:2510.22200](https://arxiv.org/abs/2510.22200)); **tensor ABI** keeps historical class names (`LongCatVideoAvatarTransformer3DModel`) for checkpoint compatibility |
+| **Code** | `arachne_x/` — NULLXES implementation; `longcat_video_dit*.py` are import shims only |
+
+Merged avatar runtime layout (`NULLXES_CHECKPOINT_DIR`):
+
+```
+checkpoint_dir/
+  tokenizer/  text_encoder/  vae/  scheduler/
+  avatar_single/   avatar_multi/
+  audio/wav2vec2/   audio/vocal_separator/Kim_Vocal_2.onnx
+```
+
+Resolve Hub → local: `arachne_x.weights_resolve.resolve_weights_root(..., allow_hub=True)`.
 
 ---
 
@@ -11,7 +36,7 @@ Lineage: derives from upstream [`meituan-longcat/LongCat-Video-Avatar`](https://
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
-   │                    Behavior Layer (live)                     │  ← orchestration
+   │                    Behavior Layer (live)                     │  ← orchestration (HR monorepo)
    │  voice turn-taking · prompt builder · session memory         │
    ├──────────────────────────────────────────────────────────────┤
    │                    Runtime (serving)                         │  ← inference engine
@@ -23,7 +48,7 @@ Lineage: derives from upstream [`meituan-longcat/LongCat-Video-Avatar`](https://
    │                    Identity LoRA (per-character)             │  ← attention-only LoRA
    │  Q/K/V/Out projections inside DiT blocks                     │
    ├──────────────────────────────────────────────────────────────┤
-   │                    Foundation DiT (frozen)                   │  ← LongCat avatar base
+   │              Foundation DiT (frozen, NULLXES ULTRA weights)    │  ← ACV-DiT 13.6B
    │  3D RoPE · flow-match Euler · Wan VAE · UMT5 · wav2vec2      │
    └──────────────────────────────────────────────────────────────┘
 ```
@@ -32,11 +57,11 @@ Lineage: derives from upstream [`meituan-longcat/LongCat-Video-Avatar`](https://
 
 ## 1. Foundation DiT
 
-`arachne_x/modules/avatar/arachne_avatar_dit.py` — `LongCatVideoAvatarTransformer3DModel`.
+`arachne_x/modules/avatar/arachne_avatar_dit.py` — `LongCatVideoAvatarTransformer3DModel` (ABI name).
 
 | Field | Value |
 |-------|-------|
-| Class | `LongCatVideoAvatarTransformer3DModel` |
+| Class (checkpoint ABI) | `LongCatVideoAvatarTransformer3DModel` |
 | Hidden size | 4096 |
 | Depth | 48 |
 | Num heads | 32 |
@@ -45,17 +70,11 @@ Lineage: derives from upstream [`meituan-longcat/LongCat-Video-Avatar`](https://
 | Scheduler | `FlowMatchEulerDiscreteScheduler` (shift 12, linear time-shift) |
 | VAE | `AutoencoderKLWan` (z_dim 16, temporal stride 4, spatial stride 8) |
 | Text encoder | UMT5-XXL (4096 dim) |
-| Audio encoder | Wav2Vec2 (`chinese-wav2vec2-base` in upstream layout, `audio/wav2vec2` in our layout) |
+| Audio encoder | Wav2Vec2 (`audio/wav2vec2` in NULLXES bundle) |
 
-**Status:** frozen at train time. We never fine-tune base weights. Identity adaptation happens in the LoRA layer above.
+**Status:** frozen at train time. Base weights = **ARACHNE-X-ULTRA-AVATAR** snapshot. Identity adaptation = LoRA + identity bank above.
 
-Loading goes through `arachne_x.loader.load_avatar_pipeline()` which expects the directory layout in `WeightsLayout`:
-```
-checkpoint_dir/
-  tokenizer/  text_encoder/  vae/  scheduler/
-  avatar_single/   avatar_multi/
-  audio/wav2vec2/   audio/vocal_separator/Kim_Vocal_2.onnx
-```
+Loading: `arachne_x.loader.load_avatar_pipeline()`.
 
 ---
 
@@ -67,21 +86,21 @@ checkpoint_dir/
 
 LoRA is applied **only** to attention Q/K/V/Out projections inside transformer blocks. The denylist is enforced inside `avatar_attention_only_lora_filter` and cannot be bypassed by `--lora_prefixes` (the deny check runs before the override).
 
-| Module path (real names in ARACHNE-X DiT) | LoRA? | Upstream-style equivalent |
-|--------------------------------------------|-------|---------------------------|
-| `blocks.{N}.attn.qkv` | YES | `to_q` + `to_k` + `to_v` (combined) |
-| `blocks.{N}.attn.proj` | YES | `to_out` |
-| `blocks.{N}.cross_attn.q_linear` | YES | `cross_attn.to_q` |
-| `blocks.{N}.cross_attn.kv_linear` | YES | `cross_attn.to_k` + `to_v` (combined) |
-| `blocks.{N}.cross_attn.proj` | YES | `cross_attn.to_out` |
-| `blocks.{N}.audio_cross_attn.q_linear` | YES | audio Q |
-| `blocks.{N}.audio_cross_attn.kv_linear` | YES | audio K/V |
-| `blocks.{N}.audio_cross_attn.proj` | YES | audio Out |
-| `blocks.{N}.ffn.*` | **NO** | — |
-| `blocks.{N}.adaLN_modulation.*` | **NO** | — |
-| `audio_proj.*` | **NO** | (head, not block) |
-| `final_layer.*` | **NO** | — |
-| `x_embedder.*` / `y_embedder.*` / `t_embedder.*` | **NO** | — |
+| Module path (real names in ARACHNE-X DiT) | LoRA? |
+|--------------------------------------------|-------|
+| `blocks.{N}.attn.qkv` | YES |
+| `blocks.{N}.attn.proj` | YES |
+| `blocks.{N}.cross_attn.q_linear` | YES |
+| `blocks.{N}.cross_attn.kv_linear` | YES |
+| `blocks.{N}.cross_attn.proj` | YES |
+| `blocks.{N}.audio_cross_attn.q_linear` | YES |
+| `blocks.{N}.audio_cross_attn.kv_linear` | YES |
+| `blocks.{N}.audio_cross_attn.proj` | YES |
+| `blocks.{N}.ffn.*` | **NO** |
+| `blocks.{N}.adaLN_modulation.*` | **NO** |
+| `audio_proj.*` | **NO** |
+| `final_layer.*` | **NO** |
+| `x_embedder.*` / `y_embedder.*` / `t_embedder.*` | **NO** |
 
 ### Anti-snow stack
 
@@ -101,7 +120,6 @@ LoRA is applied **only** to attention Q/K/V/Out projections inside transformer b
 | `--lora_rank` | 128 (or `--config` JSON) | small character: 16 |
 | `--lora_alpha` | 64 | small character: 8 |
 | `--lora_key` | `train` | Elena HR uses `elenahr` |
-| `--lora_scope` | *removed* | scope is constant `attention` |
 | `--min_snr_gamma` | 5.0 | 0 = disable |
 | `--normalize_audio_embs` | True | `--no-normalize_audio_embs` to A/B |
 | `--ema_decay` | 0.9995 | 0 = off |
@@ -111,25 +129,15 @@ LoRA is applied **only** to attention Q/K/V/Out projections inside transformer b
 
 ## 3. Motion Adapter
 
-Reserved layer. Will sit between Foundation DiT and Identity LoRA when we introduce audio-driven motion residuals (e.g. style adapters trained on motion clips, separate from identity LoRA).
+Reserved layer. Will sit between Foundation DiT and Identity LoRA when we introduce audio-driven motion residuals.
 
-Until then:
-* train one LoRA per character (identity) with the locked attention scope
-* motion characteristics come from base DiT + audio CFG, not from LoRA
-
-Documenting the layer here so identity LoRA training never absorbs motion responsibilities (which is what FFN / audio_proj LoRA implicitly does and why they are banned).
+Until then: one identity LoRA per character; motion from base DiT + audio CFG, not from LoRA on FFN/audio_proj.
 
 ---
 
 ## 4. Behavior Layer
 
-Lives outside `arachne_x/` — in `backend/realtime-gateway/` and frontend orchestration.
-
-Not in scope for this document. Listed for completeness so the avatar stack boundaries are clear:
-
-* turn-taking, VAD, interrupt handling — `staged-voice-client.ts`, `useJobaiLiveKitInterviewV2.ts`
-* prompt build / session memory — gateway dialogue store
-* TTS / STT — OpenAI Realtime or staged STT→LLM→TTS
+Outside `arachne_x/` — `backend/realtime-gateway/`, LiveKit agents, frontend.
 
 The Behavior Layer **never** writes to avatar runtime; it sends `(audio chunks, prompt, lora_key)` and reads frames.
 
@@ -137,43 +145,107 @@ The Behavior Layer **never** writes to avatar runtime; it sends `(audio chunks, 
 
 ## 4.5 Prompt Intelligence Layer
 
-`arachne_x/prompt_compiler/` — LTX-style **instruction** step before frozen UMT5 (not a DiT adapter).
+`arachne_x/prompt_compiler/` — instruction step before frozen UMT5 (not a DiT adapter).
 
 | Backend | Deployment | Role |
 |---------|------------|------|
-| `openai` | Production | Expand short intent via OpenAI (`prompt_enhancer`, `force=True`) |
+| `openai` | Production | Expand short intent via OpenAI |
 | `gemma` | RunPod calibration | Local `ARACHNE_GEMMA_MODEL` on CUDA |
-| `off` | Default | Passthrough + avatar template merge (lipsync, static camera, negative guard) |
+| `off` | Default | Passthrough + avatar template merge |
 
 Wiring: `inference_engine.apply_prompt_compiler` → `encode_prompt` → identity tokens → DiT.  
 See [`Documentation/PROMPT_COMPILER.md`](Documentation/PROMPT_COMPILER.md).
 
-**Phase B (planning tokens):** `arachne_x/planning/planning_token_head.py` — optional extra cross-attn tokens; disabled by default (`planning_enabled=False`).
-
-**Phase C (audio plate):** `arachne_x/modules/audio/nullxes_audio_encoder.py` — shape-compatible wav2vec replacement; `ARACHNE_AUDIO_ENCODER=nullxes|wav2vec`.
-
 ---
 
-## 5. Runtime
+## 5. Runtime & startup paths
 
-`arachne_x/runtime/inference_engine.py`, `arachne_x/runtime/avatar_serving.py`, `arachne_x/streaming_inference.py`, `scripts/infer.py`.
+| Path | Entry | Notes |
+|------|-------|-------|
+| **CLI** | `scripts/infer.py` | Thin wrapper over `arachne_x.runtime.execute_infer` |
+| **Library** | `arachne_x.runtime.InferenceEngine` | Same contract as CLI |
+| **GPU worker** | `services/arachnex-worker/main.py` | FastAPI → `gpu_avatar_runtime` → `avatar_serving` (lazy CUDA load) |
+| **Internal orchestrator** | `src/server/*` | HTTP client to worker; no second DiT process |
 
-### CLI
+### Sampling OS (operational vs cinematic)
 
-`scripts/infer.py --mode {at2v,ai2v,avc,streaming_ai2v,enroll_identity} --checkpoint_dir … [--lora_path … --lora_key …]`
+| Profile | Steps | Distill | Chunks | Frame cap | Use case |
+|---------|-------|---------|--------|-----------|----------|
+| `operational` | 12 | yes | F=33, overlap=8 | 65 (sync) | Worker realtime, short clips, TTFF |
+| `cinematic` | 35 | no | monolithic | none | Quality baseline, eval rollback |
+
+Wiring: `arachne_x/runtime/sampling_profiles.py` → `execute_infer` / `avatar_serving`.  
+Chunk path: `generate_chunked_ai2v` (pipeline-level windows) + `chunk_stitch.cosine_blend`.  
+Streaming: `generate_streaming_ai2v` delegates to chunked yield unless `ARACHNE_LEGACY_STREAMING=1`.  
+Metrics: `RuntimeSamplingMetrics` → `.run.json` (`ttff_sec`, `dit_forwards`, `denoise_wall_sec`).  
+Cross-chunk KV seed (optional): `ARACHNE_CHUNK_KV=1` + `runtime/chunk_kv.py` (consume in `generate_ai2v` is Sprint 2).
+
+```bash
+# Operational CLI (after H200 eval gate)
+python scripts/infer.py --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v --runtime_profile operational \
+  --image ref.jpg --audio speech.wav --prompt "speaking to camera"
+```
+
+### Environment (prod)
+
+| Variable | Role |
+|----------|------|
+| `NULLXES_CHECKPOINT_DIR` / `ARACHNE_CHECKPOINT_DIR` | Merged AVATAR bundle root |
+| `PYTHONPATH` | Repo root + `services/arachnex-worker` for uvicorn |
+| `NULLXES_INFERENCE_SERVICE_KEY` | Optional; header `X-NULLXES-Avatar-Inference-Key` |
+| `ARACHNE_INFER_ENABLE_BSA` | Infer-only block-sparse attention (default ON) |
+| `ARACHNE_RUNTIME_PROFILE` | `operational` \| `cinematic` (CLI `--runtime_profile` overrides when set) |
+| `ARACHNE_LEGACY_STREAMING` | `1` = monolithic denoise + stream VAE (one release rollback) |
+| `ARACHNE_CHUNK_KV` | `1` = seed `kv_cache_dict` between chunks (Sprint 1.5; full consume pending) |
+
+### CLI (HR primary)
+
+```bash
+export PYTHONPATH=/workspace/ARACHNE-X
+export NULLXES_CHECKPOINT_DIR=/workspace/weights/arachne-avatar-runtime
+
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --image assets/avatar/single/elena/elena.jpg \
+  --audio path/to/speech.wav \
+  --prompt "speaking, looking at camera"
+```
+
+Modes: `ai2v`, `enroll_identity`, `at2v`, `avc`, `streaming_ai2v` (avatar); `t2v`, `i2v`, `vc` (VIDEO ckpt).
+
+### Worker
+
+```bash
+export PYTHONPATH=/workspace/ARACHNE-X:/workspace/ARACHNE-X/services/arachnex-worker
+export NULLXES_CHECKPOINT_DIR=/workspace/weights/arachne-avatar-runtime
+cd services/arachnex-worker
+uvicorn main:app --host 0.0.0.0 --port 9090
+```
+
+| Endpoint | Role |
+|----------|------|
+| `GET /health` | Liveness, no GPU load |
+| `POST /v1/realtime/avatar_frames` | NDJSON RGB stream |
+| `POST /v1/arachne/generate` | Sync MP4 |
+| `POST /v1/longcat/generate` | Legacy alias (same handler) |
+
+Worker details: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md).  
+RunPod bring-up: [`RUNPOD_H200_AVATAR_SETUP.md`](RUNPOD_H200_AVATAR_SETUP.md).
 
 ### BSA at infer
 
-`arachne_x/infer_attention.py::configure_infer_bsa(dit, enabled=None)` toggles block-sparse attention. Controlled by `ARACHNE_INFER_ENABLE_BSA` env (default ON for upstream parity).
+`arachne_x/infer_attention.py::configure_infer_bsa(dit, enabled=None)` — env `ARACHNE_INFER_ENABLE_BSA`.
 
-**Strict policy:** training code does NOT import `configure_infer_bsa` and explicitly calls `dit.disable_bsa()`. Mixing BSA-train with dense-infer (or vice versa) drifts the attention distribution → temporal flicker.
+**Strict policy:** training calls `dit.disable_bsa()`; never import `configure_infer_bsa` from train code.
 
-### Audio CFG
+### Audio CFG (NULLXES prod)
 
-| Source | Recommended range |
-|--------|-------------------|
-| Upstream docs | 3–5 |
-| Production lipsync (NULLXES) | 5–6 |
+| Context | `audio_guidance_scale` |
+|---------|------------------------|
+| Smoke / docs legacy | 3–5 |
+| **Production lipsync** | **5.0–5.5** |
 | Presets (`elena.json`) | per-block 3–5 |
 
 ---
@@ -193,48 +265,32 @@ See [`Documentation/PROMPT_COMPILER.md`](Documentation/PROMPT_COMPILER.md).
 | Timestep bias power | 2.0 | N/A |
 | Gradient checkpointing | YES (DiT) | N/A |
 
-Violations are caught:
-
-* `avatar_attention_only_lora_filter` denylist (lora_utils.py)
-* `verify_lora_avatar.py` asserts no `audio_proj` / `ffn` / `final_layer` keys in saved LoRA
-* `train_lora_avatar.py` calls `dit.disable_bsa()` and logs `BSA disabled for LoRA train`
-* `infer_attention.py` header warning; never imported by train
+Enforcement: `avatar_attention_only_lora_filter`, `verify_lora_avatar.py`, `train_lora_avatar.py` + `infer_attention.py` import guard.
 
 ---
 
-## File map (current production)
+## File map (production)
 
 ```
 arachne_x/
-  loader.py                         # canonical bundle loader
-  weights_resolve.py                # HF repo or local dir resolver
-  pipeline_arachne_x_video_avatar.py# main avatar pipeline (ai2v/at2v/avc/streaming)
-  inference_audio.py                # windowed audio embs (train+infer parity)
-  inference_frames.py               # 4n+1 frame budget helpers
-  infer_attention.py                # BSA toggle (INFER-ONLY)
-  streaming_inference.py            # KV cache, streaming VAE decoder
-  training_latent_export.py         # avatar latent .pt export (Min-SNR ts bias)
-  training_latent_export_base.py    # base-video latent export (no audio)
-  training_latent_common.py         # collate / validate
-  training_wds.py                   # WebDataset iterable
-  training_lora_loss.py             # Min-SNR flow-match loss + audio stabilize
-  training_vae_latent.py            # z0 estimation + VAE denorm (matches pipeline)
-  training_avatar_aux.py            # staged aux losses (Phase B)
-  modules/
-    avatar/arachne_avatar_dit.py    # the DiT
-    avatar/attention.py             # avatar attention (qkv + cross_attn + audio_cross_attn)
-    avatar_losses.py                # ARACHNEAvatarLossModule (perceptual/identity/lip/temporal)
-    autoencoder_kl_wan.py           # Wan VAE
-    scheduling_flow_match_euler_discrete.py
-    identity_encoder.py             # DINOv2 (aux only)
-    lora_utils.py                   # avatar_attention_only_lora_filter (policy-locked)
+  loader.py
+  weights_resolve.py
+  pipeline_arachne_x_video_avatar.py
+  inference_audio.py
+  inference_frames.py
+  infer_attention.py
+  streaming_inference.py
+  runtime/inference_engine.py
+  runtime/avatar_serving.py
+  modules/avatar/arachne_avatar_dit.py
+  modules/lora_utils.py
 scripts/
-  train_lora_avatar.py              # the trainer
-  infer.py                          # the inferer
-  verify_lora_avatar.py             # LoRA policy + roundtrip smoke tests
-  export_latent_training_sample.py  # one-sample export CLI
-  gpu/train_elenahr_lora.sh         # H200 train wrapper (Elena HR)
-  gpu/export_elena_lora_smoke.sh    # H200 export wrapper (Elena HR)
+  infer.py
+  train_lora_avatar.py
+  verify_lora_avatar.py
+services/arachnex-worker/
+  main.py
+  gpu_avatar_runtime.py
 ```
 
 Removed (NULLXES hardening): `arachne_x/model_adapter.py`, `arachne_x/config_realtime.py`.

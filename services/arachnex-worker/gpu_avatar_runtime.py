@@ -26,6 +26,11 @@ def stream_avatar_frames_raw_sync(
     audio_guidance_scale: float = 4.0,
     resolution: str = "480p",
     num_frames: int = 93,
+    runtime_profile: str | None = None,
+    chunk_frames: int | None = None,
+    chunk_overlap: int | None = None,
+    use_chunked_denoise: bool | None = None,
+    use_distill: bool | None = None,
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from arachne_x.runtime.avatar_serving import stream_avatar_frames_raw_sync as _impl
 
@@ -39,6 +44,11 @@ def stream_avatar_frames_raw_sync(
         audio_guidance_scale=audio_guidance_scale,
         resolution=resolution,
         num_frames=num_frames,
+        runtime_profile=runtime_profile,
+        chunk_frames=chunk_frames,
+        chunk_overlap=chunk_overlap,
+        use_chunked_denoise=use_chunked_denoise,
+        use_distill=use_distill,
     )
 
 

@@ -35,6 +35,12 @@ from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
 from arachne_x.prompt_compiler.gemma_backend import release_gemma_compiler
 from arachne_x.weights_resolve import resolve_weights_root
+from arachne_x.runtime.sampling_profiles import (
+    apply_sampling_profile,
+    cap_num_frames_for_profile,
+    resolve_use_distill,
+)
+from arachne_x.runtime.sampling_metrics import RuntimeSamplingMetrics
 
 
 def save_video_numpy(frames: np.ndarray, path: str, fps: int = 30) -> None:
@@ -119,6 +125,8 @@ def apply_avatar_frame_budget(
         )
 
     info["embedding_fps_final"] = embedding_fps
+    chosen = cap_num_frames_for_profile(args, int(chosen))
+    args.num_frames = chosen
     info["chosen"] = chosen
     pipe.inference_embedding_fps = embedding_fps
     args._resolved_embedding_fps = embedding_fps
@@ -196,6 +204,12 @@ def write_run_metadata(
     compiler_meta = getattr(args, "_prompt_compiler_meta", None)
     if compiler_meta:
         payload["prompt_compiler"] = compiler_meta
+    sampling = getattr(args, "_runtime_sampling_metrics", None)
+    if sampling is not None:
+        payload["sampling_metrics"] = sampling
+    payload["runtime_profile"] = getattr(args, "_sampling_profile_name", None)
+    payload["use_distill"] = bool(getattr(args, "use_distill", False))
+    payload["use_chunked_denoise"] = bool(getattr(args, "use_chunked_denoise", False))
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -355,10 +369,24 @@ def build_video_latent(pipe, video, num_cond_frames: int, height: int, width: in
     return pipe.normalize_latents(cond_videos_latents)
 
 
+def attach_runtime_sampling_metrics(pipe, args: argparse.Namespace) -> RuntimeSamplingMetrics:
+    rsm = RuntimeSamplingMetrics(
+        runtime_profile=getattr(args, "_sampling_profile_name", None),
+    )
+    rsm.mark_start()
+    pipe.runtime_sampling_metrics = rsm
+    args._runtime_sampling_metrics = rsm.to_dict()
+    return rsm
+
+
 def execute_infer(args: argparse.Namespace) -> None:
     """
     Run one inference job from a populated ``argparse.Namespace`` (same contract as ``scripts/infer.py`` CLI).
     """
+    apply_sampling_profile(args)
+    if getattr(args, "use_distill", None) is None:
+        args.use_distill = resolve_use_distill(args)
+
     emotion_id = args.emotion_id
     if isinstance(emotion_id, str):
         s = emotion_id.strip()
@@ -536,6 +564,7 @@ def execute_infer(args: argparse.Namespace) -> None:
     )
     maybe_load_avatar_lora(pipe, args)
     configure_avatar_pipe(pipe, args)
+    attach_runtime_sampling_metrics(pipe, args)
 
     if args.identity_bank_path and os.path.exists(args.identity_bank_path):
         loaded = pipe.load_identity_bank(
@@ -585,36 +614,67 @@ def execute_infer(args: argparse.Namespace) -> None:
         image = load_image(args.image)
         use_cfg_zero = bool(getattr(args, "use_cfg_zero", False))
         try:
+            use_distill = resolve_use_distill(args)
+            audio_emb = build_audio_emb(
+                pipe,
+                audio_path=wav_path,
+                num_frames=args.num_frames,
+                device=device,
+                embedding_fps=emb_fps,
+            )
             if args.mode == "ai2v":
-                audio_emb = build_audio_emb(
-                    pipe,
-                    audio_path=wav_path,
-                    num_frames=args.num_frames,
-                    device=device,
-                    embedding_fps=emb_fps,
-                )
-                out = pipe.generate_ai2v(
-                    image=image,
-                    prompt=args.prompt,
-                    negative_prompt=args.negative_prompt,
-                    resolution=args.resolution,
-                    num_frames=args.num_frames,
-                    num_inference_steps=args.num_inference_steps,
-                    text_guidance_scale=args.text_guidance_scale,
-                    audio_guidance_scale=args.audio_guidance_scale,
-                    audio_emb=audio_emb,
-                    identity_id=args.identity_id,
-                    identity_strength=args.identity_strength,
-                    identity_negative_strength=args.identity_negative_strength,
-                    update_identity_bank=args.identity_update_bank,
-                    identity_update_momentum=args.identity_update_momentum,
-                    emotion_id=emotion_id,
-                    emotion_intensity=args.emotion_intensity,
-                    emotion_guidance_scale=args.emotion_guidance_scale,
-                    mouth_zone_masks=mouth_mask_tensor,
-                    use_cfg_zero=use_cfg_zero,
-                )[0]
+                if bool(getattr(args, "use_chunked_denoise", False)) and int(args.num_frames) > int(
+                    getattr(args, "chunk_frames", 33)
+                ):
+                    out = pipe.generate_chunked_ai2v(
+                        image=image,
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        resolution=args.resolution,
+                        num_frames=args.num_frames,
+                        num_inference_steps=args.num_inference_steps,
+                        use_distill=use_distill,
+                        text_guidance_scale=args.text_guidance_scale,
+                        audio_guidance_scale=args.audio_guidance_scale,
+                        audio_emb=audio_emb,
+                        identity_id=args.identity_id,
+                        identity_strength=args.identity_strength,
+                        identity_negative_strength=args.identity_negative_strength,
+                        emotion_id=emotion_id,
+                        emotion_intensity=args.emotion_intensity,
+                        emotion_guidance_scale=args.emotion_guidance_scale,
+                        mouth_zone_masks=mouth_mask_tensor,
+                        use_cfg_zero=use_cfg_zero,
+                        chunk_frames=int(getattr(args, "chunk_frames", 33)),
+                        chunk_overlap=int(getattr(args, "chunk_overlap", 8)),
+                        yield_frames=False,
+                    )
+                else:
+                    out = pipe.generate_ai2v(
+                        image=image,
+                        prompt=args.prompt,
+                        negative_prompt=args.negative_prompt,
+                        resolution=args.resolution,
+                        num_frames=args.num_frames,
+                        num_inference_steps=args.num_inference_steps,
+                        use_distill=use_distill,
+                        text_guidance_scale=args.text_guidance_scale,
+                        audio_guidance_scale=args.audio_guidance_scale,
+                        audio_emb=audio_emb,
+                        identity_id=args.identity_id,
+                        identity_strength=args.identity_strength,
+                        identity_negative_strength=args.identity_negative_strength,
+                        update_identity_bank=args.identity_update_bank,
+                        identity_update_momentum=args.identity_update_momentum,
+                        emotion_id=emotion_id,
+                        emotion_intensity=args.emotion_intensity,
+                        emotion_guidance_scale=args.emotion_guidance_scale,
+                        mouth_zone_masks=mouth_mask_tensor,
+                        use_cfg_zero=use_cfg_zero,
+                    )[0]
                 save_avatar_mp4(out, args.output, wav_path, args)
+                if pipe.runtime_sampling_metrics is not None:
+                    args._runtime_sampling_metrics = pipe.runtime_sampling_metrics.to_dict()
                 write_run_metadata(args, frame_budget)
                 if args.identity_update_bank:
                     save_path = args.identity_bank_save_path or args.identity_bank_path
@@ -622,21 +682,18 @@ def execute_infer(args: argparse.Namespace) -> None:
                         pipe.save_identity_bank(save_path)
                         print(f"[identity-bank] updated and saved to {save_path}")
             else:
-                audio_gen = iter_audio_micro_turns_from_file(
-                    wav_path,
-                    chunk_duration_sec=args.audio_chunk_sec,
-                    sample_rate=16000,
-                )
                 frames = []
                 for frame in pipe.generate_streaming_ai2v(
                     image=image,
                     prompt=args.prompt,
-                    audio_stream=audio_gen,
+                    audio_stream=None,
                     resolution=args.resolution,
                     num_frames=args.num_frames,
                     num_inference_steps=args.num_inference_steps,
+                    use_distill=use_distill,
                     text_guidance_scale=args.text_guidance_scale,
                     audio_guidance_scale=args.audio_guidance_scale,
+                    audio_emb=audio_emb,
                     identity_id=args.identity_id,
                     identity_strength=args.identity_strength,
                     identity_negative_strength=args.identity_negative_strength,
@@ -645,9 +702,14 @@ def execute_infer(args: argparse.Namespace) -> None:
                     emotion_guidance_scale=args.emotion_guidance_scale,
                     mouth_zone_masks=mouth_mask_tensor,
                     use_cfg_zero=use_cfg_zero,
+                    chunk_frames=int(getattr(args, "chunk_frames", 33)),
+                    chunk_overlap=int(getattr(args, "chunk_overlap", 8)),
+                    use_chunked_denoise=bool(getattr(args, "use_chunked_denoise", True)),
                 ):
                     frames.append(frame)
                 save_avatar_mp4(np.stack(frames, axis=0), args.output, wav_path, args)
+                if pipe.runtime_sampling_metrics is not None:
+                    args._runtime_sampling_metrics = pipe.runtime_sampling_metrics.to_dict()
                 write_run_metadata(args, frame_budget)
                 if args.identity_bank_save_path:
                     pipe.save_identity_bank(args.identity_bank_save_path)
@@ -677,6 +739,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 width=args.width,
                 num_frames=args.num_frames,
                 num_inference_steps=args.num_inference_steps,
+                use_distill=resolve_use_distill(args),
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
                 audio_emb=audio_emb,
@@ -730,6 +793,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                 num_frames=args.num_frames,
                 num_cond_frames=args.num_cond_frames,
                 num_inference_steps=args.num_inference_steps,
+                use_distill=resolve_use_distill(args),
                 text_guidance_scale=args.text_guidance_scale,
                 audio_guidance_scale=args.audio_guidance_scale,
                 identity_id=args.identity_id,

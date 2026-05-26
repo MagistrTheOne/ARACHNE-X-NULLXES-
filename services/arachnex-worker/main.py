@@ -104,6 +104,15 @@ class StreamFramesBody(BaseModel):
     audioGuidanceScale: float = Field(default=4.0)
     resolution: str = Field(default="480p")
     numFrames: int = Field(default=93, ge=1, le=256)
+    runtimeProfile: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="operational (default) | cinematic. Env ARACHNE_RUNTIME_PROFILE when omitted.",
+    )
+    chunkFrames: Optional[int] = Field(default=None, ge=5, le=256)
+    chunkOverlap: Optional[int] = Field(default=None, ge=0, le=64)
+    useChunkedDenoise: Optional[bool] = Field(default=None)
+    useDistill: Optional[bool] = Field(default=None)
     engine: str = Field(default="arachne", max_length=64)
 
 
@@ -254,6 +263,11 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             audio_guidance_scale=body.audioGuidanceScale,
             resolution=body.resolution,
             num_frames=body.numFrames,
+            runtime_profile=body.runtimeProfile,
+            chunk_frames=body.chunkFrames,
+            chunk_overlap=body.chunkOverlap,
+            use_chunked_denoise=body.useChunkedDenoise,
+            use_distill=body.useDistill,
         ):
             # Use monotonic clock to timestamp frames for sync downstream.
             ts_ms = int((time.monotonic_ns() - t0_ns) / 1_000_000)

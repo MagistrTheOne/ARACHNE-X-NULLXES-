@@ -1,19 +1,29 @@
+# ARACHNE-X avatar / HR prod stack (install AFTER requirements.txt + flash-attn on Linux).
+# TTS for --speak_text: pip install -r requirements-tts.txt
+# Do NOT pip install requirements-audiodit.txt in the same venv (transformers>=5.3 conflicts with core).
+# See Documentation/REQUIREMENTS.md
+#
 -r requirements.txt
 
+# Signal / avatar pipeline (pipeline_arachne_x_video_avatar, inference_audio)
 scikit-learn==1.6.1
 scikit-image==0.25.2
 soxr==0.5.0.post1
-pyloudnorm==0.1.1
-audio-separator==0.30.2
 
-nvidia-ml-py==13.580.65
-tzdata==2025.2
-onnx==1.18.0
-onnxruntime==1.18.0
-
+# Prompt compiler (openai backend)
 openai==1.75.0
 cffi==2.0.0
 chardet==5.2.0
+
+# GPU telemetry / tz
+nvidia-ml-py==13.580.65
+tzdata==2025.2
+
+# Demo vocal separation + ONNX models (Demo/*.py; not imported by arachne_x.runtime)
+onnx==1.18.0
+onnxruntime==1.18.0
+audio-separator==0.30.2
+
+# Demo / semiauto WebRTC + VAD (optional for ai2v with pre-recorded WAV)
 aiortc==1.10.1
 silero-vad==5.1.2
-qwen-tts

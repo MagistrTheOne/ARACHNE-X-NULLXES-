@@ -65,8 +65,8 @@ export NULLXES_CHECKPOINT_DIR=/runpod-volume/weights/arachne-avatar
 3. Запустить uvicorn из каталога воркера (или через `PYTHONPATH` к репо):
 
 ```bash
-cd /workspace/ARACHNE-X/services/longcat-worker
-export PYTHONPATH=/workspace/ARACHNE-X:/workspace/ARACHNE-X/services/longcat-worker
+cd /workspace/ARACHNE-X/services/arachnex-worker
+export PYTHONPATH=/workspace/ARACHNE-X:/workspace/ARACHNE-X/services/arachnex-worker
 uvicorn main:app --host 0.0.0.0 --port 9090
 ```
 
@@ -98,7 +98,7 @@ curl -fsS http://127.0.0.1:9090/health
 
 ### Поле `engine` в `POST /v1/realtime/avatar_frames`
 
-Тело запроса соответствует `StreamFramesBody` в [`services/longcat-worker/main.py`](../../services/longcat-worker/main.py) (camelCase в JSON). Реализация DiT на стороне библиотеки: [`arachne_x/modules/arachne_video_dit.py`](../../arachne_x/modules/arachne_video_dit.py) и [`arachne_x/modules/avatar/arachne_avatar_dit.py`](../../arachne_x/modules/avatar/arachne_avatar_dit.py) (импорт-шимы `longcat_video_dit*.py` сохранены для совместимости).
+Тело запроса соответствует `StreamFramesBody` в [`services/arachnex-worker/main.py`](../../services/arachnex-worker/main.py) (camelCase в JSON). Реализация DiT: [`arachne_x/modules/arachne_video_dit.py`](../../arachne_x/modules/arachne_video_dit.py) и [`arachne_x/modules/avatar/arachne_avatar_dit.py`](../../arachne_x/modules/avatar/arachne_avatar_dit.py). Веса prod: [ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR).
 
 | Значение `engine` | Поведение |
 |-------------------|-----------|
@@ -112,6 +112,8 @@ curl -fsS http://127.0.0.1:9090/health
 ---
 
 ## NULLXES HR AI — плашка аватара и RunPod (чеклист)
+
+**Landing + KAIRA (25.05.2026):** полный deployment-контур (под → bridge → LiveKit → NULLXESLanding) — [`NULLXES_DEPLOYMENT_2026-05-25.md`](../NULLXES_DEPLOYMENT_2026-05-25.md).
 
 Realtime «плашка» в HR идёт через **realtime-gateway**: TTS PCM → HTTP NDJSON к Inference Worker → кадры → публикация в SFU (GetStream или LiveKit — см. конфиг gateway). Полный smoke **на GPU-поде** (локальная машина без CUDA bundle обычно не подходит).
 

@@ -7,6 +7,7 @@ Worker package re-exports from here to keep one schema truth (NIGHT FURY V2).
 
 from __future__ import annotations
 
+import argparse
 import io
 import logging
 import os
@@ -74,6 +75,63 @@ def _job_get(job: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
+def _streaming_sampling_args(
+    *,
+    runtime_profile: Optional[str] = None,
+    num_inference_steps: int = 8,
+    text_guidance_scale: float = 4.0,
+    audio_guidance_scale: float = 4.0,
+    resolution: str = "480p",
+    num_frames: int = 93,
+    chunk_frames: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    use_chunked_denoise: Optional[bool] = None,
+    use_distill: Optional[bool] = None,
+) -> argparse.Namespace:
+    """Build args namespace and apply operational/cinematic profile (explicit job fields win)."""
+    from arachne_x.runtime.sampling_profiles import apply_sampling_profile, resolve_use_distill
+
+    profile = (
+        runtime_profile
+        or os.environ.get("ARACHNE_RUNTIME_PROFILE")
+        or os.environ.get("NULLXES_RUNTIME_PROFILE")
+        or "operational"
+    )
+    ns = argparse.Namespace(
+        runtime_profile=str(profile).strip().lower(),
+        num_inference_steps=int(num_inference_steps),
+        text_guidance_scale=float(text_guidance_scale),
+        audio_guidance_scale=float(audio_guidance_scale),
+        resolution=resolution if resolution in ("480p", "720p") else "480p",
+        num_frames=int(num_frames),
+        chunk_frames=chunk_frames if chunk_frames is not None else 33,
+        chunk_overlap=chunk_overlap if chunk_overlap is not None else 8,
+        use_chunked_denoise=use_chunked_denoise,
+        use_distill=use_distill,
+        num_frames_mode="sync",
+    )
+    apply_sampling_profile(ns, argv=[])
+    if use_chunked_denoise is not None:
+        ns.use_chunked_denoise = bool(use_chunked_denoise)
+    if use_distill is not None:
+        ns.use_distill = bool(use_distill)
+    if chunk_frames is not None:
+        ns.chunk_frames = int(chunk_frames)
+    if chunk_overlap is not None:
+        ns.chunk_overlap = int(chunk_overlap)
+    if ns.use_distill is None:
+        ns.use_distill = resolve_use_distill(ns)
+    return ns
+
+
+def _attach_pipe_sampling_metrics(pipe, profile_name: Optional[str]) -> None:
+    from arachne_x.runtime.sampling_metrics import RuntimeSamplingMetrics
+
+    rsm = RuntimeSamplingMetrics(runtime_profile=profile_name)
+    rsm.mark_start()
+    pipe.runtime_sampling_metrics = rsm
+
+
 def synthesize_speak_text_to_wav(
     text: str,
     *,
@@ -139,6 +197,11 @@ def generate_frames_numpy(
     audio_guidance_scale: float = 4.0,
     resolution: str = "480p",
     num_frames: int = 93,
+    runtime_profile: Optional[str] = None,
+    chunk_frames: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    use_chunked_denoise: Optional[bool] = None,
+    use_distill: Optional[bool] = None,
 ) -> List[np.ndarray]:
     from PIL import Image
 
@@ -146,8 +209,22 @@ def generate_frames_numpy(
         raise ValueError("audio_f32 is empty")
     from arachne_x.runtime.prompt_compiler_runtime import compile_prompt_for_job
 
+    samp = _streaming_sampling_args(
+        runtime_profile=runtime_profile,
+        num_inference_steps=num_inference_steps,
+        text_guidance_scale=text_guidance_scale,
+        audio_guidance_scale=audio_guidance_scale,
+        resolution=resolution,
+        num_frames=num_frames,
+        chunk_frames=chunk_frames,
+        chunk_overlap=chunk_overlap,
+        use_chunked_denoise=use_chunked_denoise,
+        use_distill=use_distill,
+    )
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    _attach_pipe_sampling_metrics(pipe, getattr(samp, "_sampling_profile_name", None))
     audio_dur = float(audio_f32.size) / 16000.0 if audio_f32.size > 0 else None
     compiled_pos, compiled_neg = compile_prompt_for_job(
         prompt or "A person speaking clearly to camera.",
@@ -168,11 +245,15 @@ def generate_frames_numpy(
             image=img,
             prompt=compiled_pos,
             audio_stream=audio_stream(),
-            resolution=resolution if resolution in ("480p", "720p") else "480p",
-            num_frames=int(num_frames),
-            num_inference_steps=int(num_inference_steps),
-            text_guidance_scale=float(text_guidance_scale),
-            audio_guidance_scale=float(audio_guidance_scale),
+            resolution=samp.resolution,
+            num_frames=samp.num_frames,
+            num_inference_steps=samp.num_inference_steps,
+            use_distill=bool(samp.use_distill),
+            text_guidance_scale=float(samp.text_guidance_scale),
+            audio_guidance_scale=float(samp.audio_guidance_scale),
+            chunk_frames=int(samp.chunk_frames),
+            chunk_overlap=int(samp.chunk_overlap),
+            use_chunked_denoise=bool(samp.use_chunked_denoise),
         ):
             arr = np.asarray(frame)
             if arr.dtype != np.uint8:
@@ -193,6 +274,11 @@ def stream_avatar_frames_raw_sync(
     audio_guidance_scale: float = 4.0,
     resolution: str = "480p",
     num_frames: int = 93,
+    runtime_profile: Optional[str] = None,
+    chunk_frames: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    use_chunked_denoise: Optional[bool] = None,
+    use_distill: Optional[bool] = None,
 ) -> Iterator[tuple[int, bytes, int, int]]:
     from PIL import Image
 
@@ -200,8 +286,23 @@ def stream_avatar_frames_raw_sync(
 
     if audio_f32.size == 0:
         raise ValueError("audio_f32 is empty")
+
+    samp = _streaming_sampling_args(
+        runtime_profile=runtime_profile,
+        num_inference_steps=num_inference_steps,
+        text_guidance_scale=text_guidance_scale,
+        audio_guidance_scale=audio_guidance_scale,
+        resolution=resolution,
+        num_frames=num_frames,
+        chunk_frames=chunk_frames,
+        chunk_overlap=chunk_overlap,
+        use_chunked_denoise=use_chunked_denoise,
+        use_distill=use_distill,
+    )
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     pipe = get_avatar_pipeline()
+    _attach_pipe_sampling_metrics(pipe, getattr(samp, "_sampling_profile_name", None))
     audio_dur = float(audio_f32.size) / 16000.0
     compiled_pos, _compiled_neg = compile_prompt_for_job(
         prompt or "A person speaking clearly to camera.",
@@ -222,11 +323,15 @@ def stream_avatar_frames_raw_sync(
             image=img,
             prompt=compiled_pos,
             audio_stream=audio_stream(),
-            resolution=resolution if resolution in ("480p", "720p") else "480p",
-            num_frames=int(num_frames),
-            num_inference_steps=int(num_inference_steps),
-            text_guidance_scale=float(text_guidance_scale),
-            audio_guidance_scale=float(audio_guidance_scale),
+            resolution=samp.resolution,
+            num_frames=samp.num_frames,
+            num_inference_steps=samp.num_inference_steps,
+            use_distill=bool(samp.use_distill),
+            text_guidance_scale=float(samp.text_guidance_scale),
+            audio_guidance_scale=float(samp.audio_guidance_scale),
+            chunk_frames=int(samp.chunk_frames),
+            chunk_overlap=int(samp.chunk_overlap),
+            use_chunked_denoise=bool(samp.use_chunked_denoise),
         ):
             seq += 1
             arr = np.asarray(frame)
@@ -259,11 +364,16 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
 
     speech, _sr = librosa.load(str(audio_path), sr=16000, mono=True)
     audio_f32 = np.asarray(speech, dtype=np.float32)
+    runtime_profile = _job_get(job, "runtimeProfile", "runtime_profile", default=None)
     num_inference_steps = int(_job_get(job, "num_inference_steps", "numInferenceSteps", default=8))
     text_guidance_scale = float(_job_get(job, "text_guidance_scale", "textGuidanceScale", default=4.0))
     audio_guidance_scale = float(_job_get(job, "audio_guidance_scale", "audioGuidanceScale", default=4.0))
     resolution = str(_job_get(job, "resolution", default="480p"))
     num_frames = int(_job_get(job, "num_frames", "numFrames", default=93))
+    chunk_frames = _job_get(job, "chunkFrames", "chunk_frames", default=None)
+    chunk_overlap = _job_get(job, "chunkOverlap", "chunk_overlap", default=None)
+    use_chunked = _job_get(job, "useChunkedDenoise", "use_chunked_denoise", default=None)
+    use_distill = _job_get(job, "useDistill", "use_distill", default=None)
     frames = generate_frames_numpy(
         image_bytes=image_bytes,
         prompt=prompt,
@@ -274,6 +384,11 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
         audio_guidance_scale=audio_guidance_scale,
         resolution=resolution,
         num_frames=num_frames,
+        runtime_profile=str(runtime_profile) if runtime_profile else None,
+        chunk_frames=int(chunk_frames) if chunk_frames is not None else None,
+        chunk_overlap=int(chunk_overlap) if chunk_overlap is not None else None,
+        use_chunked_denoise=bool(use_chunked) if use_chunked is not None else None,
+        use_distill=bool(use_distill) if use_distill is not None else None,
     )
     if not frames:
         raise RuntimeError("avatar produced zero frames")

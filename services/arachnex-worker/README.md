@@ -7,7 +7,7 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 | Method | Path | Описание |
 |--------|------|----------|
 | GET | `/health` | Liveness; **не** грузит веса на GPU. |
-| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. JSON body: `engine` — `arachne` (core), `arachne_ultra_avatar` / `arachne_ultra_video` (aliases to core, NULLXES HR AI), `nullxes` / `longcat` / `core` / `""`. |
+| POST | `/v1/realtime/avatar_frames` | NDJSON stream (`application/x-ndjson`), RGB frames. JSON body: `engine` — `arachne` (core), `arachne_ultra_avatar` / `arachne_ultra_video` (aliases to core, NULLXES HR AI), `nullxes` / `longcat` / `core` / `""`. **Default sampling:** `runtimeProfile=operational` (chunked denoise + distill 12 steps) unless body/env overrides; rollback `runtimeProfile=cinematic` or `ARACHNE_LEGACY_STREAMING=1`. |
 | POST | `/v1/arachne/generate` | Синхронный MP4 (`video/mp4`) для поддерживаемых audio-* задач. |
 | POST | `/v1/longcat/generate` | **Legacy alias** того же handler (не в OpenAPI schema). |
 | POST | `/v1/infer/jobs` | Async очередь MP4 → poll status → one-shot result. |
@@ -23,6 +23,9 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 | Переменная | Назначение |
 |------------|------------|
 | `NULLXES_CHECKPOINT_DIR` или `ARACHNE_CHECKPOINT_DIR` | Каталог весов avatar (tokenizer, vae, dit, avatar_single, audio и т.д.). |
+| `ARACHNE_RUNTIME_PROFILE` | `operational` (worker realtime default) \| `cinematic` |
+| `ARACHNE_LEGACY_STREAMING` | `1` = monolithic denoise + stream VAE (rollback) |
+| `ARACHNE_CHUNK_KV` | `1` = seed cross-chunk KV between windows (experimental) |
 
 ## Аутентификация (опционально)
 

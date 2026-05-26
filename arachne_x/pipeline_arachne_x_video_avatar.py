@@ -205,6 +205,7 @@ class LongCatVideoAvatarPipeline:
         self.hybrid_renderer_flicker_budget = 1.40
         self.hybrid_renderer_artifact_budget = 0.08
         self.metrics = MetricsLogger()
+        self.runtime_sampling_metrics = None
 
         # Identity token bank (Step 2): learnable per-identity vectors injected
         # into text conditioning as extra tokens.
@@ -585,6 +586,10 @@ class LongCatVideoAvatarPipeline:
         compiler_ns = getattr(torch, "compiler", None)
         if compiler_ns is not None and hasattr(compiler_ns, "cudagraph_mark_step_begin"):
             compiler_ns.cudagraph_mark_step_begin()
+
+        rsm = getattr(self, "runtime_sampling_metrics", None)
+        if rsm is not None:
+            rsm.record_dit_forward(1)
 
         noise_pred = self.dit(**kwargs)
         if isinstance(noise_pred, torch.Tensor):
@@ -3131,6 +3136,159 @@ class LongCatVideoAvatarPipeline:
             return output_video
     
     @torch.no_grad()
+    def generate_chunked_ai2v(
+        self,
+        image: PipelineImageInput,
+        prompt: Union[str, List[str]] = None,
+        negative_prompt: Union[str, List[str]] = None,
+        resolution: Literal["480p", "720p"] = "480p",
+        num_frames: int = 93,
+        num_inference_steps: int = 12,
+        use_distill: bool = True,
+        text_guidance_scale: float = 4.0,
+        audio_guidance_scale: float = 5.0,
+        generator: Optional[torch.Generator] = None,
+        max_sequence_length: int = 512,
+        audio_emb: torch.Tensor = None,
+        resize_mode: Optional[str] = "crop",
+        identity_id: Optional[Union[int, List[int], torch.Tensor]] = None,
+        identity_strength: float = 1.0,
+        identity_negative_strength: float = 0.0,
+        emotion_id: Optional[Union[int, str, List[Union[int, str]], torch.Tensor]] = None,
+        emotion_intensity: float = 0.0,
+        emotion_guidance_scale: float = 0.0,
+        mouth_zone_masks: Optional[torch.Tensor] = None,
+        use_cfg_zero: bool = False,
+        chunk_frames: int = 33,
+        chunk_overlap: int = 8,
+        yield_frames: bool = False,
+        use_kv_cross_chunk: Optional[bool] = None,
+        kv_keep_last: int = 24,
+    ):
+        """
+        Chunked ai2v: multiple ``generate_ai2v`` passes with pixel-space stitch (Sampling OS wedge).
+
+        When ``yield_frames=True``, yields uint8 frames as each chunk completes (TTFF path).
+        Otherwise returns stacked video ``[T,H,W,C]`` numpy.
+        """
+        import time
+
+        from arachne_x.runtime.chunk_stitch import (
+            iter_chunk_frame_ranges,
+            slice_audio_emb_temporal,
+            stitch_chunk_videos,
+        )
+        from arachne_x.inference_frames import round_to_4n_plus_1
+
+        if audio_emb is None:
+            raise ValueError("generate_chunked_ai2v requires pre-built `audio_emb` for full clip.")
+
+        total_frames = int(num_frames)
+        if total_frames % self.vae_scale_factor_temporal != 1:
+            total_frames = total_frames // self.vae_scale_factor_temporal * self.vae_scale_factor_temporal + 1
+        total_frames = max(total_frames, 1)
+
+        if not torch.is_tensor(audio_emb):
+            audio_emb = torch.as_tensor(audio_emb)
+        if audio_emb.dim() == 3:
+            full_prepared = self._prepare_audio_emb_for_dit(
+                audio_emb,
+                num_frames=total_frames,
+                batch_size=1,
+                num_videos_per_prompt=1,
+                device=self.device,
+            )
+        elif audio_emb.dim() >= 5:
+            full_prepared = audio_emb
+            if full_prepared.shape[1] < total_frames:
+                total_frames = int(full_prepared.shape[1])
+        else:
+            raise ValueError(f"Unsupported audio_emb shape for chunked ai2v: {tuple(audio_emb.shape)}")
+
+        rsm = getattr(self, "runtime_sampling_metrics", None)
+        if rsm is not None:
+            rsm.frames_total = total_frames
+            rsm.cfg_passes_per_step = 4 if emotion_id and float(emotion_guidance_scale) > 0 else 3
+
+        from arachne_x.runtime.chunk_kv import chunk_kv_enabled, seed_kv_from_chunk_tail
+
+        chunk_videos: list = []
+        chunk_idx = 0
+        use_distill_flag = bool(use_distill or num_inference_steps <= 16)
+        if use_kv_cross_chunk is None:
+            use_kv_cross_chunk = chunk_kv_enabled()
+        else:
+            use_kv_cross_chunk = bool(use_kv_cross_chunk)
+
+        for start, end, n_chunk in iter_chunk_frame_ranges(total_frames, chunk_frames, chunk_overlap):
+            if use_kv_cross_chunk and chunk_idx > 0 and getattr(self, "kv_cache_dict", None):
+                pass  # KV seeded from prior chunk tail; consumed when generate_ai2v gains use_kv_cache
+            elif chunk_idx == 0:
+                self.kv_cache_dict = None
+            n_gen = round_to_4n_plus_1(n_chunk)
+            audio_slice = slice_audio_emb_temporal(full_prepared, start, min(end, full_prepared.shape[1]))
+            if audio_slice.shape[1] < n_gen:
+                n_gen = int(audio_slice.shape[1])
+                n_gen = round_to_4n_plus_1(max(1, n_gen))
+
+            t0 = time.perf_counter()
+
+            out = self.generate_ai2v(
+                image=image,
+                prompt=prompt,
+                negative_prompt=negative_prompt or "",
+                resolution=resolution,
+                num_frames=n_gen,
+                num_inference_steps=num_inference_steps,
+                use_distill=use_distill_flag,
+                text_guidance_scale=text_guidance_scale,
+                audio_guidance_scale=audio_guidance_scale,
+                generator=generator,
+                max_sequence_length=max_sequence_length,
+                audio_emb=audio_slice,
+                resize_mode=resize_mode,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                emotion_id=emotion_id,
+                emotion_intensity=emotion_intensity,
+                emotion_guidance_scale=emotion_guidance_scale,
+                mouth_zone_masks=mouth_zone_masks,
+                use_cfg_zero=use_cfg_zero,
+            )[0]
+
+            if rsm is not None:
+                rsm.add_denoise_elapsed(time.perf_counter() - t0)
+                rsm.chunk_count += 1
+                rsm.frames_per_chunk.append(int(out.shape[0]))
+
+            chunk_videos.append(out)
+            if use_kv_cross_chunk:
+                try:
+                    seed_kv_from_chunk_tail(
+                        self,
+                        out,
+                        audio_emb_slice=audio_slice,
+                        kv_keep_last=kv_keep_last,
+                        max_sequence_length=max_sequence_length,
+                    )
+                except Exception as exc:
+                    loguru.logger.warning("chunk KV seed failed (continuing): {}", exc)
+            chunk_idx += 1
+
+            if yield_frames:
+                for fi in range(out.shape[0]):
+                    if rsm is not None:
+                        rsm.mark_first_frame_emit()
+                    yield out[fi]
+
+        if yield_frames:
+            return
+
+        stitched = stitch_chunk_videos(chunk_videos, chunk_overlap)
+        return stitched
+
+    @torch.no_grad()
     def generate_streaming_ai2v(
         self,
         image: PipelineImageInput,
@@ -3139,6 +3297,7 @@ class LongCatVideoAvatarPipeline:
         resolution: Literal["480p", "720p"] = "480p",
         num_frames: int = 93,
         num_inference_steps: int = 8,  # Distilled: 8 steps instead of 50
+        use_distill: Optional[bool] = None,
         text_guidance_scale: float = 4.0,
         audio_guidance_scale: float = 4.0,
         generator: Optional[torch.Generator] = None,
@@ -3154,10 +3313,13 @@ class LongCatVideoAvatarPipeline:
         emotion_guidance_scale: float = 0.0,
         mouth_zone_masks: Optional[torch.Tensor] = None,
         use_cfg_zero: bool = False,
+        chunk_frames: int = 33,
+        chunk_overlap: int = 8,
+        use_chunked_denoise: Optional[bool] = None,
     ):
         r"""
         Streaming-like video generation (Image-to-Video).
-        Yields video frames progressively after latent denoising is complete.
+        Operational path: chunked denoise + per-chunk emit (TTFF). Legacy: monolithic denoise + stream VAE.
         
         Args:
             image: Input image for video generation.
@@ -3237,7 +3399,52 @@ class LongCatVideoAvatarPipeline:
                 device=device,
             )
 
-        # 2. Run full generate_ai2v with output_type='latent' (image + audio conditioning)
+        import os
+
+        legacy_streaming = os.environ.get("ARACHNE_LEGACY_STREAMING", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        use_chunked = not legacy_streaming
+        if use_chunked_denoise is not None:
+            use_chunked = bool(use_chunked_denoise)
+        if use_distill is not None:
+            use_distill_flag = bool(use_distill)
+        else:
+            use_distill_flag = bool(num_inference_steps <= 16)
+
+        if use_chunked and int(num_frames) > int(chunk_frames):
+            for frame_np in self.generate_chunked_ai2v(
+                image=image,
+                prompt=prompt,
+                negative_prompt="",
+                resolution=resolution,
+                num_frames=num_frames,
+                num_inference_steps=num_inference_steps,
+                use_distill=use_distill_flag,
+                text_guidance_scale=text_guidance_scale,
+                audio_guidance_scale=audio_guidance_scale,
+                generator=generator,
+                max_sequence_length=max_sequence_length,
+                audio_emb=audio_emb,
+                resize_mode=resize_mode,
+                identity_id=identity_id,
+                identity_strength=identity_strength,
+                identity_negative_strength=identity_negative_strength,
+                emotion_id=emotion_id,
+                emotion_intensity=emotion_intensity,
+                emotion_guidance_scale=emotion_guidance_scale,
+                mouth_zone_masks=mouth_zone_masks,
+                use_cfg_zero=use_cfg_zero,
+                chunk_frames=chunk_frames,
+                chunk_overlap=chunk_overlap,
+                yield_frames=True,
+            ):
+                yield frame_np
+            return
+
+        # Legacy: monolithic denoise then stream VAE decode
         latents = self.generate_ai2v(
             image=image,
             prompt=prompt,
@@ -3245,7 +3452,7 @@ class LongCatVideoAvatarPipeline:
             resolution=resolution,
             num_frames=num_frames,
             num_inference_steps=num_inference_steps,
-            use_distill=(num_inference_steps <= 16),
+            use_distill=use_distill_flag,
             text_guidance_scale=text_guidance_scale,
             audio_guidance_scale=audio_guidance_scale,
             generator=generator,
@@ -3262,8 +3469,8 @@ class LongCatVideoAvatarPipeline:
             mouth_zone_masks=mouth_zone_masks,
             use_cfg_zero=use_cfg_zero,
         )
-        
-        # 3. Stream decode: denormalize, decode frame-by-frame, yield
+
+        # Stream decode: denormalize, decode frame-by-frame, yield
         latents = latents.to(self.vae.dtype)
         latents = self.denormalize_latents(latents)
         vae_decoder = StreamingVAEDecoder(self.vae, chunk_size=1, enable_amp=True)

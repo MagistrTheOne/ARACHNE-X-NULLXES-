@@ -5,12 +5,15 @@ from arachne_x.runtime.avatar_serving import (
     get_avatar_pipeline,
     stream_avatar_frames_raw_sync,
 )
-from arachne_x.runtime.inference_engine import InferenceEngine, execute_infer
-
 __all__ = [
-    "InferenceEngine",
     "execute_infer",
     "get_avatar_pipeline",
     "stream_avatar_frames_raw_sync",
     "generate_mp4_bytes_from_job",
 ]
+
+
+def execute_infer(*args, **kwargs):
+    from arachne_x.runtime.inference_engine import execute_infer as _impl
+
+    return _impl(*args, **kwargs)

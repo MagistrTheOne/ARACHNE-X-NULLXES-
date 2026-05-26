@@ -665,7 +665,7 @@ pip install numpy==1.26.4
 
 `requirements_avatar.txt` тянет `-r requirements.txt` и снова может дернуть flash-attn — если §3.3 уже `FLASH OK`, обычно пропускает; при ошибке ставьте пакеты блоком выше.
 
-Опционально TTS: `pip install -r requirements-tts.txt`.
+Опционально TTS (`--speak_text`): `pip install -r requirements-tts.txt` — **не** входит в `requirements_avatar.txt` (prod ai2v с готовым WAV не требует qwen-tts).
 
 ### 3.6.1 torchaudio (только если нужен silero / torchaudio)
 
