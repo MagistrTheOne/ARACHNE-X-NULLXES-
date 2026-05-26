@@ -190,7 +190,7 @@ Deliverables from bring-up:
 ```
 Behavior        → gateway / turn-taking / session memory     [outside arachne_x]
 Runtime         → inference_engine · avatar_serving · infer.py
-Prompt Intel    → prompt_compiler (Gemma / OpenAI / off) → UMT5
+Prompt Intel    → prompt_compiler (off / template merge) → UMT5
 Adaptation      → identity bank + attention-only LoRA       [trainable surface]
 Motion Adapter  → reserved (future audio motion residual)
 Foundation      → ACV-DiT 13.6B + Wan VAE + wav2vec        [frozen]

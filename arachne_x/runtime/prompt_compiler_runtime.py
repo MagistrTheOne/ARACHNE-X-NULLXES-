@@ -27,10 +27,10 @@ def _infer_mode_for_compiler(mode: str) -> str:
 
 
 def resolve_imagine_compiler_backend(args: argparse.Namespace) -> str:
-    """Default Gemma for imagine_i2v when CLI/env compiler not set."""
+    """Resolve imagine_i2v compiler backend; only deterministic ``off`` is shipped."""
     if getattr(args, "prompt_compiler", None):
         return resolve_compiler_backend(args.prompt_compiler)
-    env_default = (os.environ.get("ARACHNE_IMAGINE_PROMPT_COMPILER") or "gemma").strip().lower()
+    env_default = (os.environ.get("ARACHNE_IMAGINE_PROMPT_COMPILER") or "off").strip().lower()
     return resolve_compiler_backend(env_default)
 
 

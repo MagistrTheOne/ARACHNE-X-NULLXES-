@@ -581,7 +581,7 @@ nvidia-smi
 
 | Фича | Статус на H200 |
 |------|----------------|
-| `imagine_i2v` (Gemma + Qwen + VIDEO) | Lab; VRAM tight |
+| `imagine_i2v` (Qwen + VIDEO) | Lab; VRAM tight |
 | `audio_i2v` + adapter | Нужен trained adapter; без него ≈ base i2v |
 | Qwen voice clone (Base model) | Отдельный скрипт TTS → потом ai2v |
 | LoRA (`train_lora_avatar.py`) | Опционально после 20–50 пар |

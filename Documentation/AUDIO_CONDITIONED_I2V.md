@@ -77,15 +77,14 @@ See [`scripts/train_audio_conditioning_adapter.py`](../scripts/train_audio_condi
 Freeze: VIDEO DiT, VAE, text encoder, wav2vec encoder.  
 Train: adapter `audio_proj`, per-block injection gates and cross-attn weights only.
 
-## Imagine I2V (Gemma + TTS + adapter, no user WAV)
+## Imagine I2V (TTS + adapter, no user WAV)
 
-Product-style path: **image + short prompt → Gemma expands scene → TTS speech → audio adapter → muxed MP4**.
+Product-style path: **image + prompt → TTS speech → audio adapter → muxed MP4**.
 
-No base DiT / UMT5 weight changes. Gemma is **prompt compiler only**.
+No base DiT / UMT5 weight changes. The prompt compiler is deterministic/offline only in this runtime.
 
 ```bash
-# needs: VIDEO ckpt + wav2vec + requirements-tts.txt + Gemma on GPU
-export ARACHNE_GEMMA_MODEL=google/gemma-2-2b-it   # or local path
+# needs: VIDEO ckpt + wav2vec + requirements-tts.txt
 
 python scripts/infer.py \
   --checkpoint_dir "$VIDEO_CKPT" \
@@ -93,7 +92,6 @@ python scripts/infer.py \
   --image assets/avatar/single/elena/image.jpg \
   --prompt "Elena greets the candidate calmly in a modern office" \
   --speak_text "Здравствуйте, рада познакомиться." \
-  --prompt_compiler gemma \
   --tts_provider qwen \
   --tts_language Russian \
   --tts_speaker Ryan \
@@ -109,13 +107,13 @@ python scripts/infer.py \
 Rules:
 - **No `--audio`** — speech is synthesized internally (use `--mode audio_i2v` if you have WAV).
 - **`--speak_text`** optional if `--prompt` is short (≤320 chars); long scene prompts need explicit speak line.
-- Default compiler for `imagine_i2v`: **gemma** (`ARACHNE_IMAGINE_PROMPT_COMPILER` env override).
+- Prompt compiler for `imagine_i2v`: deterministic `off` / template merge only.
 - Output is **muxed MP4** with TTS audio (like avatar modes).
 
 Pipeline:
 
 ```text
-prompt → Gemma (scene) → UMT5 cross-attn (frozen)
+prompt → UMT5 cross-attn (frozen)
       ↘ speak_text → TTS → wav2vec → adapter → frozen DiT → video
                                                       ↘ ffmpeg mux
 ```
@@ -124,7 +122,7 @@ prompt → Gemma (scene) → UMT5 cross-attn (frozen)
 - Frontend V1/V2
 - Elena identity bank / avatar ai2v prod
 - Gateway / RunPod worker HTTP
-- Replacing UMT5 text encoder with Gemma (use prompt compiler separately)
+- Replacing UMT5 text encoder with an external LLM prompt compiler
 
 ## Operational review
 

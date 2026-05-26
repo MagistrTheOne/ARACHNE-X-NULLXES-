@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from Demo.training_config_h200 import H200TrainingConfig
+from arachne_x.training_config_h200 import H200TrainingConfig
 from arachne_x.modules.arachne_video_dit import LongCatVideoTransformer3DModel
 from arachne_x.modules.lora_utils import build_initial_lora_state_dict, create_lora_network
 from arachne_x.training_latent_common import (

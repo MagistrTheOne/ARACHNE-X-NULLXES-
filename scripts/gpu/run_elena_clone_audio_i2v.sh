@@ -21,7 +21,6 @@ export ARACHNE_ROOT
 export VIDEO_CKPT
 export AVATAR_CKPT
 export ARACHNE_AVATAR_CKPT="$AVATAR_CKPT"
-export ARACHNE_GEMMA_MODEL="${ARACHNE_GEMMA_MODEL:-$ARACHNE_ROOT/weights/hf/gemma-2-2b-it}"
 export PYTHONPATH="$ARACHNE_ROOT"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export ARACHNE_SEQUENTIAL_CFG="${ARACHNE_SEQUENTIAL_CFG:-1}"
@@ -38,7 +37,6 @@ python scripts/infer.py \
   --image "$IMAGE" \
   --audio "$AUDIO" \
   --prompt "Elena speaking naturally to camera, stable identity, HR interview, calm professional tone" \
-  --prompt_compiler gemma \
   --resolution 480p \
   --num_frames 49 \
   --num_inference_steps 25 \

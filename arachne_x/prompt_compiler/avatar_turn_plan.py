@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-CompilerBackend = Literal["off", "openai", "gemma"]
+CompilerBackend = Literal["off"]
 AvatarInferMode = Literal[
     "ai2v",
     "at2v",

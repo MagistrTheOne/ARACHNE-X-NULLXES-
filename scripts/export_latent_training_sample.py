@@ -39,8 +39,8 @@ def main():
         "--prompt_compiler",
         type=str,
         default=None,
-        choices=["off", "openai", "gemma"],
-        help="Compile prompt before encode_prompt (train ≡ infer).",
+        choices=["off"],
+        help="Apply deterministic prompt template merge before encode_prompt (train ≡ infer).",
     )
     parser.add_argument("--resolution", type=str, default="480p", choices=["480p", "720p"])
     parser.add_argument("--num_frames", type=int, default=93)

@@ -151,9 +151,7 @@ The Behavior Layer **never** writes to avatar runtime; it sends `(audio chunks, 
 
 | Backend | Deployment | Role |
 |---------|------------|------|
-| `openai` | Production | Expand short intent via OpenAI |
-| `gemma` | RunPod calibration | Local `ARACHNE_GEMMA_MODEL` on CUDA |
-| `off` | Default | Passthrough + avatar template merge |
+| `off` | Default / shipped | Passthrough + avatar template merge |
 
 Wiring: `inference_engine.apply_prompt_compiler` → `encode_prompt` → identity tokens → DiT.  
 See [`Documentation/PROMPT_COMPILER.md`](Documentation/PROMPT_COMPILER.md).

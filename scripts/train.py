@@ -21,7 +21,7 @@ from arachne_x.training_latent_common import (
 )
 from arachne_x.training_wds import LatentWebDataset
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
-from Demo.training_config_h200 import H200TrainingConfig
+from arachne_x.training_config_h200 import H200TrainingConfig
 
 
 class LatentDataset(Dataset):

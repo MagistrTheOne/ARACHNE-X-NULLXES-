@@ -112,7 +112,7 @@ flowchart LR
   end
 
   subgraph compile [Prompt layer]
-    PC[prompt_compiler\nOpenAI / gemma / off]
+    PC[prompt_compiler\noff / template merge]
     UMT5[UMT5 text embed]
     IB[identity tokens\n4 slots + I2V anchor]
   end

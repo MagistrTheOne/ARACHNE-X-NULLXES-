@@ -20,15 +20,15 @@ def main():
         "--prompt_compiler",
         type=str,
         default=None,
-        choices=["off", "openai", "gemma"],
-        help="Prompt intelligence layer before UMT5 (default: off or ARACHNE_PROMPT_COMPILER env).",
+        choices=["off"],
+        help="Deterministic prompt template merge before UMT5 (default: off).",
     )
     parser.add_argument(
         "--prompt_compiler_fallback",
         type=str,
         default=None,
-        choices=["off", "openai"],
-        help="Fallback when gemma fails (default: off or ARACHNE_COMPILER_FALLBACK env).",
+        choices=["off"],
+        help="Reserved for compatibility; only off is shipped.",
     )
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--video", type=str, default=None)

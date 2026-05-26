@@ -50,7 +50,7 @@ from arachne_x.training_lora_loss import (
 )
 from arachne_x.training_avatar_aux import AvatarAuxStageSchedule, AvatarAuxTrainingRuntime
 from arachne_x.weights_resolve import add_resolve_args, resolve_weights_root
-from Demo.training_config_h200 import H200TrainingConfig
+from arachne_x.training_config_h200 import H200TrainingConfig
 
 
 def _phase(msg: str) -> None:

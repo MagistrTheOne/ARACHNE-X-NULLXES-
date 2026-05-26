@@ -88,7 +88,7 @@ Raw video+audio  →  VAE encode + UMT5 + wav2vec (export)  →  .pt / WebDatase
 | WebDataset loader | `arachne_x/training_wds.py` | `LatentWebDataset` |
 | Full DiT train (minimal) | `scripts/train.py` | frozen VAE latents, flow-match loss |
 | Avatar LoRA train | `scripts/train_lora_avatar.py` | **attention-only** LoRA policy |
-| H200 reference config | `Demo/training_config_h200.py` | aspirational; wire gradually |
+| H200 reference config | `arachne_x/training_config_h200.py` | aspirational; wire gradually |
 | Eval gates | `Documentation/DOC_CHECK/GTM_DATA_EVAL.md` | E-LIPS, E-ID, E-TEMP, merge policy |
 | Dataset fetch | `scripts/fetch_hf_datasets.py`, `data/datasets/README.md` | OpenHumanVid, HD-VILA, Tiger preview |
 
