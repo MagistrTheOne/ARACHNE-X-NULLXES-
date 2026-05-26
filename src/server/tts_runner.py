@@ -51,36 +51,23 @@ def synthesize_pcm_f32_16k(text: str, tts_cfg: Dict[str, Any]) -> np.ndarray:
                 pass
 
     if backend in ("edge", "edge_tts", "edgetts"):
-        try:
-            import edge_tts
-        except ImportError as e:
-            raise RuntimeError(
-                "edge-tts is required for backend edge_tts. pip install edge-tts"
-            ) from e
-        import asyncio
+        from arachne_x.speech.providers.edge_tts import EdgeTTSSpeechSynthesizer
 
         voice = str(tts_cfg.get("voice") or "en-US-AriaNeural")
         rate = tts_cfg.get("rate")
-
-        async def _save(mp3_path: Path) -> None:
-            if rate is not None:
-                comm = edge_tts.Communicate(text, voice=voice, rate=str(rate))
-            else:
-                comm = edge_tts.Communicate(text, voice=voice)
-            await comm.save(str(mp3_path))
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            mp3 = Path(tmp.name)
+        rate_s = str(rate) if rate is not None else None
+        syn = EdgeTTSSpeechSynthesizer(voice=voice, rate=rate_s)
+        fd, wav = tempfile.mkstemp(suffix=".wav", prefix="nx_edge_")
+        os.close(fd)
         try:
-            asyncio.run(_save(mp3))
-            audio, _ = librosa.load(str(mp3), sr=sample_rate, mono=True)
+            syn.synthesize_to_wav(text, Path(wav), sample_rate=sample_rate)
+            audio, _ = librosa.load(wav, sr=sample_rate, mono=True)
             return np.asarray(audio, dtype=np.float32)
         finally:
             try:
-                mp3.unlink(missing_ok=True)
-            except TypeError:
-                if mp3.is_file():
-                    mp3.unlink()
+                os.unlink(wav)
+            except OSError:
+                pass
 
     if backend in ("espeak", "espeak_ng", "espeak-ng"):
         from arachne_x.speech.providers.espeak import EspeakSpeechSynthesizer

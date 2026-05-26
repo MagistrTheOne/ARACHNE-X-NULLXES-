@@ -55,6 +55,34 @@ Resolve Hub → local: `arachne_x.weights_resolve.resolve_weights_root(..., allo
 
 ---
 
+## Realtime orchestration (production)
+
+Canonical live path (single writer via WebSocket pump):
+
+```
+WebSocket chat.send / voice.pcm16
+  → src/server/session_worker.py (SessionWorker)
+  → src/server/realtime_avatar_loop.py (LLM → TTS → stream)
+  → src/server/avatar_stream_client.py (PCM16 NDJSON POST)
+  → services/arachnex-worker POST /v1/realtime/avatar_frames
+  → arachne_x/runtime/avatar_serving.py → generate_streaming_ai2v()
+  → SessionWorker.out_queue → realtime_api pump → WS avatar.stream.chunk
+```
+
+| Component | Role |
+|-----------|------|
+| `realtime_api.py` | WS gateway: auth, token mint, pump egress only — **not** a second orchestrator |
+| `session_worker.py` | Per-session pipeline owner (VAD → ASR → LLM → TTS → GPU) |
+| `arachnex-worker` | Dumb GPU machine: `imageBase64` + `audioPcm16Base64` → rgb24 NDJSON |
+
+Worker contract: **no TTS inside GPU process**. TTS runs in orchestrator (`src/server/tts_runner.py`).
+
+Streaming overload policy (env on worker): `ARACHNE_STREAM_MAX_ACTIVE_JOBS=1`, `ARACHNE_STREAM_MAX_QUEUE=3`, `ARACHNE_STREAM_QUEUE_TIMEOUT_SEC=15`. Overflow → HTTP 503 `{"error":"worker_busy","retryAfterMs":8000}`. Orchestrator client retries with jitter (`avatar_stream_client.py`).
+
+Multi-worker routing (orchestrator): `NULLXES_AVATAR_WORKER_URLS=url1,url2` → `hash(session_id) % N` via `src/server/avatar_worker_router.py`.
+
+---
+
 ## 1. Foundation DiT
 
 `arachne_x/modules/avatar/arachne_avatar_dit.py` — `LongCatVideoAvatarTransformer3DModel` (ABI name).
@@ -227,10 +255,12 @@ uvicorn main:app --host 0.0.0.0 --port 9090
 
 | Endpoint | Role |
 |----------|------|
-| `GET /health` | Liveness, no GPU load |
-| `POST /v1/realtime/avatar_frames` | NDJSON RGB stream |
+| `GET /health` | Liveness + lifecycle (`active`/`draining`), queue depth, VRAM |
+| `GET /v1/runtime/metrics` | Queue rejects, wait times, active jobs (auth key) |
+| `POST /v1/realtime/avatar_frames` | NDJSON RGB stream (PCM16 in); explicit queue + `503 worker_busy` |
+| `POST /v1/admin/drain` | Stop admitting new streams (auth key) |
 | `POST /v1/arachne/generate` | Sync MP4 |
-| `POST /v1/longcat/generate` | Legacy alias (same handler) |
+| `POST /v1/infer/jobs` | Async MP4 job queue |
 
 Worker details: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md).  
 RunPod bring-up: [`RUNPOD_H200_AVATAR_SETUP.md`](RUNPOD_H200_AVATAR_SETUP.md).

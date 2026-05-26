@@ -400,12 +400,13 @@ SPEC = {
                 "description": (
                     "Upgrade to WebSocket. Auth: query ?token=... from /v1/realtime/token, or first text frame "
                     "{\"type\":\"auth\",\"token\":\"...\",\"protocolVersion\":1}. "
-                    "After each chat.send, server may emit avatar.state.changed + avatar.stream.chunk + "
-                    "avatar.state.changed. Prod: set NULLXES_AVATAR_INFERENCE_URL to the NULLXES Inference Worker "
-                    "(NDJSON frames + MP4/job API); default mode becomes inference. Local file preview: "
-                    "NULLXES_AVATAR_PREVIEW_ASSET_PATH + video mode. Dev-only metadata: MODE=stub. "
-                    "NULLXES_WS_AVATAR_STREAM_STUB=0 disables the chain. See services/arachnex-worker/ "
-                    "and Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure."
+                    "Start session via POST /v1/sessions/{id}/start (or webhook auto-start) before chat.send. "
+                    "Token must include nullxesSessionId bound to a running SessionWorker. "
+                    "Avatar egress: SessionWorker.out_queue → pump → avatar.state.changed + "
+                    "avatar.stream.chunk (rgb24_base64) + avatar.state.changed. "
+                    "Set NULLXES_AVATAR_INFERENCE_URL for GPU worker NDJSON. "
+                    "See services/arachnex-worker/ and Documentation/D_SAAS/WIRE_EXAMPLES.md. "
+                    "Close code 4401 on auth failure."
                 ),
                 "parameters": [
                     {

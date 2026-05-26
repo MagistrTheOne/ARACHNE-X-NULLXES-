@@ -1,5 +1,8 @@
 """
-LongCat-AudioDiT TTS: text (optional voice prompt) -> WAV at 16 kHz for avatar ``get_audio_embedding``.
+LongCat-AudioDiT TTS (LAB / CLI only — not production orchestrator default).
+
+Text (optional voice prompt) -> WAV at 16 kHz for avatar get_audio_embedding.
+Do not wire into GPU worker or SessionWorker hot path without explicit review.
 
 Code and weights: https://huggingface.co/meituan-longcat/LongCat-AudioDiT-1B
 Upstream repo is vendored at repo root ``LongCat-AudioDiT/``.

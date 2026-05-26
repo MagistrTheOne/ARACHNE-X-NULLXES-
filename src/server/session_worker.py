@@ -266,61 +266,62 @@ class SessionWorker:
 
     async def _handle_voice_utterance(self, utt: np.ndarray) -> None:
         if self._duplex_mode and (self._video_audio_source in ("mic", "auto")):
-            await self._cancel_assistant_turn()
-            await self._cancel_mic_render()
+            async with self._process_lock:
+                await self._cancel_assistant_turn()
+                await self._cancel_mic_render()
 
-            if self._mic_asr_transcript_only:
-                asyncio.create_task(
-                    self._emit_mic_transcript(np.asarray(utt, dtype=np.float32).copy()),
-                    name=f"mic-asr-{self._rec.nullxes_session_id}",
-                )
-
-            sm: SessionManager = self._app["session_manager"]
-            sid = self._rec.nullxes_session_id
-
-            self._mic_cancel = asyncio.Event()
-            mic_cancel = self._mic_cancel
-
-            async def _mic_render() -> None:
-                try:
-                    rec_now = sm.get(sid)
-                    if rec_now:
-                        rec_now.health["stt"] = "duplex_mic"
-                        sm.touch_record(rec_now)
-                    await self.out_queue.put(
-                        {
-                            **ws_event_base(session_id=sid, meeting_id=self._meeting_id),
-                            "type": "speaker.changed",
-                            "speaker": "candidate",
-                        }
+                if self._mic_asr_transcript_only:
+                    asyncio.create_task(
+                        self._emit_mic_transcript(np.asarray(utt, dtype=np.float32).copy()),
+                        name=f"mic-asr-{self._rec.nullxes_session_id}",
                     )
-                    await stream_avatar_frames_from_audio(
-                        app=self._app,
-                        nullxes_session_id=sid,
-                        state=self._state,
-                        audio_f32=np.asarray(utt, dtype=np.float32),
-                        cancel=mic_cancel,
-                        frame_queue=self.out_queue,
-                        prompt=str(self._state.avatar_prompt or ""),
-                        engine=self._avatar_inference_engine,
-                    )
-                finally:
+
+                sm: SessionManager = self._app["session_manager"]
+                sid = self._rec.nullxes_session_id
+
+                self._mic_cancel = asyncio.Event()
+                mic_cancel = self._mic_cancel
+
+                async def _mic_render() -> None:
                     try:
+                        rec_now = sm.get(sid)
+                        if rec_now:
+                            rec_now.health["stt"] = "duplex_mic"
+                            sm.touch_record(rec_now)
                         await self.out_queue.put(
                             {
                                 **ws_event_base(session_id=sid, meeting_id=self._meeting_id),
                                 "type": "speaker.changed",
-                                "speaker": "none",
+                                "speaker": "candidate",
                             }
                         )
-                    except asyncio.QueueFull:
-                        pass
-                    rec_done = sm.get(sid)
-                    if rec_done:
-                        rec_done.health["avatar"] = "ok"
-                        sm.touch_record(rec_done)
+                        await stream_avatar_frames_from_audio(
+                            app=self._app,
+                            nullxes_session_id=sid,
+                            state=self._state,
+                            audio_f32=np.asarray(utt, dtype=np.float32),
+                            cancel=mic_cancel,
+                            frame_queue=self.out_queue,
+                            prompt=str(self._state.avatar_prompt or ""),
+                            engine=self._avatar_inference_engine,
+                        )
+                    finally:
+                        try:
+                            await self.out_queue.put(
+                                {
+                                    **ws_event_base(session_id=sid, meeting_id=self._meeting_id),
+                                    "type": "speaker.changed",
+                                    "speaker": "none",
+                                }
+                            )
+                        except asyncio.QueueFull:
+                            pass
+                        rec_done = sm.get(sid)
+                        if rec_done:
+                            rec_done.health["avatar"] = "ok"
+                            sm.touch_record(rec_done)
 
-            self._mic_task = asyncio.create_task(_mic_render(), name=f"mic-{sid}")
+                self._mic_task = asyncio.create_task(_mic_render(), name=f"mic-{sid}")
             return
 
         asr_cfg = dict(self._pipeline_cfg.get("asr") or {})
@@ -347,46 +348,47 @@ class SessionWorker:
         await self._start_turn(text.strip(), from_asr=True)
 
     async def _start_turn(self, user_text: str, from_asr: bool) -> None:
-        await self._cancel_mic_render()
-        if self._turn_task and not self._turn_task.done():
-            if self._turn_cancel:
-                self._turn_cancel.set()
-            self._turn_task.cancel()
-            try:
-                await self._turn_task
-            except asyncio.CancelledError:
-                pass
-        self._turn_cancel = asyncio.Event()
-        cancel = self._turn_cancel
-        sm: SessionManager = self._app["session_manager"]
-        sid = self._rec.nullxes_session_id
+        async with self._process_lock:
+            await self._cancel_mic_render()
+            if self._turn_task and not self._turn_task.done():
+                if self._turn_cancel:
+                    self._turn_cancel.set()
+                self._turn_task.cancel()
+                try:
+                    await self._turn_task
+                except asyncio.CancelledError:
+                    pass
+            self._turn_cancel = asyncio.Event()
+            cancel = self._turn_cancel
+            sm: SessionManager = self._app["session_manager"]
+            sid = self._rec.nullxes_session_id
 
-        async def _one() -> None:
-            try:
-                rec_now = sm.get(sid)
-                if rec_now:
-                    rec_now.health["stt"] = "ok" if from_asr else "skipped"
-                    rec_now.health["llm"] = "running"
-                    sm.touch_record(rec_now)
-                await run_realtime_avatar_turn(
-                    app=self._app,
-                    nullxes_session_id=sid,
-                    state=self._state,
-                    pipeline_cfg=self._pipeline_cfg,
-                    user_text=user_text,
-                    cancel=cancel,
-                    frame_queue=self.out_queue,
-                    avatar_inference_engine=self._avatar_inference_engine,
-                )
-            finally:
-                rec_done = sm.get(sid)
-                if rec_done:
-                    rec_done.health["llm"] = "ok"
-                    rec_done.health["tts"] = "ok"
-                    rec_done.health["avatar"] = "ok"
-                    sm.touch_record(rec_done)
+            async def _one() -> None:
+                try:
+                    rec_now = sm.get(sid)
+                    if rec_now:
+                        rec_now.health["stt"] = "ok" if from_asr else "skipped"
+                        rec_now.health["llm"] = "running"
+                        sm.touch_record(rec_now)
+                    await run_realtime_avatar_turn(
+                        app=self._app,
+                        nullxes_session_id=sid,
+                        state=self._state,
+                        pipeline_cfg=self._pipeline_cfg,
+                        user_text=user_text,
+                        cancel=cancel,
+                        frame_queue=self.out_queue,
+                        avatar_inference_engine=self._avatar_inference_engine,
+                    )
+                finally:
+                    rec_done = sm.get(sid)
+                    if rec_done:
+                        rec_done.health["llm"] = "ok"
+                        rec_done.health["tts"] = "ok"
+                        rec_done.health["avatar"] = "ok"
+                        sm.touch_record(rec_done)
 
-        self._turn_task = asyncio.create_task(_one(), name=f"turn-{self._rec.nullxes_session_id}")
+            self._turn_task = asyncio.create_task(_one(), name=f"turn-{self._rec.nullxes_session_id}")
 
     def refresh_config(self, record: SessionRecord) -> None:
         self._apply_session_config(record)

@@ -1363,9 +1363,9 @@ python scripts/infer.py \
   --output output/avatar_ai2v_tts.mp4
 ```
 
-### 4.3 `streaming_ai2v` — тот же контур, чанки аудио
+### 4.3 `streaming_ai2v` — тот же контур, streaming path
 
-Проверяет micro-turn по `--audio_chunk_sec` (default см. CLI). Полезно перед realtime HTTP, но **без воркера**:
+Smoke без HTTP-воркера (полный audio buffer → `generate_streaming_ai2v`):
 
 ```bash
 python scripts/infer.py \
@@ -1374,7 +1374,6 @@ python scripts/infer.py \
   --image /workspace/input/face.png \
   --audio assets/avatar/single/elena/audio.wav \
   --prompt "Speaking naturally to camera, stable identity." \
-  --audio_chunk_sec 2.0 \
   --num_frames 17 \
   --num_inference_steps 2 \
   --output output/avatar_streaming_smoke.mp4

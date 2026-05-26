@@ -118,5 +118,9 @@ class InferenceJobQueue:
             except OSError:
                 pass
 
+    def queue_depth(self) -> int:
+        running = sum(1 for rec in self._jobs.values() if rec.status == JobStatus.running)
+        return int(self._queue.qsize()) + running
+
 
 job_queue = InferenceJobQueue()

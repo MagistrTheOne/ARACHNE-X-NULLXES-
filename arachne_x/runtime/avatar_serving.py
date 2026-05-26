@@ -21,7 +21,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
+_pipeline_load_lock = threading.Lock()
+_gpu_inference_lock = threading.Lock()
 _pipe: Any = None
 _pipe_key: Optional[str] = None
 
@@ -86,7 +87,7 @@ def get_avatar_pipeline():
     if device == "cpu":
         raise RuntimeError("Avatar inference requires CUDA; no GPU visible to PyTorch.")
     key = f"{ckpt}|{device}"
-    with _lock:
+    with _pipeline_load_lock:
         if _pipe is not None and _pipe_key == key:
             return _pipe
         _ensure_syspath()
@@ -267,7 +268,7 @@ def _iter_streaming_ai2v_frames(
     first_frame_logged = False
     frame_seq = 0
 
-    with _lock:
+    with _gpu_inference_lock:
         for frame in pipe.generate_streaming_ai2v(
             image=img,
             prompt=compiled_pos,

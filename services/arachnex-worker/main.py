@@ -23,6 +23,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gpu_avatar_runtime import generate_mp4_bytes_from_job, stream_avatar_frames_raw_sync
 from job_queue import JobStatus, job_queue
+from streaming_queue import (
+    StreamingQueueRejected,
+    StreamingQueueTimeout,
+    WorkerLifecycle,
+    streaming_queue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -294,16 +300,102 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
 async def _lifespan(_app: object):
     job_queue.set_executor(execute_inference_from_dict)
     job_queue.start_worker()
+    streaming_queue.mark_ready()
     yield
     await job_queue.stop_worker()
+    streaming_queue.set_lifecycle(WorkerLifecycle.offline)
+
+
+def _worker_busy_http(exc: StreamingQueueRejected) -> HTTPException:
+    return HTTPException(status_code=503, detail=exc.to_detail())
+
+
+def _queue_timeout_http(exc: StreamingQueueTimeout) -> HTTPException:
+    return HTTPException(status_code=503, detail=exc.to_detail())
+
+
+def _vram_used_mb() -> Optional[int]:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_allocated() / (1024 * 1024))
+    except Exception:
+        return None
+
+
+def _gpu_visible() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _runtime_metrics_payload() -> dict[str, Any]:
+    snap = streaming_queue.snapshot()
+    snap["gpuVisible"] = _gpu_visible()
+    vram = _vram_used_mb()
+    if vram is not None:
+        snap["vramUsedMb"] = vram
+    snap["mp4JobQueueDepth"] = job_queue.queue_depth()
+    return snap
 
 
 app = FastAPI(title="NULLXES Avatar inference worker", version="2.0.0", lifespan=_lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    snap = streaming_queue.snapshot()
+    lifecycle = snap.get("lifecycle", "active")
+    gpu_ok = _gpu_visible()
+    status = "ok" if lifecycle == "active" and gpu_ok else "degraded"
+    if lifecycle in ("offline", "draining"):
+        status = lifecycle
+    return {
+        "status": status,
+        "lifecycle": lifecycle,
+        "gpuVisible": gpu_ok,
+        "activeStreamingJobs": snap.get("activeStreamingJobs", 0),
+        "queueDepth": snap.get("queueDepth", 0),
+        "vramUsedMb": _vram_used_mb(),
+        "uptimeSec": snap.get("uptimeSec", 0),
+        "lastJobFinishedAt": snap.get("lastJobFinishedAt"),
+    }
+
+
+@app.get("/v1/runtime/metrics")
+async def runtime_metrics(
+    x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
+) -> dict[str, Any]:
+    expected = _inference_service_key_expected()
+    _check_key(expected, x_nullxes_avatar_inference_key)
+    return _runtime_metrics_payload()
+
+
+@app.post("/v1/admin/drain")
+async def admin_drain(
+    x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
+) -> dict[str, str]:
+    expected = _inference_service_key_expected()
+    _check_key(expected, x_nullxes_avatar_inference_key)
+    streaming_queue.set_lifecycle(WorkerLifecycle.draining)
+    logger.warning("worker lifecycle -> draining")
+    return {"lifecycle": WorkerLifecycle.draining.value}
+
+
+@app.post("/v1/admin/activate")
+async def admin_activate(
+    x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
+) -> dict[str, str]:
+    expected = _inference_service_key_expected()
+    _check_key(expected, x_nullxes_avatar_inference_key)
+    streaming_queue.set_lifecycle(WorkerLifecycle.active)
+    logger.info("worker lifecycle -> active")
+    return {"lifecycle": WorkerLifecycle.active.value}
 
 
 @app.post("/v1/realtime/avatar_frames")
@@ -314,11 +406,49 @@ async def realtime_avatar_frames(
     expected = _inference_service_key_expected()
     _check_key(expected, x_nullxes_avatar_inference_key)
     try:
+        ticket = streaming_queue.try_admit(body.sessionId)
+    except StreamingQueueRejected as exc:
+        logger.warning(
+            "avatar_frames reject session_id=%s error=%s queue_depth=%s",
+            body.sessionId,
+            exc.error,
+            exc.queue_depth,
+        )
+        raise _worker_busy_http(exc) from exc
+
+    try:
+        await asyncio.to_thread(streaming_queue.wait_for_active, ticket.ticket_id)
+    except StreamingQueueRejected as exc:
+        logger.warning(
+            "avatar_frames wait_reject session_id=%s ticket=%s error=%s",
+            body.sessionId,
+            ticket.ticket_id,
+            exc.error,
+        )
+        raise _worker_busy_http(exc) from exc
+    except StreamingQueueTimeout as exc:
+        logger.warning(
+            "avatar_frames queue_timeout session_id=%s ticket=%s waited_ms=%s queue_depth=%s",
+            body.sessionId,
+            ticket.ticket_id,
+            exc.waited_ms,
+            exc.queue_depth,
+        )
+        raise _queue_timeout_http(exc) from exc
+
+    def _stream_with_release() -> Iterator[bytes]:
+        try:
+            yield from _ndjson_stream(body)
+        finally:
+            streaming_queue.release_active(ticket.ticket_id)
+
+    try:
         return StreamingResponse(
-            _ndjson_stream(body),
+            _stream_with_release(),
             media_type="application/x-ndjson",
         )
     except ValueError as e:
+        streaming_queue.release_active(ticket.ticket_id)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 

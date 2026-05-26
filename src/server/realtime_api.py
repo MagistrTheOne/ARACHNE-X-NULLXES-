@@ -1,8 +1,9 @@
-"""Dashboard realtime: mint token, WebSocket, optional HTTP chat (line B MVP)."""
+"""Dashboard realtime: token mint, WebSocket gateway, SessionWorker pump egress."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -12,14 +13,6 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web
 
-import base64
-
-import numpy as np
-
-from src.server.avatar_inference_client import inference_base_url
-from src.server.avatar_stream_client import stream_avatar_frames
-from src.server.avatar_ws_frames import load_jpeg_frames_from_mp4
-from src.server.tts_runner import synthesize_pcm_f32_16k
 from src.server.realtime_store import RealtimeTokenStore
 
 logger = logging.getLogger(__name__)
@@ -37,18 +30,11 @@ AVATAR_PREVIEW_PROFILE_ENV = "NULLXES_ARACHNE_OUTPUT_PROFILE"
 # Same-origin mp4 for <video src>; build URL with NULLXES_PUBLIC_HTTP_BASE + this path.
 AVATAR_PREVIEW_ASSET_URL_PATH = "/v1/avatar/preview/asset.mp4"
 BOOTSTRAP_PREVIEW_COOLDOWN_ENV = "NULLXES_AVATAR_BOOTSTRAP_PREVIEW_COOLDOWN_SEC"
-WS_AVATAR_STREAM_STUB_ENV = "NULLXES_WS_AVATAR_STREAM_STUB"
-WS_AVATAR_STREAM_MODE_ENV = "NULLXES_WS_AVATAR_STREAM_MODE"
-WS_AVATAR_STREAM_CHUNK_MS_ENV = "NULLXES_WS_AVATAR_STREAM_CHUNK_MS"
-WS_AVATAR_STREAM_NUM_CHUNKS_ENV = "NULLXES_WS_AVATAR_STREAM_NUM_CHUNKS"
-AVATAR_INFERENCE_TASK_ENV = "NULLXES_AVATAR_INFERENCE_TASK"
-AVATAR_INFERENCE_IMAGE_ENV = "NULLXES_AVATAR_INFERENCE_IMAGE_BASE64"
 WS_AUTH_TIMEOUT_SEC = 12.0
 WS_CLOSE_AUTH = 4401
 PROTOCOL_VERSION = 1
 
 CHAT_ASSISTANT_FIXED_REPLY_ENV = "NULLXES_CHAT_ASSISTANT_FIXED_REPLY"
-WS_CHAT_ASSISTANT_FIXED_REPLY_ENV = "NULLXES_WS_CHAT_ASSISTANT_FIXED_REPLY"
 ROUTE_VIA_SESSION_WORKER_ENV = "NULLXES_REALTIME_ROUTE_VIA_SESSION_WORKER"
 
 
@@ -57,13 +43,6 @@ def _http_chat_assistant_text(content: str) -> str:
     if fixed:
         return fixed[:8000]
     return (content or "")[:8000]
-
-
-def _ws_assistant_reply_text(user_text: str) -> str:
-    fixed = os.environ.get(WS_CHAT_ASSISTANT_FIXED_REPLY_ENV, "").strip()
-    if fixed:
-        return fixed[:8000]
-    return (user_text or "")[:8000]
 
 
 def _service_key(app: web.Application) -> Optional[str]:
@@ -566,239 +545,6 @@ async def _pump_avatar_out_queue(
             break
 
 
-def _ws_avatar_stream_effective_mode() -> str:
-    """
-    off — no avatar chain after chat.
-    stub — metadata-only avatar.stream.chunk (NUM_CHUNKS / CHUNK_MS); dev/tests only.
-    video — JPEG base64 from NULLXES_AVATAR_PREVIEW_ASSET_PATH (local mp4).
-    inference — GPU worker: NULLXES_AVATAR_INFERENCE_URL → NDJSON JPEG stream (no MP4).
-
-    NULLXES_WS_AVATAR_STREAM_STUB=0 forces off (backward compatible).
-    If MODE is unset: inference when INFERENCE_URL set; else video if preview asset file exists; else off.
-    """
-    stub_raw = os.environ.get(WS_AVATAR_STREAM_STUB_ENV, "1").strip().lower()
-    if stub_raw in ("0", "false", "no", "off"):
-        return "off"
-    explicit = os.environ.get(WS_AVATAR_STREAM_MODE_ENV, "").strip().lower()
-    if explicit in ("off", "stub", "video", "inference"):
-        return explicit
-    if inference_base_url():
-        return "inference"
-    asset = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
-    if asset and os.path.isfile(asset):
-        return "video"
-    return "off"
-
-
-def _ws_avatar_stream_timing() -> tuple[int, float]:
-    try:
-        n = max(1, min(60, int(os.environ.get(WS_AVATAR_STREAM_NUM_CHUNKS_ENV, "5"))))
-    except ValueError:
-        n = 5
-    try:
-        ms = max(0, min(500, int(os.environ.get(WS_AVATAR_STREAM_CHUNK_MS_ENV, "40"))))
-    except ValueError:
-        ms = 40
-    return n, ms / 1000.0
-
-
-async def _video_avatar_ws_playback(
-    ws: web.WebSocketResponse, frames_b64: list[str], fps: float
-) -> None:
-    """Emit speaking → one chunk per JPEG frame → idle."""
-    delay_s = 1.0 / fps if fps > 0 else 1.0 / 30.0
-    try:
-        if ws.closed:
-            return
-        await _send_json(
-            ws,
-            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
-        )
-        for seq, data in enumerate(frames_b64, start=1):
-            if delay_s > 0:
-                await asyncio.sleep(delay_s)
-            if ws.closed:
-                return
-            await _send_json(
-                ws,
-                {
-                    "type": "avatar.stream.chunk",
-                    "at": _now_ms(),
-                    "kind": "video",
-                    "seq": seq,
-                    "encoding": "jpeg_base64",
-                    "data": data,
-                },
-            )
-        if ws.closed:
-            return
-        await _send_json(
-            ws,
-            {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
-        )
-    except Exception:
-        logger.debug("ws avatar video playback stopped", exc_info=True)
-
-
-async def _stub_avatar_ws_playback(ws: web.WebSocketResponse) -> None:
-    """
-    Metadata-only chunks (no payload). Used when MODE=stub or as fallback when video decode fails.
-    Цепочка после chat.send — см. Documentation/D_SAAS/ARACHNE_X_FRONTEND_CONTRACT.md §5–6.
-    """
-    n_chunks, delay_s = _ws_avatar_stream_timing()
-    try:
-        if ws.closed:
-            return
-        await _send_json(
-            ws,
-            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
-        )
-        for seq in range(1, n_chunks + 1):
-            if delay_s > 0:
-                await asyncio.sleep(delay_s)
-            if ws.closed:
-                return
-            await _send_json(
-                ws,
-                {
-                    "type": "avatar.stream.chunk",
-                    "at": _now_ms(),
-                    "kind": "video",
-                    "seq": seq,
-                },
-            )
-        if ws.closed:
-            return
-        await _send_json(
-            ws,
-            {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
-        )
-    except Exception:
-        logger.debug("ws avatar stub playback stopped", exc_info=True)
-
-
-async def _inference_avatar_ws_playback(
-    ws: web.WebSocketResponse,
-    app: web.Application,
-    prompt: str,
-    session_id: str,
-    *,
-    task_override: str | None = None,
-    img_b64: str | None = None,
-    audio_b64: str | None = None,
-    cont_b64: str | None = None,
-    num_seg: int | None = None,
-    ref_idx: int | None = None,
-) -> None:
-    del task_override, audio_b64, cont_b64, num_seg, ref_idx
-    env_img = os.environ.get(AVATAR_INFERENCE_IMAGE_ENV, "").strip() or None
-    use_img = img_b64 or env_img
-    if not use_img:
-        logger.warning("inference avatar: no imageBase64; set %s", AVATAR_INFERENCE_IMAGE_ENV)
-        await _send_error(ws, "avatar_inference_missing_image")
-        return
-    http = app.get("avatar_http_session")
-    if http is None or http.closed:
-        await _send_error(ws, "avatar_http_unavailable")
-        return
-    use_prompt = (prompt or "").strip() or "Professional avatar speaking clearly, natural motion."
-    pipeline_cfg = app.get("pipeline_cfg") or {}
-    tts_cfg = dict(pipeline_cfg.get("tts") or {})
-    try:
-        audio_f32 = await asyncio.to_thread(synthesize_pcm_f32_16k, use_prompt, tts_cfg)
-    except Exception as e:
-        logger.warning("inference path TTS failed: %s", e)
-        await _send_error(ws, "tts_failed")
-        return
-    if audio_f32.size == 0:
-        await _send_error(ws, "tts_empty")
-        return
-    pcm16 = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
-    pcm16 = (pcm16 * 32767.0).astype(np.int16)
-    audio_b64_out = base64.b64encode(pcm16.tobytes()).decode("ascii")
-    try:
-        await _send_json(
-            ws,
-            {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
-        )
-        seq = 0
-        async for _seq, frame in stream_avatar_frames(
-            http,
-            prompt=use_prompt,
-            session_id=session_id or "session",
-            image_base64=str(use_img),
-            audio_pcm16_base64=audio_b64_out,
-        ):
-            if ws.closed:
-                break
-            seq += 1
-            await _send_json(
-                ws,
-                {
-                    "type": "avatar.stream.chunk",
-                    "at": _now_ms(),
-                    "kind": "video",
-                    "seq": seq,
-                    "encoding": str(frame.get("encoding") or "rgb24_base64"),
-                    "data": frame.get("data"),
-                    "width": frame.get("width"),
-                    "height": frame.get("height"),
-                    "tsMs": frame.get("tsMs"),
-                },
-            )
-        if not ws.closed:
-            await _send_json(
-                ws,
-                {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
-            )
-    except Exception:
-        logger.exception("avatar inference stream failed")
-        await _send_error(ws, "avatar_inference_failed")
-        if not ws.closed:
-            await _send_json(
-                ws,
-                {"type": "avatar.state.changed", "at": _now_ms(), "state": "idle"},
-            )
-
-
-async def _run_avatar_ws_playback(
-    ws: web.WebSocketResponse,
-    mode: str,
-    asset_path: str,
-    *,
-    app: web.Application,
-    chat_text: str,
-    session_id: str,
-    inference_opts: Dict[str, Any] | None = None,
-) -> None:
-    if mode == "inference":
-        inf = inference_opts or {}
-        await _inference_avatar_ws_playback(
-            ws,
-            app,
-            chat_text,
-            session_id,
-            task_override=(str(inf["task"]) if inf.get("task") else None),
-            img_b64=(str(inf["imageBase64"]) if inf.get("imageBase64") else None),
-            audio_b64=(str(inf["audioBase64"]) if inf.get("audioBase64") else None),
-            cont_b64=(str(inf["continuationState"]) if inf.get("continuationState") else None),
-            num_seg=(int(inf["numSegments"]) if inf.get("numSegments") is not None else None),
-            ref_idx=(int(inf["refImgIndex"]) if inf.get("refImgIndex") is not None else None),
-        )
-        return
-    if mode == "video":
-        if asset_path and os.path.isfile(asset_path):
-            frames, fps = load_jpeg_frames_from_mp4(asset_path)
-            if frames:
-                await _video_avatar_ws_playback(ws, frames, fps)
-                return
-            logger.info("avatar ws: video mode but zero frames from %s, using stub", asset_path)
-        else:
-            logger.debug("avatar ws: video mode but no readable asset path, using stub")
-    if mode in ("stub", "video"):
-        await _stub_avatar_ws_playback(ws)
-
-
 async def _handle_ws_text(
     ws: web.WebSocketResponse, raw: str, rec: Any, app: web.Application
 ) -> None:
@@ -814,42 +560,20 @@ async def _handle_ws_text(
         return
     if typ == "chat.send":
         text = str(data.get("text") or "")
-        cid = str(data.get("id") or f"c_{_now_ms()}")
         nx = getattr(rec, "nullxes_session_id", None)
         nx_s = str(nx).strip() if nx else ""
-        workers = app.get("workers") or {}
-        w = workers.get(nx_s) if nx_s else None
-        if _route_chat_via_session_worker() and w is not None and w.running:
-            await w.enqueue_user_text(text)
+        if not nx_s:
+            await _send_error(ws, "missing_nullxes_session_id")
             return
-        await _send_json(
-            ws,
-            {
-                "type": "chat.message.received",
-                "at": _now_ms(),
-                "message": {
-                    "id": f"reply_{cid}",
-                    "from": "assistant",
-                    "text": _ws_assistant_reply_text(text),
-                },
-            },
-        )
-        m = _ws_avatar_stream_effective_mode()
-        if m != "off":
-            ap = os.environ.get(AVATAR_PREVIEW_ASSET_ENV, "").strip()
-            sid = getattr(rec, "session_id", "") or ""
-            inf_opts = data.get("inference") if isinstance(data.get("inference"), dict) else None
-            asyncio.create_task(
-                _run_avatar_ws_playback(
-                    ws,
-                    m,
-                    ap,
-                    app=app,
-                    chat_text=text,
-                    session_id=sid,
-                    inference_opts=inf_opts,
-                )
-            )
+        if not _route_chat_via_session_worker():
+            await _send_error(ws, "session_worker_routing_disabled")
+            return
+        workers = app.get("workers") or {}
+        w = workers.get(nx_s)
+        if w is None or not w.running:
+            await _send_error(ws, "worker_not_running")
+            return
+        await w.enqueue_user_text(text)
         return
     if typ == "voice.pcm16":
         raw_b64 = data.get("data") or data.get("pcmBase64")

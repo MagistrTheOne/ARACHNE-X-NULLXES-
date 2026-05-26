@@ -1,6 +1,5 @@
 import argparse
 
-from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.weights_resolve import add_resolve_args
 from arachne_x.runtime.inference_engine import execute_infer
 
@@ -97,12 +96,6 @@ def main():
         type=int,
         default=1024,
         help="RNG seed for AudioDiT (only audiodit / longcat_audiodit).",
-    )
-    parser.add_argument(
-        "--audio_chunk_sec",
-        type=float,
-        default=DEFAULT_MICRO_TURN_SECONDS,
-        help=f"Streaming avatar: fixed chunk duration for audio micro-turns (default {DEFAULT_MICRO_TURN_SECONDS}s).",
     )
     parser.add_argument("--resolution", type=str, default="480p", choices=["480p", "720p"])
     parser.add_argument("--height", type=int, default=480)

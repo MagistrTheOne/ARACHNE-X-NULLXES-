@@ -66,7 +66,7 @@ async def stream_avatar_frames_from_audio(
 
     # Single audio format contract to inference: PCM16 mono 16kHz base64.
     pcm16 = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
-    pcm16 = (pcm16 * 32767.0).astype(np.int16)
+    pcm16 = (pcm16 * 32768.0).astype(np.int16)
     audio_b64 = base64.b64encode(pcm16.tobytes()).decode("ascii")
     eng = (engine or "arachne").strip().lower()
 
@@ -96,7 +96,7 @@ async def stream_avatar_frames_from_audio(
             await frame_queue.put(
                 {
                     **base_ev,
-                    "type": "avatar.chunk",
+                    "type": "avatar.stream.chunk",
                     "kind": "video",
                     "seq": seq,
                     "encoding": str(frame.get("encoding") or "rgb24_base64"),

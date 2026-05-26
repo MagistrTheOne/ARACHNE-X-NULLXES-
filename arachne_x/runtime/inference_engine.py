@@ -30,7 +30,6 @@ from arachne_x.inference_frames import (
 )
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 from arachne_x.tts import create_speech_synthesizer
-from arachne_x.tts.chunking import iter_audio_micro_turns_from_file
 from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
 from arachne_x.weights_resolve import resolve_weights_root
