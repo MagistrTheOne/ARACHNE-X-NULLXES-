@@ -1,8 +1,10 @@
-# Optional: AudioDiT as --tts_provider audiodit (legacy CLI alias: longcat_audiodit).
-# NOT compatible in the same venv as core ARACHNE-X (transformers>=5.3 vs 4.41.0).
-# Use a dedicated environment or container layer. See Documentation/REQUIREMENTS.md
+# AudioDiT TTS lab track (--tts_provider audiodit / longcat_audiodit).
+# CONFLICT: transformers>=5.3 vs core avatar runtime transformers==4.41.0
+# Use a dedicated venv or container — never pip install alongside requirements_avatar.txt
 #
-transformers>=5.3.0
+# Install: python -m venv .venv-audiodit && pip install -r requirements-audiodit.txt
+
+transformers>=5.3.0,<6.0.0
 torchaudio>=2.0.0
 safetensors>=0.4.0
 einops>=0.8.0

@@ -1,5 +1,8 @@
-# HF dataset fetch / prep (scripts/fetch_hf_datasets.py). Not required for prod infer.
-# See Documentation/REQUIREMENTS.md
+# HF dataset fetch / prep scripts only. Not required for prod infer.
 #
-datasets>=3.0.0
-pandas>=2.0.0
+# Install: pip install -r requirements-datasets.txt
+
+-r requirements-training.txt
+
+datasets>=3.0.0,<4.0.0
+pandas>=2.0.0,<3.0.0

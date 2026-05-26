@@ -1,9 +1,11 @@
-# Optional: text-to-speech for avatar CLI (--speak_text).
-# Install on top of requirements.txt + requirements_avatar.txt (pins aligned with core).
-# See Documentation/REQUIREMENTS.md
+# Optional CLI/orchestrator TTS (--speak_text / qwen backend in tts_runner).
+# Qwen3-TTS loads a second large model — use a SEPARATE process from GPU avatar worker.
 #
-# Qwen3-TTS: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+# Install: pip install -r requirements-tts.txt
+# (on top of requirements_orchestrator.txt or requirements_avatar.txt)
+
+# https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 qwen-tts
 soundfile==0.13.1
 
-# AudioDiT (--tts_provider audiodit): separate venv only — requirements-audiodit.txt
+# AudioDiT (--tts_provider audiodit): NEVER same venv — use requirements-audiodit.txt

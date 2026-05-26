@@ -1,231 +1,172 @@
-<!-- ========================= -->
-<!-- ARACHNE-X README (NULLXES) -->
-<!-- ========================= -->
-
 <div align="center">
-  <h1 style="font-size:3.2em; font-weight:800;">🕷️ ARACHNE-X</h1>
-  <h3 style="font-size:1.4em; color:#9cff00; letter-spacing:1px;">
-    Hyper-Realistic Avatar Generation System
-  </h3>
-  <p><b>by NULLXES LLC</b></p>
 
-  <br/>
+# ARACHNE-X
 
-  <a href="#features"><img src="https://img.shields.io/badge/Architecture-Diffusion%20Transformer-brightgreen"></a>
-  <a href="#performance"><img src="https://img.shields.io/badge/Realtime-30FPS-blue"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Getting%20Started-Quick-orange"></a>
-  <a href="https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-"><img src="https://img.shields.io/badge/GitHub-Repository-black?logo=github"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow"></a>
+**Hyper-realistic realtime digital-human infrastructure**
+
+### BY NULLXES LLC TEAM
+
+[![Architecture](https://img.shields.io/badge/Architecture-13.6B%20ACV--DiT-brightgreen)](ARCHITECTURE.md)
+[![Deploy](https://img.shields.io/badge/Deploy-RunPod%20H200%2FH100-blue)](Documentation/NULLXES_ARACHNE_RUNPOD_27-05-2026.md)
+[![License](https://img.shields.io/badge/License-NULLXES%20Proprietary%202.0-red)](LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-Repository-black?logo=github)](https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-)
+
+**Contact:** [ceo@nullxes.com](mailto:ceo@nullxes.com) · Telegram [@MagistrTheOne](https://t.me/MagistrTheOne)
+
 </div>
 
 ---
 
-## 🧠 Overview
+## Overview
 
-<b>ARACHNE-X</b> is a next-generation, real-time avatar generation platform designed for **hyper-realistic digital humans**.
+**ARACHNE-X ULTRA** is NULLXES operational infrastructure for realtime avatar generation: audio-conditioned 13.6B ACV-DiT, chunked streaming inference, explicit GPU worker admission control, and a single canonical WebSocket orchestration path.
 
-Built on a large-scale **Diffusion Transformer (DiT)** and optimized for **NVIDIA H200 (HBM3e)**, ARACHNE-X delivers production-ready avatars with **perfect lip-sync**, **identity preservation**, and **streaming inference**.
+Production weights are **NULLXES proprietary** — not public LongCat checkpoints.
 
-### What makes it different
-- Designed for **real-time pipelines**, not offline demos  
-- Multi-stream audio conditioning (speech, emotion, motion)  
-- Stable facial geometry via landmark anchoring  
-- Optimized for **long-context streaming inference**
-
----
-
-## 🚀 Core Capabilities (Table)
-
-| Category | Specification |
-|-------|-------------|
-| **Inference Speed** | 30 FPS real-time streaming |
-| **Latency** | < 33 ms per frame |
-| **Lip-Sync Accuracy** | > 95% (DTW + contrastive learning) |
-| **Identity Consistency** | > 0.92 ArcFace cosine similarity |
-| **Expression Control** | 24+ FACS-compliant expressions |
-| **Modal Inputs** | Audio · Text · Image · Video |
-| **Target Hardware** | NVIDIA H200 / H100 / A100 |
+| Resource | Link |
+|----------|------|
+| Architecture (policy) | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| RunPod deployment | [`Documentation/NULLXES_ARACHNE_RUNPOD_27-05-2026.md`](Documentation/NULLXES_ARACHNE_RUNPOD_27-05-2026.md) |
+| Dependencies | [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md) |
+| ULTRA-AVATAR weights | [huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR) |
+| ULTRA-VIDEO weights | [huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO) |
 
 ---
 
-## 🧬 Architecture Overview
+## What ships today (2026-05-27)
 
-| Component | Description |
-|--------|------------|
-| **Base Model** | 13.6B parameter Diffusion Transformer (DiT) |
-| **Video Pipeline** | Dual-stream (Face 1024² / Body 512²) |
-| **Facial Anchoring** | 68-point MediaPipe landmark constraints |
-| **Audio Processing** | Multi-stream frequency separation |
-| **Inference Engine** | Streaming KV-cache + circular latent buffer |
-| **Parallelism** | Context Parallel (Ulysses Attention) |
+| Layer | Role |
+|-------|------|
+| **Foundation DiT** | 13.6B ACV-DiT · Wan VAE · UMT5 · Wav2Vec2 audio conditioning |
+| **Streaming inference** | `generate_streaming_ai2v()` · incremental wav2vec · TTFF-first chunked denoise |
+| **Stability OS** | Cross-chunk KV · identity drift monitor · silence gate |
+| **GPU worker** | `services/arachnex-worker` · explicit queue · `/health` · `/v1/runtime/metrics` |
+| **Orchestrator** | `src/server/*` · STT → LLM → TTS → NDJSON avatar stream · WS `protocolVersion: v1` |
 
----
-
-## 🎧 Multi-Stream Audio Conditioning
-
-| Stream | Frequency | Purpose |
-|-----|-----------|---------|
-| **Lip-Sync Stream** | 18–24 Hz | Phoneme & mouth articulation |
-| **Prosody Stream** | 4–6 Hz | Emotion & speech dynamics |
-| **Head Motion Stream** | 1–2 Hz | Natural pose & micro-movement |
+**Process isolation:** TTS and LLM live in the orchestrator. The GPU worker runs DiT inference only.
 
 ---
 
-## 🎯 Quality Metrics
+## Production realtime path
 
-| Metric | ARACHNE-X |
-|-----|-----------|
-| Lip-Sync Accuracy | **>95%** |
-| LPIPS (Face Region) | **< 0.08** |
-| Identity Stability | **> 0.92** |
-| Optical Flow Variance | **< 5%** |
-| Temporal Smoothness | High |
+```text
+WebSocket (chat.send / voice.pcm16)
+  → src/server/realtime_api.py
+  → src/server/session_worker.py
+  → src/server/realtime_avatar_loop.py
+  → src/server/avatar_stream_client.py
+  → services/arachnex-worker  POST /v1/realtime/avatar_frames
+  → arachne_x/runtime/avatar_serving.py  →  generate_streaming_ai2v()
+  → WS avatar.stream.chunk
+```
 
----
-
-## ⚡ Performance Benchmarks
-
-### Inference — Single H200
-
-| Metric | Value |
-|-----|------|
-| FPS | 30 |
-| Latency | 33 ms |
-| Memory Usage | 110–120 GB |
-| Throughput | 2,800 tokens/sec |
-
-### Training — 8× H200 Pod
-
-| Metric | Value |
-|-----|------|
-| Full Training | 58 hours (500K steps) |
-| LoRA Fine-Tuning | 4–6 hours |
-| Speed vs A100 | **4.5× faster** |
-| Model Quality | LPIPS < 0.08 |
+Details, env vars, and endpoints: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
-## 🧪 MOS Evaluation (Internal Benchmark)
-
-### Text-to-Video
-
-| Model | Params | Overall MOS |
-|----|-------|-------------|
-| Veo3 | – | 3.48 |
-| PixVerse-V5 | – | 3.36 |
-| Wan 2.2-T2V | 28B | 3.35 |
-| **ARACHNE-X** | **13.6B** | **3.38** |
-
-### Image-to-Video
-
-| Model | Params | Overall MOS |
-|----|-------|-------------|
-| Seedance 1.0 | – | 3.35 |
-| Hailuo-02 | – | 3.27 |
-| Wan 2.2-I2V | 28B | 3.26 |
-| **ARACHNE-X** | **13.6B** | **3.17** |
-
----
-
-## ⚙️ System Requirements
+## System requirements
 
 | Component | Requirement |
-|-------|-------------|
-| GPU | NVIDIA H200 (recommended) |
-| CUDA | 12.1+ |
-| Python | 3.10+ |
-| VRAM | 120GB (full) / 40GB (LoRA) |
+|-----------|-------------|
+| GPU (prod) | NVIDIA H200 / H100 / A100 |
+| CUDA (wheel) | 12.4 (`torch 2.6.0+cu124`) |
+| Python | 3.10 or 3.11 (3.10 on RunPod) |
+| OS (infer) | Linux (RunPod). Windows = SSH client only |
+| VRAM | ~110–120 GB full avatar runtime on H200 class |
 
 ---
 
-## 🚀 Quick Start
+## Quick start (RunPod)
+
+Full step-by-step: [`Documentation/NULLXES_ARACHNE_RUNPOD_27-05-2026.md`](Documentation/NULLXES_ARACHNE_RUNPOD_27-05-2026.md).
 
 ```bash
 git clone https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git
 cd ARACHNE-X
+git checkout arachne-last-patch
 
-conda create -n arachne-x python=3.10
-conda activate arachne-x
+python3.10 -m venv .venv && source .venv/bin/activate
+
+# 1. torch + flash-attn (Linux only — see RunPod doc §4)
+pip install torch==2.6.0 torchvision==0.21.0 \
+  --index-url https://download.pytorch.org/whl/cu124
+MAX_JOBS=8 pip install flash-attn==2.7.4.post1 --no-build-isolation
+
+# 2. Core stack + worker HTTP
+pip install -r requirements_avatar.txt
+pip install -r services/arachnex-worker/requirements.txt
+
+export PYTHONPATH="$PWD"
+export NULLXES_CHECKPOINT_DIR=/path/to/merged/checkpoint_dir
+
+# 3. Smoke (offline ai2v)
+python scripts/infer.py --mode ai2v --audio path/to.wav --image path/to.jpg \
+  --output /tmp/smoke.mp4 --profile operational
+
+# 4. Worker (realtime NDJSON)
+cd services/arachnex-worker && uvicorn main:app --host 0.0.0.0 --port 9090
+```
+
+Orchestrator (CPU gateway): `pip install -r requirements_orchestrator.txt` — see RunPod doc §8.
+
+Optional CLI TTS (`--speak_text`): `pip install -r requirements-tts.txt` in a **separate process**.
 
 ---
 
-## 🔌 Frontend-Backend Contract (Avatar Session API)
+## Dependencies
 
-To keep the frontend simple and secure, all provider-specific logic (RunPod endpoint IDs, API keys, retries, polling rules) must stay on the backend.
+| File | Use |
+|------|-----|
+| `requirements.txt` | Core GPU stack (after torch + flash-attn) |
+| `requirements_avatar.txt` | Worker / `infer.py` |
+| `requirements_orchestrator.txt` | `src/server` gateway (aiohttp, whisper, edge-tts) |
+| `requirements-tts.txt` | Optional Qwen TTS |
+| `requirements-training.txt` | Latent export / WebDataset (not prod infer) |
+| `requirements-audiodit.txt` | **Separate venv** — transformers ≥5.3 conflicts with core |
 
-### Target realtime stack
+Install order is strict. See [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md).
 
-- ASR/STT: [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)
-- LLM: [Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct)
-- TTS: [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice)
-- Video renderer: ARACHNE-X pipeline
+---
 
-Recommended flow:
+## Repository layout
 
-`STT/ASR -> LLM -> TTS -> ARACHNE output (stream/video)`
-
-### Request from frontend
-
-`POST /api/avatar/session`
-
-```json
-{
-  "employeeId": "66",
-  "avatarKey": "ksera_digital_twin",
-  "voiceName": "Kore",
-  "text": "Привет, чем помочь?",
-  "locale": "ru-RU",
-  "clientRequestId": "uuid-optional"
-}
+```text
+arachne_x/              # DiT pipeline, loader, avatar_serving, inference
+src/server/             # Realtime orchestrator (WebSocket gateway)
+services/arachnex-worker/   # GPU HTTP worker (dumb inference)
+scripts/infer.py        # CLI entry (ai2v, streaming, VIDEO modes)
+Documentation/          # RunPod guide, requirements, schemas
 ```
 
-Minimum required fields:
+---
 
-- `employeeId` or `avatarKey` (one unique avatar reference is enough)
-- `text` (for TTS/generation)
-- `voiceName` (if voice selection is enabled)
+## Frontend ↔ backend contract
 
-### Response from backend (instant/session mode)
+Provider secrets (RunPod API keys, internal worker URLs) stay on the backend. The frontend talks only to your gateway.
 
-```json
-{
-  "provider": "runpod",
-  "sessionId": "sess_123",
-  "streamUrl": "https://.../stream.m3u8",
-  "expiresAt": "2026-03-20T18:30:00Z",
-  "status": "ready"
-}
-```
+**Recommended stack:** STT → LLM → TTS → ARACHNE avatar stream.
 
-### Response from backend (job/poll mode)
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/avatar/session` | Create session or generation request |
+| `GET /api/avatar/jobs/:jobId` | Poll async job status |
+| `POST /api/avatar/stop` | Interrupt / cleanup |
 
-```json
-{
-  "provider": "runpod",
-  "jobId": "rp_job_123",
-  "status": "processing",
-  "pollUrl": "/api/avatar/jobs/rp_job_123"
-}
-```
+Schema and WS events: [`Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md`](Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md).
 
-### Data backend team must provide to frontend team
+**Never expose from frontend:** `RUNPOD_API_KEY`, inference keys, raw worker URLs.
 
-- RunPod `endpoint_id`
-- Exact endpoint input schema (`text`, `voice`, `avatar_id`, etc.)
-- Exact endpoint output schema (where to read stream/video URL)
-- SLA/timeout policy (wait time before fallback)
-- Session/URL TTL
-- Throughput limits (RPS/concurrency)
-- Auth requirements on backend API (JWT/cookie/session)
+---
 
-### Never send from frontend
+## License
 
-- `RUNPOD_API_KEY`
-- Any provider secret/token
-- Internal private endpoint URLs
+NULLXES Proprietary License 2.0 — see [`LICENSE`](LICENSE).  
+Unauthorized modification, redistribution, or derivative works are prohibited.
 
-### Recommended backend endpoints
+---
 
-- `POST /api/avatar/session` - create session or generation request
-- `GET /api/avatar/jobs/:jobId` - poll async job status
-- `POST /api/avatar/stop` - optional interrupt/cleanup
+<div align="center">
+
+**ARACHNE-X BY NULLXES LLC TEAM** · © 2026 NULLXES
+
+</div>

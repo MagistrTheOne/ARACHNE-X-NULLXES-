@@ -1,16 +1,31 @@
-# ARACHNE-X core (DiT / VAE / diffusers / training iterable).
-# Prod Linux: install torch 2.6+cu124 FIRST, then flash-attn with --no-build-isolation, then this file.
-# See Documentation/REQUIREMENTS.md
+# ARACHNE-X core — GPU inference (DiT / VAE / diffusers / avatar audio stack).
 #
+# Linux RunPod install order (mandatory):
+#   1. pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+#   2. pip install ninja packaging psutil wheel
+#   3. MAX_JOBS=8 pip install flash-attn==2.7.4.post1 --no-build-isolation
+#   4. pip install -r requirements.txt
+#   5. pip install -r requirements_avatar.txt
+#   6. pip install -r services/arachnex-worker/requirements.txt   # HTTP worker only
+#
+# Orchestrator (src/server, CPU): pip install -r requirements_orchestrator.txt
+# CLI TTS (--speak_text): pip install -r requirements-tts.txt  (separate process recommended)
+# Training / export: pip install -r requirements-training.txt
+# AudioDiT lab TTS: separate venv — requirements-audiodit.txt (transformers>=5.3 conflicts)
+#
+# See Documentation/REQUIREMENTS.md
+
+# --- PyTorch (re-install via cu124 index before flash-attn if fresh venv) ---
 torch==2.6.0
 torchvision==0.21.0
+
+# --- Core ML ---
 numpy==1.26.4
 scipy==1.15.3
 transformers==4.41.0
 huggingface-hub==0.36.0
 accelerate==1.12.0
 safetensors==0.7.0
-loguru==0.7.2
 diffusers==0.35.1
 einops==0.8.0
 ftfy==6.2.0
@@ -18,17 +33,14 @@ regex==2025.11.3
 tqdm==4.66.1
 Pillow==11.3.0
 psutil==6.0.0
-av==13.1.0
-opencv-python==4.9.0.80
+loguru==0.7.2
+
+# --- FlashAttention (Linux GPU only; compile after torch) ---
 flash-attn==2.7.4.post1; platform_system == "Linux"
-streamlit==1.50.0
-pyarrow==20.0.0
-imageio==2.37.0
-imageio-ffmpeg==0.6.0
-webdataset>=0.2.100
-aiohttp==3.12.15
-faster-whisper==1.1.1
-edge-tts>=6.1.0
+
+# --- Avatar audio conditioning + export ---
 soundfile==0.13.1
 librosa==0.11.0
 pyloudnorm==0.1.1
+imageio==2.37.0
+imageio-ffmpeg==0.6.0

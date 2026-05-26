@@ -1,4 +1,98 @@
-Mit license NULLXES 2.0
-2026 Our New Repository
-contact ceo@nullxes.com
-f
+NULLXES ARACHNE-X ULTRA — PROPRIETARY LICENSE 2.0
+Copyright (c) 2026 NULLXES. All rights reserved.
+
+Contact: ceo@nullxes.com | Telegram: @MagistrTheOne
+
+================================================================================
+1. GRANT OF LICENSE
+================================================================================
+
+Subject to strict compliance with this License, NULLXES grants you a limited,
+non-exclusive, non-transferable, revocable license to:
+
+  (a) use the ARACHNE-X source code in this repository solely for authorized
+      deployment, inference, and integration with NULLXES-approved infrastructure;
+  (b) download and use model weights from authorized Hugging Face repositories
+      published under MagistrTheOne/NULLXES (including ARACHNE-X-ULTRA-VIDEO and
+      ARACHNE-X-ULTRA-AVATAR) solely for inference and evaluation under this License;
+  (c) produce outputs (video, frames, embeddings) for your own authorized operations.
+
+No other rights are granted. All rights not expressly granted are reserved by NULLXES.
+
+================================================================================
+2. STRICT PROHIBITION ON MODIFICATION
+================================================================================
+
+WITHOUT PRIOR WRITTEN AUTHORIZATION FROM NULLXES (ceo@nullxes.com), YOU MUST NOT:
+
+  (a) modify, fork, patch, decompile, reverse engineer, or create derivative works
+      of the source code, configuration, runtime contracts, or documentation in this
+      repository, except for environment-specific deployment configuration explicitly
+      documented in NULLXES deployment guides;
+  (b) modify, fine-tune, merge, distill, quantize, re-export, or alter model weights,
+      checkpoints, LoRA adapters, identity banks, or any NULLXES model artifacts
+      except through NULLXES-approved training pipelines and written approval;
+  (c) remove, alter, or circumvent license notices, attribution, runtime guards,
+      authentication, or operational telemetry required by NULLXES infrastructure;
+  (d) redistribute source code, weights, or modified artifacts to third parties;
+  (e) use modified code or weights in production, staging, or customer-facing systems.
+
+Authorized LoRA training and identity enrollment using NULLXES-documented scripts
+(scripts/train_lora_avatar.py, enroll_identity) does NOT constitute unauthorized
+modification when performed on your own licensed deployment with unmodified base weights.
+
+================================================================================
+3. LIQUIDATED DAMAGES
+================================================================================
+
+Unauthorized modification of NULLXES code, data, weights, or model artifacts —
+including but not limited to unauthorized fine-tuning, weight tampering, contract
+breaking in production runtimes, or redistribution of altered artifacts — triggers
+liquidated damages of:
+
+  USD $500,000 (five hundred thousand United States dollars)
+
+per violation, plus actual damages, injunctive relief, and recovery of legal fees.
+This amount is a reasonable pre-estimate of harm and is not a penalty.
+
+================================================================================
+4. MODEL WEIGHTS & THIRD-PARTY COMPONENTS
+================================================================================
+
+Model weights distributed via Hugging Face may additionally reference MIT or other
+licenses in model cards. Where model card terms conflict with this License for
+NULLXES proprietary deployment, this License governs use of the NULLXES runtime stack.
+
+Third-party open-source dependencies remain subject to their respective licenses
+(see requirements*.txt). This License governs NULLXES proprietary code and deployment.
+
+================================================================================
+5. NO WARRANTY
+================================================================================
+
+THE SOFTWARE AND WEIGHTS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+NULLXES DISCLAIMS ALL WARRANTIES INCLUDING MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NON-INFRINGEMENT. USE IN HIGH-RISK OR REGULATED ENVIRONMENTS
+REQUIRES INDEPENDENT VALIDATION.
+
+================================================================================
+6. TERMINATION
+================================================================================
+
+This License terminates automatically upon any breach of Section 2. Upon termination,
+you must cease all use, destroy copies of modified artifacts, and certify destruction
+to ceo@nullxes.com within 14 days.
+
+================================================================================
+7. GOVERNING CONTACT
+================================================================================
+
+All licensing, deployment authorization, and modification requests:
+
+  Email: ceo@nullxes.com
+  Telegram: @MagistrTheOne
+
+Repository: https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git
+Weights:
+  https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO
+  https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-AVATAR

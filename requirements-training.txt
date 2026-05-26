@@ -1,0 +1,13 @@
+# Training / latent export / WebDataset — NOT required for prod infer or arachnex-worker.
+#
+# Install: pip install -r requirements-training.txt
+# (after requirements.txt + flash-attn)
+
+-r requirements.txt
+
+webdataset>=0.2.100,<1.0.0
+opencv-python==4.9.0.80
+av==13.1.0
+pyarrow==20.0.0
+scikit-learn==1.6.1
+scikit-image==0.25.2

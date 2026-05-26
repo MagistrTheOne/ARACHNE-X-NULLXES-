@@ -1,0 +1,11 @@
+# Realtime orchestrator (src/server) — CPU-side WebSocket gateway + SessionWorker.
+# NOT required on GPU-only RunPod worker pods.
+#
+# Install: pip install -r requirements_orchestrator.txt
+# Requires: requirements.txt + requirements_avatar.txt already installed if sharing venv with infer CLI.
+
+-r requirements_avatar.txt
+
+aiohttp==3.12.15
+faster-whisper==1.1.1
+edge-tts>=6.1.0,<7.0.0
