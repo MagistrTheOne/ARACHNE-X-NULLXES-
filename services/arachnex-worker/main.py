@@ -110,6 +110,7 @@ class StreamFramesBody(BaseModel):
         description="operational (default) | cinematic. Env ARACHNE_RUNTIME_PROFILE when omitted.",
     )
     chunkFrames: Optional[int] = Field(default=None, ge=5, le=256)
+    firstChunkFrames: Optional[int] = Field(default=None, ge=5, le=65)
     chunkOverlap: Optional[int] = Field(default=None, ge=0, le=64)
     useChunkedDenoise: Optional[bool] = Field(default=None)
     useDistill: Optional[bool] = Field(default=None)
@@ -269,6 +270,7 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             num_frames=body.numFrames,
             runtime_profile=body.runtimeProfile,
             chunk_frames=body.chunkFrames,
+            first_chunk_frames=body.firstChunkFrames,
             chunk_overlap=body.chunkOverlap,
             use_chunked_denoise=body.useChunkedDenoise,
             use_distill=body.useDistill,

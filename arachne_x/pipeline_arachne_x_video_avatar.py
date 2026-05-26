@@ -3233,6 +3233,7 @@ class LongCatVideoAvatarPipeline:
         mouth_zone_masks: Optional[torch.Tensor] = None,
         use_cfg_zero: bool = False,
         chunk_frames: int = 33,
+        first_chunk_frames: Optional[int] = None,
         chunk_overlap: int = 8,
         yield_frames: bool = False,
         use_kv_cross_chunk: Optional[bool] = None,
@@ -3289,6 +3290,7 @@ class LongCatVideoAvatarPipeline:
 
         chunk_videos: list = []
         chunk_idx = 0
+        emitted_until = 0
         use_distill_flag = bool(use_distill or num_inference_steps <= 16)
         if use_kv_cross_chunk is None:
             use_kv_cross_chunk = chunk_kv_enabled()
@@ -3298,12 +3300,44 @@ class LongCatVideoAvatarPipeline:
         drift_mon = IdentityDriftMonitor()
         next_refresh_identity = True
         next_audio_scale = float(audio_guidance_scale)
+
+        def _iter_realtime_chunk_ranges():
+            if first_chunk_frames is None or int(first_chunk_frames) <= 0:
+                yield from iter_chunk_frame_ranges(total_frames, chunk_frames, chunk_overlap)
+                return
+
+            first = round_to_4n_plus_1(min(int(first_chunk_frames), total_frames))
+            first = max(1, first)
+            first = min(first, total_frames)
+            yield 0, first, first
+
+            if first >= total_frames:
+                return
+
+            chunk = round_to_4n_plus_1(chunk_frames)
+            ov = max(0, min(int(chunk_overlap), chunk - 1))
+            # Keep a small bridge into chunk 2 without making a 9-frame first
+            # chunk duplicate almost entirely.
+            first_overlap = min(ov, max(0, first - 1), 4)
+            step = max(1, chunk - ov)
+            start = max(0, first - first_overlap)
+            while start < total_frames:
+                end = min(start + chunk, total_frames)
+                n = end - start
+                if n <= 0:
+                    break
+                yield start, end, n
+                if end >= total_frames:
+                    break
+                start += step
+
         if context_parallel_util.get_cp_rank() == 0:
             loguru.logger.info(
-                "Chunked AI2V start: frames={} chunk_frames={} overlap={} steps={} distill={} kv_cross_chunk={} "
+                "Chunked AI2V start: frames={} chunk_frames={} first_chunk_frames={} overlap={} steps={} distill={} kv_cross_chunk={} "
                 "identity_id={}",
                 total_frames,
                 int(chunk_frames),
+                first_chunk_frames,
                 int(chunk_overlap),
                 int(num_inference_steps),
                 use_distill_flag,
@@ -3311,7 +3345,7 @@ class LongCatVideoAvatarPipeline:
                 identity_id,
             )
 
-        for start, end, n_chunk in iter_chunk_frame_ranges(total_frames, chunk_frames, chunk_overlap):
+        for start, end, n_chunk in _iter_realtime_chunk_ranges():
             if chunk_idx == 0:
                 self.kv_cache_dict = None
             n_gen = round_to_4n_plus_1(n_chunk)
@@ -3403,15 +3437,17 @@ class LongCatVideoAvatarPipeline:
                     )
                 except Exception as exc:
                     loguru.logger.warning("chunk KV seed failed (continuing): {}", exc)
-            chunk_idx += 1
-
             if yield_frames:
-                for fi in range(out.shape[0]):
+                skip_prefix = max(0, min(int(out.shape[0]), int(emitted_until) - int(start)))
+                for fi in range(skip_prefix, out.shape[0]):
                     if rsm is not None:
                         rsm.mark_first_frame_emit()
-                        if fi == 0 and chunk_idx == 1 and context_parallel_util.get_cp_rank() == 0:
+                        if fi == skip_prefix and chunk_idx == 0 and context_parallel_util.get_cp_rank() == 0:
                             loguru.logger.info("Chunked AI2V first_frame_emit metrics={}", rsm.to_dict())
                     yield out[fi]
+                emitted_until = max(int(emitted_until), int(end))
+
+            chunk_idx += 1
 
         if yield_frames:
             return
@@ -3445,6 +3481,7 @@ class LongCatVideoAvatarPipeline:
         mouth_zone_masks: Optional[torch.Tensor] = None,
         use_cfg_zero: bool = False,
         chunk_frames: int = 33,
+        first_chunk_frames: Optional[int] = None,
         chunk_overlap: int = 8,
         use_chunked_denoise: Optional[bool] = None,
     ):
@@ -3551,9 +3588,10 @@ class LongCatVideoAvatarPipeline:
                 rsm_stream.streaming_mode = "chunked_ai2v"
             if context_parallel_util.get_cp_rank() == 0:
                 loguru.logger.info(
-                    "Streaming AI2V selected chunked path frames={} chunk_frames={} overlap={} steps={} distill={}",
+                    "Streaming AI2V selected chunked path frames={} chunk_frames={} first_chunk_frames={} overlap={} steps={} distill={}",
                     int(num_frames),
                     int(chunk_frames),
+                    first_chunk_frames,
                     int(chunk_overlap),
                     int(num_inference_steps),
                     use_distill_flag,
@@ -3581,6 +3619,7 @@ class LongCatVideoAvatarPipeline:
                 mouth_zone_masks=mouth_zone_masks,
                 use_cfg_zero=use_cfg_zero,
                 chunk_frames=chunk_frames,
+                first_chunk_frames=first_chunk_frames,
                 chunk_overlap=chunk_overlap,
                 yield_frames=True,
             ):

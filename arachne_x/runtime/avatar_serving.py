@@ -117,6 +117,7 @@ def _streaming_sampling_args(
     resolution: str = "480p",
     num_frames: int = 93,
     chunk_frames: Optional[int] = None,
+    first_chunk_frames: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     use_chunked_denoise: Optional[bool] = None,
     use_distill: Optional[bool] = None,
@@ -138,6 +139,7 @@ def _streaming_sampling_args(
         resolution=resolution if resolution in ("480p", "720p") else "480p",
         num_frames=int(num_frames),
         chunk_frames=chunk_frames if chunk_frames is not None else 33,
+        first_chunk_frames=first_chunk_frames,
         chunk_overlap=chunk_overlap if chunk_overlap is not None else 8,
         use_chunked_denoise=use_chunked_denoise,
         use_distill=use_distill,
@@ -150,6 +152,13 @@ def _streaming_sampling_args(
         ns.use_distill = bool(use_distill)
     if chunk_frames is not None:
         ns.chunk_frames = int(chunk_frames)
+    if first_chunk_frames is not None:
+        ns.first_chunk_frames = int(first_chunk_frames)
+    elif str(getattr(ns, "_sampling_profile_name", "") or "").lower() == "operational":
+        env_first = (os.environ.get("ARACHNE_FIRST_CHUNK_FRAMES") or "").strip()
+        ns.first_chunk_frames = int(env_first) if env_first else 9
+    else:
+        ns.first_chunk_frames = None
     if chunk_overlap is not None:
         ns.chunk_overlap = int(chunk_overlap)
     if ns.use_distill is None:
@@ -232,6 +241,7 @@ def generate_frames_numpy(
     num_frames: int = 93,
     runtime_profile: Optional[str] = None,
     chunk_frames: Optional[int] = None,
+    first_chunk_frames: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     use_chunked_denoise: Optional[bool] = None,
     use_distill: Optional[bool] = None,
@@ -253,6 +263,7 @@ def generate_frames_numpy(
         resolution=resolution,
         num_frames=num_frames,
         chunk_frames=chunk_frames,
+        first_chunk_frames=first_chunk_frames,
         chunk_overlap=chunk_overlap,
         use_chunked_denoise=use_chunked_denoise,
         use_distill=use_distill,
@@ -291,6 +302,9 @@ def generate_frames_numpy(
             text_guidance_scale=float(samp.text_guidance_scale),
             audio_guidance_scale=float(samp.audio_guidance_scale),
             chunk_frames=int(samp.chunk_frames),
+            first_chunk_frames=(
+                int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
+            ),
             chunk_overlap=int(samp.chunk_overlap),
             use_chunked_denoise=bool(samp.use_chunked_denoise),
             identity_id=identity_id,
@@ -317,6 +331,7 @@ def stream_avatar_frames_raw_sync(
     num_frames: int = 93,
     runtime_profile: Optional[str] = None,
     chunk_frames: Optional[int] = None,
+    first_chunk_frames: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     use_chunked_denoise: Optional[bool] = None,
     use_distill: Optional[bool] = None,
@@ -340,6 +355,7 @@ def stream_avatar_frames_raw_sync(
         resolution=resolution,
         num_frames=num_frames,
         chunk_frames=chunk_frames,
+        first_chunk_frames=first_chunk_frames,
         chunk_overlap=chunk_overlap,
         use_chunked_denoise=use_chunked_denoise,
         use_distill=use_distill,
@@ -370,13 +386,14 @@ def stream_avatar_frames_raw_sync(
     first_frame_logged = False
     logger.info(
         "avatar_frames stream start profile=%s mode=streaming_ai2v resolution=%s frames=%s steps=%s "
-        "chunked=%s chunk_frames=%s chunk_overlap=%s distill=%s audio_samples=%s identity_id=%s",
+        "chunked=%s chunk_frames=%s first_chunk_frames=%s chunk_overlap=%s distill=%s audio_samples=%s identity_id=%s",
         getattr(samp, "_sampling_profile_name", None),
         samp.resolution,
         int(samp.num_frames),
         int(samp.num_inference_steps),
         bool(samp.use_chunked_denoise),
         int(samp.chunk_frames),
+        getattr(samp, "first_chunk_frames", None),
         int(samp.chunk_overlap),
         bool(samp.use_distill),
         int(audio_f32.size),
@@ -394,6 +411,9 @@ def stream_avatar_frames_raw_sync(
             text_guidance_scale=float(samp.text_guidance_scale),
             audio_guidance_scale=float(samp.audio_guidance_scale),
             chunk_frames=int(samp.chunk_frames),
+            first_chunk_frames=(
+                int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
+            ),
             chunk_overlap=int(samp.chunk_overlap),
             use_chunked_denoise=bool(samp.use_chunked_denoise),
             identity_id=identity_id,

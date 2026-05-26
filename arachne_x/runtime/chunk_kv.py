@@ -49,7 +49,12 @@ def seed_kv_from_chunk_tail(
         retrieve_latents(pipe.vae.encode(vid), generator=None, sample_mode="argmax")
     )
     n_cond = int(latents.shape[2])
-    audio_cache = audio_emb_slice[:, :n_cond] if audio_emb_slice.shape[1] >= n_cond else audio_emb_slice
+    vae_stride = max(1, int(getattr(pipe, "vae_scale_factor_temporal", 4)))
+    # DiT audio conditioning is indexed in pixel-frame time, while the clean
+    # latents are VAE-temporal. Keep the required 4n+1 audio window instead of
+    # trimming to latent-count, which makes the DiT audio projection invalid.
+    audio_frames = max(1, (n_cond - 1) * vae_stride + 1)
+    audio_cache = audio_emb_slice[:, :audio_frames] if audio_emb_slice.shape[1] >= audio_frames else audio_emb_slice
     pipe._cache_clean_latents(
         latents,
         max_sequence_length,
