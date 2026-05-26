@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 EXPECTED_KEY_HEADER = "x-nullxes-avatar-inference-key"
 
-# Core vision engines (NULLXES DiT/VAE path). "longcat" retained as legacy client alias only.
-_CORE_VISION_ENGINES = frozenset({"", "arachne", "nullxes", "longcat", "core"})
+# Core vision engines (NULLXES DiT/VAE path).
+_CORE_VISION_ENGINES = frozenset({"", "arachne", "nullxes", "core"})
 # NULLXES HR AI gateway (`resolveArachnePodEngine`) sends these when VIDEO_ENGINE is ultra-branded;
 # realtime NDJSON still uses the same audio-driven avatar pipeline as `arachne`.
 _ULTRA_AVATAR_FRAME_ALIASES = frozenset({"arachne_ultra_avatar", "arachne_ultra_video"})
@@ -46,7 +46,6 @@ def _inference_service_key_expected() -> Optional[str]:
     for env_name in (
         "NULLXES_INFERENCE_SERVICE_KEY",
         "NULLXES_AVATAR_INFERENCE_SERVICE_KEY",
-        "LONGCAT_INFERENCE_SERVICE_KEY",
     ):
         v = os.environ.get(env_name, "").strip()
         if v:
@@ -217,7 +216,7 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
             {
                 "error": (
                     f"unknown engine {raw_engine!r}; supported: arachne, nullxes, "
-                    "core, longcat (legacy), arachne_ultra_avatar, arachne_ultra_video (HR aliases → arachne)"
+                    "core, arachne_ultra_avatar, arachne_ultra_video (HR aliases → arachne)"
                 )
             },
             ensure_ascii=False,
@@ -324,7 +323,6 @@ async def realtime_avatar_frames(
 
 
 @app.post("/v1/arachne/generate")
-@app.post("/v1/longcat/generate", include_in_schema=False)
 async def generate(
     body: GenerateBody,
     x_nullxes_avatar_inference_key: Optional[str] = Header(default=None, alias=EXPECTED_KEY_HEADER),
@@ -409,7 +407,6 @@ async def get_infer_job_result(
 
 
 @app.post("/v1/arachne/debug/decode-image")
-@app.post("/v1/longcat/debug/decode-image", include_in_schema=False)
 async def debug_image(body: GenerateBody) -> dict[str, int]:
     if not body.imageBase64:
         raise HTTPException(400, "no imageBase64")

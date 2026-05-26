@@ -17,7 +17,7 @@ import base64
 import numpy as np
 
 from src.server.avatar_inference_client import inference_base_url
-from src.server.avatar_stream_client import stream_avatar_jpeg_frames
+from src.server.avatar_stream_client import stream_avatar_frames
 from src.server.avatar_ws_frames import load_jpeg_frames_from_mp4
 from src.server.tts_runner import synthesize_pcm_f32_16k
 from src.server.realtime_store import RealtimeTokenStore
@@ -713,21 +713,21 @@ async def _inference_avatar_ws_playback(
     if audio_f32.size == 0:
         await _send_error(ws, "tts_empty")
         return
-    audio_b64_out = base64.b64encode(np.asarray(audio_f32, dtype=np.float32).tobytes()).decode(
-        "ascii"
-    )
+    pcm16 = np.clip(np.asarray(audio_f32, dtype=np.float32), -1.0, 1.0)
+    pcm16 = (pcm16 * 32767.0).astype(np.int16)
+    audio_b64_out = base64.b64encode(pcm16.tobytes()).decode("ascii")
     try:
         await _send_json(
             ws,
             {"type": "avatar.state.changed", "at": _now_ms(), "state": "speaking"},
         )
         seq = 0
-        async for _seq, jpeg_b64 in stream_avatar_jpeg_frames(
+        async for _seq, frame in stream_avatar_frames(
             http,
             prompt=use_prompt,
             session_id=session_id or "session",
             image_base64=str(use_img),
-            audio_float32_base64=audio_b64_out,
+            audio_pcm16_base64=audio_b64_out,
         ):
             if ws.closed:
                 break
@@ -739,8 +739,11 @@ async def _inference_avatar_ws_playback(
                     "at": _now_ms(),
                     "kind": "video",
                     "seq": seq,
-                    "encoding": "jpeg_base64",
-                    "data": jpeg_b64,
+                    "encoding": str(frame.get("encoding") or "rgb24_base64"),
+                    "data": frame.get("data"),
+                    "width": frame.get("width"),
+                    "height": frame.get("height"),
+                    "tsMs": frame.get("tsMs"),
                 },
             )
         if not ws.closed:

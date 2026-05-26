@@ -54,7 +54,6 @@ def _service_key() -> Optional[str]:
     for env_name in (
         "NULLXES_INFERENCE_SERVICE_KEY",
         INFERENCE_KEY_ENV,
-        "LONGCAT_INFERENCE_SERVICE_KEY",
     ):
         k = os.environ.get(env_name, "").strip()
         if k:
@@ -254,47 +253,3 @@ async def avatar_generate_mp4_bytes(
     finally:
         if close_session:
             await sess.close()
-
-
-async def longcat_generate_mp4_bytes(
-    client_session: Optional[aiohttp.ClientSession],
-    *,
-    prompt: str,
-    session_id: str,
-    task: str = "text-to-video",
-    image_base64: Optional[str] = None,
-    continuation_state: Optional[str] = None,
-    audio_base64: Optional[str] = None,
-    num_segments: Optional[int] = None,
-    ref_img_index: Optional[int] = None,
-    negative_prompt: Optional[str] = None,
-    input_json: Optional[dict[str, Any]] = None,
-    embed_audio: Optional[bool] = None,
-    output_mode: Optional[str] = None,
-    num_inference_steps: Optional[int] = None,
-    text_guidance_scale: Optional[float] = None,
-    audio_guidance_scale: Optional[float] = None,
-    resolution: Optional[str] = None,
-    num_frames: Optional[int] = None,
-) -> bytes:
-    """Legacy alias (historical import name); delegates to avatar_generate_mp4_bytes."""
-    return await avatar_generate_mp4_bytes(
-        client_session,
-        prompt=prompt,
-        session_id=session_id,
-        task=task,
-        image_base64=image_base64,
-        audio_base64=audio_base64,
-        continuation_state=continuation_state,
-        num_segments=num_segments,
-        ref_img_index=ref_img_index,
-        negative_prompt=negative_prompt,
-        input_json=input_json,
-        embed_audio=embed_audio,
-        output_mode=output_mode,
-        num_inference_steps=num_inference_steps,
-        text_guidance_scale=text_guidance_scale,
-        audio_guidance_scale=audio_guidance_scale,
-        resolution=resolution,
-        num_frames=num_frames,
-    )

@@ -404,7 +404,7 @@ SPEC = {
                     "avatar.state.changed. Prod: set NULLXES_AVATAR_INFERENCE_URL to the NULLXES Inference Worker "
                     "(NDJSON frames + MP4/job API); default mode becomes inference. Local file preview: "
                     "NULLXES_AVATAR_PREVIEW_ASSET_PATH + video mode. Dev-only metadata: MODE=stub. "
-                    "NULLXES_WS_AVATAR_STREAM_STUB=0 disables the chain. See services/longcat-worker/README.md "
+                    "NULLXES_WS_AVATAR_STREAM_STUB=0 disables the chain. See services/arachnex-worker/ "
                     "and Documentation/D_SAAS/WIRE_EXAMPLES.md. Close code 4401 on auth failure."
                 ),
                 "parameters": [
