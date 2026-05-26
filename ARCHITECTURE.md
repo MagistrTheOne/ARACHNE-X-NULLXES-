@@ -141,6 +141,8 @@ Outside `arachne_x/` — `backend/realtime-gateway/`, LiveKit agents, frontend.
 
 The Behavior Layer **never** writes to avatar runtime; it sends `(audio chunks, prompt, lora_key)` and reads frames.
 
+Схема **STT → LLM → TTS → avatar PP**: [`Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md`](Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md).
+
 ---
 
 ## 4.5 Prompt Intelligence Layer

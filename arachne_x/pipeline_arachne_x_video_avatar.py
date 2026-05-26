@@ -3251,7 +3251,7 @@ class LongCatVideoAvatarPipeline:
             slice_audio_emb_temporal,
             stitch_chunk_videos,
         )
-        from arachne_x.inference_frames import round_to_4n_plus_1
+        from arachne_x.inference_frames import normalize_ai2v_video_output, round_to_4n_plus_1
 
         if audio_emb is None:
             raise ValueError("generate_chunked_ai2v requires pre-built `audio_emb` for full clip.")
@@ -3310,34 +3310,36 @@ class LongCatVideoAvatarPipeline:
             t0 = time.perf_counter()
             reuse_kv = bool(use_kv_cross_chunk and chunk_idx > 0 and getattr(self, "kv_cache_dict", None))
 
-            out = self.generate_ai2v(
-                image=image,
-                prompt=prompt,
-                negative_prompt=negative_prompt or "",
-                resolution=resolution,
-                num_frames=n_gen,
-                num_inference_steps=num_inference_steps,
-                use_distill=use_distill_flag,
-                text_guidance_scale=text_guidance_scale,
-                audio_guidance_scale=next_audio_scale,
-                generator=generator,
-                max_sequence_length=max_sequence_length,
-                audio_emb=audio_slice,
-                resize_mode=resize_mode,
-                identity_id=identity_id,
-                identity_strength=identity_strength,
-                identity_negative_strength=identity_negative_strength,
-                emotion_id=emotion_id,
-                emotion_intensity=emotion_intensity,
-                emotion_guidance_scale=emotion_guidance_scale,
-                mouth_zone_masks=mouth_zone_masks,
-                use_cfg_zero=use_cfg_zero,
-                use_kv_cache=bool(use_kv_cross_chunk and reuse_kv),
-                reuse_kv_cache=reuse_kv,
-                refresh_identity_tokens=next_refresh_identity,
-                silence_gate=True,
-                update_identity_bank=False,
-            )[0]
+            out = normalize_ai2v_video_output(
+                self.generate_ai2v(
+                    image=image,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt or "",
+                    resolution=resolution,
+                    num_frames=n_gen,
+                    num_inference_steps=num_inference_steps,
+                    use_distill=use_distill_flag,
+                    text_guidance_scale=text_guidance_scale,
+                    audio_guidance_scale=next_audio_scale,
+                    generator=generator,
+                    max_sequence_length=max_sequence_length,
+                    audio_emb=audio_slice,
+                    resize_mode=resize_mode,
+                    identity_id=identity_id,
+                    identity_strength=identity_strength,
+                    identity_negative_strength=identity_negative_strength,
+                    emotion_id=emotion_id,
+                    emotion_intensity=emotion_intensity,
+                    emotion_guidance_scale=emotion_guidance_scale,
+                    mouth_zone_masks=mouth_zone_masks,
+                    use_cfg_zero=use_cfg_zero,
+                    use_kv_cache=bool(use_kv_cross_chunk and reuse_kv),
+                    reuse_kv_cache=reuse_kv,
+                    refresh_identity_tokens=next_refresh_identity,
+                    silence_gate=True,
+                    update_identity_bank=False,
+                )
+            )
 
             if chunk_idx == 0:
                 drift_mon.set_anchor_from_frame(out[0])

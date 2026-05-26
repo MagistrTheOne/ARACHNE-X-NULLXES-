@@ -100,3 +100,29 @@ def resolve_num_frames(
         info["chosen"] = chosen
         return chosen, info
     raise ValueError(f"Unknown num_frames_mode: {mode!r} (use explicit|sync|duration|min)")
+
+
+def normalize_ai2v_video_output(output: Any) -> "np.ndarray":
+    """
+    Normalize ``generate_ai2v`` return value to ``[T, H, W, C]``.
+
+    Accepts ``(B, T, H, W, C)``, ``(T, H, W, C)``, or ``(video, latents)`` when
+    ``output_type='both'``. Do **not** index with ``[0]`` blindly — that takes the
+    batch dim when present, but the first **frame** when ``T`` is already axis 0.
+    """
+    import numpy as np
+
+    if isinstance(output, tuple):
+        output = output[0]
+    if hasattr(output, "detach"):
+        output = output.detach().cpu().numpy()
+    arr = np.asarray(output)
+    if arr.ndim == 5:
+        arr = arr[0]
+    if arr.ndim != 4:
+        raise ValueError(
+            f"Expected ai2v video shape [T,H,W,C] or [B,T,H,W,C], got {arr.shape!r}"
+        )
+    if int(arr.shape[0]) < 1:
+        raise ValueError(f"ai2v produced zero frames (shape={arr.shape!r})")
+    return arr

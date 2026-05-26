@@ -154,6 +154,9 @@ def save_avatar_mp4(
     wav_path: Optional[str],
     args: argparse.Namespace,
 ) -> None:
+    from arachne_x.inference_frames import normalize_ai2v_video_output
+
+    frames = normalize_ai2v_video_output(frames)
     fps = int(getattr(args, "mux_fps", 30))
     export_crf = getattr(args, "export_crf", None)
     save_video_ffmpeg(
@@ -671,7 +674,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                         emotion_guidance_scale=args.emotion_guidance_scale,
                         mouth_zone_masks=mouth_mask_tensor,
                         use_cfg_zero=use_cfg_zero,
-                    )[0]
+                    )
                 save_avatar_mp4(out, args.output, wav_path, args)
                 if pipe.runtime_sampling_metrics is not None:
                     args._runtime_sampling_metrics = pipe.runtime_sampling_metrics.to_dict()

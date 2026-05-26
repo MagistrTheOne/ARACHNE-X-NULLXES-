@@ -1,8 +1,10 @@
-# RunPod H200 — ARACHNE-X AVATAR (оцифровка + тесты режимов CLI)
+# RunPod H200 — ARACHNE-X AVATAR (фазовая развёртка)
 
-Playbook для **RunPod GPU H200** (H100 — те же шаги, медленнее): веса → merged runtime → `scripts/infer.py` по режимам.
+Playbook для **RunPod GPU H200** (H100 — те же шаги, медленнее): venv → веса HF → torch + flash-attn → merged runtime → `scripts/infer.py` (Sampling OS + Stability OS).
 
-**Текущий этап:** оцифровка и прогон режимов **только через CLI**. HTTP-воркер (`services/arachnex-worker`) — **не обязателен**; см. §5, когда понадобится realtime NDJSON для HR.
+**Ветка кода (2026):** `arachne-last-patch` — Sampling OS Sprint 1 + Stability OS Sprint 2 (chunked operational, KV cross-chunk, identity drift monitor).
+
+**Текущий этап:** CLI-оцифровка + bench `operational` vs `cinematic`. HTTP-воркер (`services/arachnex-worker`) — §5, когда нужен NDJSON для LiveKit/HR.
 
 
 | Артефакт                                  | URL                                                                                                    |
@@ -12,9 +14,324 @@ Playbook для **RunPod GPU H200** (H100 — те же шаги, медленн
 | Веса VIDEO (база tokenizer/vae/dit + T2V) | [MagistrTheOne/ARACHNE-X-ULTRA-VIDEO](https://huggingface.co/MagistrTheOne/ARACHNE-X-ULTRA-VIDEO)      |
 
 
-Основной режим оцифровки: **`ai2v`** (image + audio + prompt) → MP4. Остальные режимы — §4.
+Основной режим: **`ai2v`** с `--runtime_profile operational` (chunked + distill 12 steps). Rollback качества: `--runtime_profile cinematic`.
 
-Связанные документы: [`GTM_ONE_SHOT_DEPLOY.md`](Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md), [`GTM_PRODUCTION_CONTRACT.md`](Documentation/DOC_CHECK/GTM_PRODUCTION_CONTRACT.md), [`RUNPOD_SEMIAUTO_PIPELINE.md`](Documentation/DOC_CHECK/RUNPOD_SEMIAUTO_PIPELINE.md), воркер: [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md).
+Связанные документы:
+
+| Документ | Назначение |
+| -------- | ---------- |
+| [`Documentation/ARACHNE_ITERATION_ROADMAP.md`](Documentation/ARACHNE_ITERATION_ROADMAP.md) | Спринты 1–4, статусы |
+| [`Documentation/ARACHNE_STABILITY_OS_SPRINT2.md`](Documentation/ARACHNE_STABILITY_OS_SPRINT2.md) | Stability OS (KV, drift, silence gate) |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Политика LoRA / sampling profiles |
+| [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md) | Порядок pip |
+| [`services/arachnex-worker/README.md`](services/arachnex-worker/README.md) | HTTP worker (§5) |
+| [`GTM_ONE_SHOT_DEPLOY.md`](Documentation/DOC_CHECK/GTM_ONE_SHOT_DEPLOY.md) | Прод-контракт |
+| [`ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md`](Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md) | Схема STT→LLM→TTS→avatar PP |
+
+---
+
+## Фазовая развёртка — мастер-чеклист (копируй по фазам)
+
+Все команды — **в терминале pod**, один venv: `source "$ARACHNE_ROOT/.venv/bin/activate"`.  
+Токен HF **только** в env (RunPod Secrets), **не** в git: `export HF_TOKEN=hf_...`
+
+```mermaid
+flowchart LR
+  P0[Ф0 GPU check] --> P1[Ф1 apt]
+  P1 --> P2[Ф2 git + venv + HF]
+  P2 --> P3[Ф3 weights HF]
+  P3 --> P4[Ф4 merged runtime]
+  P4 --> P5[Ф5 torch + flash-attn]
+  P5 --> P6[Ф6 ML deps]
+  P6 --> P7[Ф7 enroll identity]
+  P7 --> P8[Ф8 operational infer]
+  P8 --> P9[Ф9 eval bench]
+  P9 --> P10[Ф10 worker опц]
+```
+
+### Сводная таблица фаз
+
+| Фаза | § | Время (оценка) | Готово когда |
+| ---- | --- | -------------- | ------------ |
+| **0** | [§0](#0-runpod-pod-h200) | 1 мин | `nvidia-smi` → H200, disk OK |
+| **1** | [§1](#1-клон-репозитория) + [§1.1](#11-виртуальное-окружение--hugging-face-только-в-venv) | 5 мин | `huggingface-cli whoami`, ветка `arachne-last-patch` |
+| **2** | [§2](#2-скачивание-весов-hf-hub-api--cli) | 1–3 ч | §2.5 `missing: none` |
+| **3** | [§3](#3-зависимости-inference-тот-же-venv) | 20–40 мин | `FLASH OK`, sanity import |
+| **4** | [§4](#4-оцифровка-и-тесты-режимов-cli) — enroll | 2 мин | `output/*_identity_bank.pt` |
+| **5** | [§4.2](#42-ai2v--image--audio--prompt-основной-elena) operational | 5–15 мин | MP4 + `.run.json` с `sampling_metrics` |
+| **6** | `scripts/gpu/eval_stability_bench.py` | 15–30 мин | `eval_stability_report.json` |
+| **7** | [§5](#5-arachnex-worker-http--позже-не-текущий-этап) | по необходимости | `curl /health` |
+
+**Параллельно пока качаются веса (фаза 2):** можно делать фазы 0–1 и 3 (torch/flash только после layout §2.5).
+
+---
+
+### Фаза 0 — GPU и диск
+
+```bash
+nvidia-smi
+python3 --version
+df -h /workspace
+```
+
+| Параметр | Рекомендация |
+| -------- | ------------ |
+| GPU | H200 SXM (~141 GB VRAM) |
+| Disk | ≥ 250 GB свободно (AVATAR ~120G + VIDEO ~80G + venv + cache) |
+| Image | `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` или аналог |
+
+---
+
+### Фаза 1 — Системные пакеты + git + venv + HF
+
+```bash
+apt-get update
+apt-get install -y git ffmpeg jq tmux ninja-build build-essential cmake gcc g++ \
+  libsndfile1 libgl1
+ffmpeg -version
+
+cd /workspace
+git clone https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git ARACHNE-X
+cd /workspace/ARACHNE-X
+git fetch origin
+git checkout arachne-last-patch
+git log -1 --oneline
+
+export ARACHNE_ROOT=/workspace/ARACHNE-X
+mkdir -p "$ARACHNE_ROOT/output" /workspace/input
+
+python3 -m venv "$ARACHNE_ROOT/.venv"
+source "$ARACHNE_ROOT/.venv/bin/activate"
+pip install -U pip setuptools wheel
+
+export HF_TOKEN="${HF_TOKEN:?export HF_TOKEN in pod secrets first}"
+pip install -U "huggingface_hub[cli]>=0.34,<1.0"
+huggingface-cli login --token "$HF_TOKEN"
+huggingface-cli whoami
+
+pip install hf_transfer
+export HF_HUB_ENABLE_HF_TRANSFER=1
+```
+
+Детали: §1, §1.1.
+
+---
+
+### Фаза 2 — Скачивание весов Hugging Face
+
+```bash
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+mkdir -p "$ARACHNE_ROOT/weights"
+
+# AVATAR (~120 GB) — сначала
+hf download MagistrTheOne/ARACHNE-X-ULTRA-AVATAR \
+  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
+
+# VIDEO (tokenizer, vae, text_encoder, scheduler)
+hf download MagistrTheOne/ARACHNE-X-ULTRA-VIDEO \
+  --local-dir "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO"
+```
+
+Проверка AVATAR (§2.3.1):
+
+```bash
+CKPT="$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR"
+find "$CKPT" -name '*.incomplete' 2>/dev/null | wc -l   # → 0
+du -sh "$CKPT"
+ls "$CKPT/avatar_single"/diffusion_pytorch_model-*.safetensors | wc -l   # → 6
+```
+
+Symlink wav2vec (§2.3.2):
+
+```bash
+mkdir -p "$CKPT/audio"
+ln -sfn "$CKPT/chinese-wav2vec2-base" "$CKPT/audio/wav2vec2"
+```
+
+Merged runtime (§2.4) — **обязательно** перед infer:
+
+```bash
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+rm -rf "$NULLXES_CHECKPOINT_DIR" && mkdir -p "$NULLXES_CHECKPOINT_DIR/audio"
+
+for d in tokenizer text_encoder vae scheduler; do
+  ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-VIDEO/$d" "$NULLXES_CHECKPOINT_DIR/$d"
+done
+for d in avatar_single avatar_multi vocal_separator; do
+  ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/$d" "$NULLXES_CHECKPOINT_DIR/$d"
+done
+ln -sfn "$ARACHNE_ROOT/weights/ARACHNE-X-ULTRA-AVATAR/chinese-wav2vec2-base" \
+  "$NULLXES_CHECKPOINT_DIR/audio/wav2vec2"
+```
+
+Проверка layout (§2.5):
+
+```bash
+export PYTHONPATH="$ARACHNE_ROOT"
+python - <<'PY'
+from pathlib import Path
+import os
+root = Path(os.environ["NULLXES_CHECKPOINT_DIR"])
+need = ["tokenizer", "vae", "text_encoder", "scheduler", "avatar_single", "audio/wav2vec2"]
+print("missing:", [p for p in need if not (root / p).exists()] or "none")
+PY
+```
+
+---
+
+### Фаза 3 — PyTorch + FlashAttention (отдельный стек, не через requirements.txt)
+
+**Порядок жёсткий:** torch → проверка → `flash-attn --no-build-isolation` → остальные pip.
+
+```bash
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+
+pip install --no-cache-dir \
+  torch==2.6.0 torchvision==0.21.0 \
+  --index-url https://download.pytorch.org/whl/cu124
+
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+# Ожидание: 2.6.0+cu124, 12.4, True, NVIDIA H200...
+
+MAX_JOBS=8 pip install flash-attn==2.7.4.post1 --no-build-isolation
+python -c "import flash_attn; print('FLASH OK', flash_attn.__version__)"
+```
+
+ML/audio (§3.5–3.6) — после `FLASH OK`:
+
+```bash
+pip install -U librosa soundfile audioread numba llvmlite scipy scikit-learn resampy pooch soxr
+pip install diffusers==0.35.1 transformers==4.41.0 accelerate==1.12.0 \
+  huggingface-hub==0.36.0 safetensors==0.7.0 einops==0.8.0 ftfy==6.2.0 \
+  loguru==0.7.2 av==13.1.0 opencv-python==4.9.0.80 Pillow==11.3.0 scipy==1.15.3 tqdm==4.66.1
+pip install -U imageio imageio-ffmpeg matplotlib pandas omegaconf pyyaml sentencepiece protobuf
+pip install \
+  scikit-learn==1.6.1 scikit-image==0.25.2 soxr==0.5.0.post1 pyloudnorm==0.1.1 \
+  audio-separator==0.30.2 nvidia-ml-py==13.580.65 onnx==1.18.0 onnxruntime==1.18.0 \
+  openai==1.75.0 chardet==5.2.0 aiortc==1.10.1 silero-vad==5.1.2
+pip install numpy==1.26.4
+```
+
+**Не делать:** `pip install -U triton`, `pip install xformers`, `pip install -r requirements.txt` **до** flash-attn.
+
+Полный порядок: §3, [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md), §9 (шпаргалка).
+
+---
+
+### Фаза 4 — Identity bank (один раз)
+
+```bash
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+export PYTHONPATH="$ARACHNE_ROOT"
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode enroll_identity \
+  --image assets/avatar/single/katya/main.jpg \
+  --identity_id 1 \
+  --identity_bank_save_path output/katya_identity_bank.pt
+```
+
+Примечание: если дальше делаете `ai2v`/eval/worker — замените `assets/avatar/single/elena/...` и `output/elena_identity_bank.pt` на `katya/...` и `output/katya_identity_bank.pt` в §5–§7.
+
+Jupyter: у тебя отдельная команда для этого шага — пришли точный текст, и я вставлю её отдельным блоком под этим примером.
+
+---
+
+### Фаза 5 — Operational infer (Sampling OS + Stability OS)
+
+```bash
+cd "$ARACHNE_ROOT"
+source .venv/bin/activate
+export PYTHONPATH="$ARACHNE_ROOT"
+export NULLXES_CHECKPOINT_DIR="$ARACHNE_ROOT/weights/arachne-avatar-runtime"
+export ARACHNE_RUNTIME_PROFILE=operational
+export ARACHNE_CHUNK_KV=1
+
+ffmpeg -y -i assets/avatar/single/elena/audio.wav -ar 16000 -ac 1 output/elena_16k.wav
+
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --runtime_profile operational \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --prompt "ELENA, ultra realistic executive woman, speaking naturally straight to camera, stable identity, precise lipsync, cinematic lighting, minimal head movement" \
+  --negative_prompt "anime, cartoon, blurry, distorted face, duplicated mouth, frozen lips, bad anatomy, watermark" \
+  --identity_bank_path output/elena_identity_bank.pt \
+  --identity_id 1 \
+  --output output/elena_operational.mp4
+
+cat output/elena_operational.run.json
+ffprobe -hide_banner output/elena_operational.mp4 2>&1 | head -15
+```
+
+В `.run.json` → `sampling_metrics`: `ttff_sec`, `dit_forwards`, `kv_cache_hits`, `identity_cosine_per_chunk`, `silence_ratio`.
+
+Cinematic baseline (сравнение):
+
+```bash
+python scripts/infer.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --mode ai2v \
+  --runtime_profile cinematic \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --prompt "..." \
+  --negative_prompt "..." \
+  --identity_bank_path output/elena_identity_bank.pt \
+  --identity_id 1 \
+  --output output/elena_cinematic.mp4
+```
+
+Профили CLI: `--runtime_profile operational|cinematic`, `--use_distill`, `--chunk_frames`, `--chunk_overlap`. См. §4.1.4+.
+
+---
+
+### Фаза 6 — Eval gate (H200)
+
+```bash
+python scripts/gpu/eval_stability_bench.py \
+  --checkpoint_dir "$NULLXES_CHECKPOINT_DIR" \
+  --image assets/avatar/single/elena/image.jpg \
+  --audio output/elena_16k.wav \
+  --output_dir /tmp/arachne_eval \
+  --identity_id 1 \
+  --identity_bank_path output/elena_identity_bank.pt
+
+cat /tmp/arachne_eval/eval_stability_report.json
+```
+
+Пороги по умолчанию: `ttff_sec` ≤ 4s, `identity_drift_min` ≥ 0.88 (подстроить на bench).
+
+---
+
+### Фаза 7 — Worker HTTP (опционально, LiveKit)
+
+```bash
+pip install -r services/arachnex-worker/requirements.txt
+export PYTHONPATH="$ARACHNE_ROOT:$ARACHNE_ROOT/services/arachnex-worker"
+export NULLXES_IDENTITY_BANK_PATH="$ARACHNE_ROOT/output/elena_identity_bank.pt"
+cd services/arachnex-worker
+uvicorn main:app --host 0.0.0.0 --port 9090
+```
+
+Другой терминал: `curl -fsS http://127.0.0.1:9090/health`. NDJSON: `identityId`, `runtimeProfile`, `mouthMaskBase64` — §5.
+
+---
+
+### Долгий прогон — tmux
+
+```bash
+tmux new -s arachne
+cd /workspace/ARACHNE-X && source .venv/bin/activate
+# ... infer ...
+# Ctrl+B, D — отсоединиться; tmux attach -t arachne
+```
 
 ---
 
@@ -201,27 +518,23 @@ DiT (avatar + video) в `arachne_x/modules/*/attention.py` выбирает back
 
 ---
 
-## Сейчас: что делать на pod (по шагам)
+## Сейчас: что делать на pod (чётко по фазам)
 
-Если **AVATAR уже скачан** (~120G, §2.3.1 OK) — не повторяйте §2.3, идите по списку:
+Сначала сделайте чеклист в верхней части: **«Фазовая развёртка — мастер-чеклист»**. Затем выбирайте траекторию:
 
-| Шаг | Действие | Готово когда |
-| --- | -------- | ------------ |
-| 1 | §2.2 — скачать **VIDEO** | `tokenizer/`, `vae/` на диске |
-| 2 | §2.3.2 — symlink `audio/wav2vec2` в AVATAR | `ls` symlink OK |
-| 3 | §2.4 — собрать `weights/arachne-avatar-runtime` | symlinks созданы |
-| 4 | §2.5 — layout merged | `missing: none` |
-| 5 | §3 — **сначала torch → flash-attn**, потом ML/audio (§3.5+) | `torch` + `FLASH OK` |
-| 6 | §4 — тесты режимов (сначала **4.2 `ai2v` smoke**, потом остальные по желанию) | MP4 на диске |
-| 7 | §5 — **пропустить**, пока не нужен HTTP/realtime для NULLXES HR | — |
+| Ситуация | Стартовая фаза → финиш |
+| --------- | --------------------- |
+| Новый pod (ничего нет) | **Ф0 → Ф1 → Ф2 → Ф3 → Ф4 → Ф5 → Ф6** |
+| Уже скачан AVATAR (~120G) | **Ф2 (VIDEO) → Ф4 → Ф5 → Ф6** |
+| Уже есть merged runtime + `FLASH OK` | **Ф4 → Ф5 → Ф6** |
 
-Подготовьте на pod:
+Подготовьте на pod исходники (Katya):
 
 ```bash
 mkdir -p /workspace/input /workspace/ARACHNE-X/output
-# Elena (канон): assets/avatar/single/elena/face.jpg + audio.wav
-# При необходости 16 kHz:
-# ffmpeg -y -i assets/avatar/single/elena/audio.wav -ar 16000 -ac 1 /workspace/input/elena_16k.wav
+# Katya (канон): assets/avatar/single/katya/main.jpg + audio.wav
+# При необходимости 16 kHz:
+# ffmpeg -y -i assets/avatar/single/katya/audio.wav -ar 16000 -ac 1 /workspace/input/katya_16k.wav
 ```
 
 ---
@@ -233,8 +546,8 @@ mkdir -p /workspace/input /workspace/ARACHNE-X/output
 
 | Параметр  | Значение                                                                           |
 | --------- | ---------------------------------------------------------------------------------- |
-| GPU       | **H200** (80GB+ VRAM)                                                              |
-| Disk      | **≥ 200 GB** (оба HF snapshot + venv + cache)                                      |
+| GPU       | **H200 SXM** (~141 GB VRAM)                                                         |
+| Disk      | **≥ 250 GB** свободно (AVATAR ~120G + VIDEO + venv + cache; 750G disk — с запасом) |
 | Image     | PyTorch 2.6 + CUDA 12.4 (например `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`) |
 | Workspace | `/workspace`                                                                       |
 
@@ -255,8 +568,8 @@ cd /workspace
 git clone https://github.com/MagistrTheOne/ARACHNE-X-NULLXES-.git ARACHNE-X
 cd /workspace/ARACHNE-X
 git fetch origin
-# для патча с arachnex-worker:
-# git checkout arachne-last-patch
+git checkout arachne-last-patch
+git log -1 --oneline
 ```
 
 Корень далее: `ARACHNE_ROOT=/workspace/ARACHNE-X`.
@@ -432,30 +745,9 @@ if wav2v_alt.is_dir() and not (root / "audio" / "wav2vec2").is_dir():
     print("note: сделайте §2.3.2 symlink перед inference")
 PY
 ```
-##2.3.1.1
-1. СТАВИМ BUILD TOOLS
-apt update && apt install -y ninja-build build-essential cmake gcc g++ git
-2. АКТИВИРУЕМ VENV
-cd /workspace/ARACHNE-X && source .venv/bin/activate
-3. ОБНОВЛЯЕМ BUILD STACK
-pip install -U pip setuptools wheel packaging ninja
-4. СТАВИМ BUILD DEPS РУКАМИ 
-pip install psutil numpy einops packaging
-5. ПРОВЕРЯЕМ CUDA 
-nvcc --version
-6. ПРОВЕРЯЕМ TORCH CUDA 
-python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 
-Должно быть:
+> **Flash-attn и build tools:** не в §2 (веса). См. [§3.3–3.4](#33-flashattention-только-после-32) и [Фаза 3](#фаза-3--pytorch--flashattention-отдельный-стек-не-через-requirementstxt).
 
-2.6.0+cu124
-True
-7. ТЕПЕРЬ FLASH-ATTN 😈
-ВАЖНО:
-
-без build isolation.
-
-pip install flash-attn==2.7.4.post1 --no-build-isolation
 #### 2.3.2 Symlink `audio/wav2vec2` (после AVATAR)
 
 `loader` ищет `audio/wav2vec2`; в snapshot wav2vec лежит в `chinese-wav2vec2-base/`:
@@ -822,6 +1114,13 @@ CLI печатает строку `[frame-budget] mode=... sync_max=... chosen=.
 | `--export_crf 18` | лучше H.264 mux |
 | `--use_cfg_zero` | experimental CFG-zero на text branch |
 | `--preset_hint elena_sync` | метка в run.json |
+| `--runtime_profile operational` | 12 steps, distill, chunk 33/8, cap 65f — **prod realtime path** |
+| `--runtime_profile cinematic` | 35 steps, monolithic — quality baseline / rollback |
+| `--use_distill` | явный distill schedule (auto при steps≤16) |
+| `--chunk_frames` / `--chunk_overlap` | chunked denoise (operational default 33/8) |
+| `--no_chunked_denoise` | force monolithic |
+
+Env (альтернатива CLI): `ARACHNE_RUNTIME_PROFILE=operational`, `ARACHNE_CHUNK_KV=1` (cross-chunk KV, Stability OS).
 
 ### 4.1.5 `streaming_ai2v` vs `ai2v` (важно)
 
@@ -1433,11 +1732,16 @@ bash "$ARACHNE_ROOT/scripts/gpu/smoke_avatar_frames.sh"
 | Переменная                      | Назначение                                   |
 | ------------------------------- | -------------------------------------------- |
 | `HF_TOKEN`                      | Доступ к private/gated HF repos              |
-| `NULLXES_CHECKPOINT_DIR`        | Корень весов для avatar pipeline             |
+| `HF_HUB_ENABLE_HF_TRANSFER`     | `1` — быстрее `hf download`                  |
+| `NULLXES_CHECKPOINT_DIR`        | Корень весов (`weights/arachne-avatar-runtime`) |
 | `ARACHNE_CHECKPOINT_DIR`        | Алиас                                        |
-| `PYTHONPATH`                    | `$ARACHNE_ROOT` + `services/arachnex-worker` |
+| `ARACHNE_RUNTIME_PROFILE`       | `operational` \| `cinematic` (см. также CLI)   |
+| `ARACHNE_CHUNK_KV`              | `1` — cross-chunk KV (Stability OS; default on) |
+| `NULLXES_IDENTITY_BANK_PATH`    | Путь к `.pt` для worker preload               |
+| `PYTHONPATH`                    | `$ARACHNE_ROOT` (+ worker: `services/arachnex-worker`) |
 | `NULLXES_INFERENCE_SERVICE_KEY` | Опциональный секрет HTTP                     |
 | `NULLXES_URL`                   | Base URL для smoke script                    |
+| `ARACHNE_LEGACY_STREAMING`      | `1` — monolithic + stream VAE (rollback)     |
 
 
 ---
@@ -1477,4 +1781,4 @@ huggingface-cli login --token "$HF_TOKEN"
 
 ---
 
-*Документ: RunPod H200 — обзор ARACHNE-X, CLI оцифровка (Elena: face.jpg + audio.wav), deps/attention; HTTP worker — §5 (опционально).*
+*Документ: RunPod H200 — фазовая развёртка, ветка `arachne-last-patch`, Sampling OS + Stability OS; CLI оцифровка; HTTP worker — §5 (опционально). Обновлено: 2026-05.*
