@@ -6,7 +6,7 @@ This document is policy. Code is enforced from this contract — not the other w
 **Install / deps:** [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md)  
 **Classification:** [`Documentation/ARACHNE_X_CLASSIFICATION_2026-05-21.md`](Documentation/ARACHNE_X_CLASSIFICATION_2026-05-21.md)  
 **Engine iteration (GPT handoff):** [`Documentation/ARACHNE_ENGINE_ITERATION_HANDOFF_2026.md`](Documentation/ARACHNE_ENGINE_ITERATION_HANDOFF_2026.md)  
-**Stability OS (Sprint 2 / LiveKit):** [`Documentation/ARACHNE_STABILITY_OS_SPRINT2.md`](Documentation/ARACHNE_STABILITY_OS_SPRINT2.md)
+**Iteration roadmap (Sprint 1–4):** [`Documentation/ARACHNE_ITERATION_ROADMAP.md`](Documentation/ARACHNE_ITERATION_ROADMAP.md)
 
 ---
 
@@ -178,7 +178,8 @@ Wiring: `arachne_x/runtime/sampling_profiles.py` → `execute_infer` / `avatar_s
 Chunk path: `generate_chunked_ai2v` (pipeline-level windows) + `chunk_stitch.cosine_blend`.  
 Streaming: `generate_streaming_ai2v` delegates to chunked yield unless `ARACHNE_LEGACY_STREAMING=1`.  
 Metrics: `RuntimeSamplingMetrics` → `.run.json` (`ttff_sec`, `dit_forwards`, `denoise_wall_sec`).  
-Cross-chunk KV seed (optional): `ARACHNE_CHUNK_KV=1` + `runtime/chunk_kv.py` (consume in `generate_ai2v` is Sprint 2).
+**Stability OS (Sprint 2, active):** [`Documentation/ARACHNE_STABILITY_OS_SPRINT2.md`](Documentation/ARACHNE_STABILITY_OS_SPRINT2.md) — KV consume, identity refresh, silence gate, drift monitor.  
+Cross-chunk KV seed (interim): `ARACHNE_CHUNK_KV=1` — **не prod** until Sprint 2 `S2-1-CHUNK-CONSUME` ships.
 
 ```bash
 # Operational CLI (after H200 eval gate)

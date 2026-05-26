@@ -4,6 +4,21 @@
 **Пререквизит:** [Sampling OS Sprint 1](ARACHNE_ENGINE_ITERATION_HANDOFF_2026.md#91-sprint-1--sampling-os-done-criteria) (merged).  
 **Политика:** без mock MP4, без fake streaming, без seed-only KV без consume, без `update_identity_bank` в realtime.
 
+**Трекер:** [ARACHNE_ITERATION_ROADMAP.md](ARACHNE_ITERATION_ROADMAP.md)
+
+---
+
+## Live checklist (обновлять в PR)
+
+- [ ] **S2-0** H200 eval + KV debt
+- [ ] **S2-1** KV consume в `generate_ai2v`
+- [ ] **S2-2** Per-chunk identity refresh
+- [ ] **S2-3** Silence / audio motion gate
+- [ ] **S2-4** Drift monitor + corrective policy
+- [ ] **S2-5** Mouth mask + hybrid worker default
+- [ ] **S2-6** LiveKit worker schema
+- [ ] **S2-7** `eval_stability_bench.py` green
+
 ---
 
 ## Этапы (overview)

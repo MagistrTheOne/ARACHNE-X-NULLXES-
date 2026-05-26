@@ -239,7 +239,7 @@ Config:
 
 GPU smoke (manual): `scripts/gpu/smoke_operational_profile.sh` on H200 — lipsync/identity vs cinematic baseline.
 
-**Next:** [ARACHNE_STABILITY_OS_SPRINT2.md](ARACHNE_STABILITY_OS_SPRINT2.md) — LiveKit identity/lip stability (этапы `S2-0` … `S2-7`, без стабов).
+**Следующая итерация:** [ARACHNE_STABILITY_OS_SPRINT2.md](ARACHNE_STABILITY_OS_SPRINT2.md) · [ARACHNE_ITERATION_ROADMAP.md](ARACHNE_ITERATION_ROADMAP.md)
 
 ---
 
