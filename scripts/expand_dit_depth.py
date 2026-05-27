@@ -30,7 +30,14 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _load_old_state_dict(dit_dir: Path) -> dict[str, torch.Tensor]:
+def _config_to_dict(config) -> dict:
+    """Diffusers ConfigMixin may expose FrozenDict without .to_dict()."""
+    if hasattr(config, "to_dict") and callable(getattr(config, "to_dict")):
+        return config.to_dict()
+    return dict(config)
+
+
+def _load_old_state_dict(dit_dir: Path) -> tuple[dict[str, torch.Tensor], dict]:
     sys.path.insert(0, str(_repo_root()))
     from arachne_x.modules.arachne_video_dit import LongCatVideoTransformer3DModel
 
@@ -39,7 +46,7 @@ def _load_old_state_dict(dit_dir: Path) -> dict[str, torch.Tensor]:
         torch_dtype=torch.float32,
         local_files_only=True,
     )
-    return model.state_dict(), model.config.to_dict()
+    return model.state_dict(), _config_to_dict(model.config)
 
 
 def expand_depth(
@@ -56,13 +63,20 @@ def expand_depth(
     src_depth = int(old_cfg.get("depth", 48))
     if target_depth <= src_depth:
         raise ValueError(f"target_depth {target_depth} must be > source depth {src_depth}")
+    if seed_block >= src_depth:
+        print(
+            f"WARNING: seed_block {seed_block} >= src_depth {src_depth}; "
+            f"using {src_depth - 1} (last existing block)",
+            file=sys.stderr,
+        )
+        seed_block = src_depth - 1
 
     new_cfg = dict(old_cfg)
     new_cfg["depth"] = int(target_depth)
     # ABI name unchanged so existing tooling loads; canonical rename later.
     new_cfg["_class_name"] = old_cfg.get("_class_name", "LongCatVideoTransformer3DModel")
 
-    new_model = LongCatVideoTransformer3DModel(**new_cfg)
+    new_model = LongCatVideoTransformer3DModel.from_config(new_cfg)
     new_sd = new_model.state_dict()
 
     copied = 0
