@@ -409,3 +409,7 @@ class LongCatVideoTransformer3DModel(
             C_out=self.out_channels,
         )
         return x
+
+
+# Canonical NULLXES name (same weights / state dict as legacy ABI class).
+ArachneVideoDiT3DModel = LongCatVideoTransformer3DModel
