@@ -144,21 +144,17 @@ def _find_local_shard(out_root: Path, shard_hint: str | None) -> Path | None:
         p = Path(shard_hint)
         if p.is_file():
             return p
-    candidates = sorted(out_root.glob("**/shard-*.tar"))
-    if candidates:
-        return candidates[0]
-    wds_root = out_root / "openvid-wds"
-    if wds_root.is_dir():
-        c = sorted(wds_root.glob("**/shard-*.tar"))
-        if c:
-            return c[0]
+    for pattern in ("**/openvid-train-*.tar", "**/shard-*.tar"):
+        candidates = sorted(out_root.glob(pattern))
+        if candidates:
+            return candidates[0]
     return None
 
 
 def _download_shard(out_root: Path, shard_index: int) -> Path:
     from huggingface_hub import hf_hub_download
 
-    shard_name = f"data/train/shard-{shard_index:05d}.tar"
+    shard_name = f"train/openvid-train-{shard_index:06d}.tar"
     out_root.mkdir(parents=True, exist_ok=True)
     local = hf_hub_download(
         repo_id="Dev-Jahn/OpenVid-1M-wds",
