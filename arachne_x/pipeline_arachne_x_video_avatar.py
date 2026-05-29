@@ -1732,6 +1732,9 @@ class ArachneXVideoAvatarPipeline(
             if audio_slice.shape[1] < n_gen:
                 n_gen = int(audio_slice.shape[1])
                 n_gen = round_to_4n_plus_1(max(1, n_gen))
+            elif audio_slice.shape[1] > n_gen:
+                # Tail chunk: frame budget is 4n+1 but slice may span more embedding steps.
+                audio_slice = audio_slice[:, :n_gen].contiguous()
 
             t0 = time.perf_counter()
             reuse_kv = bool(use_kv_cross_chunk and chunk_idx > 0 and getattr(self, "kv_cache_dict", None))

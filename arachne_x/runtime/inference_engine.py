@@ -53,7 +53,8 @@ def _finalize_chunked_ai2v_output(out: Any) -> Any:
     if not isinstance(out, types.GeneratorType):
         return out
     try:
-        next(out)
+        while True:
+            next(out)
     except StopIteration as exc:
         if exc.value is None:
             raise RuntimeError(
