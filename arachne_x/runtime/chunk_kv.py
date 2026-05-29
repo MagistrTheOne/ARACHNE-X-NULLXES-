@@ -23,6 +23,32 @@ def chunk_kv_enabled() -> bool:
     return v in ("1", "true", "yes", "")
 
 
+def _min_audio_frames_for_dit_seed(pipe: Any) -> int:
+    """
+    DiT ``audio_proj`` needs ``audio_cond.shape[1] >= vae_scale + 1`` so
+    ``latter_frame_audio_emb = audio_cond[:, 1:]`` can be rearranged (T-1 % vae_scale == 0).
+    With ``n_cond=1`` latent, ``audio_frames=1`` triggers invalid CUDA kernels.
+    """
+    vae_scale = int(getattr(getattr(pipe, "dit", None), "vae_scale", 4) or 4)
+    return max(5, vae_scale + 1)
+
+
+def _tail_audio_cache_for_seed(audio_emb_slice: torch.Tensor, min_frames: int) -> torch.Tensor:
+    """Last ``min_frames`` audio steps aligned to chunk tail; pad by repeating last step if short."""
+    need = max(1, int(min_frames))
+    t_avail = int(audio_emb_slice.shape[1])
+    if t_avail >= need:
+        return audio_emb_slice[:, -need:].contiguous()
+    if t_avail <= 0:
+        raise ValueError("chunk_kv seed requires non-empty audio_emb_slice")
+    last = audio_emb_slice[:, -1:]
+    pad_n = need - t_avail
+    extra_dims = audio_emb_slice.dim() - 2
+    repeat_shape = (1, pad_n) + (1,) * extra_dims
+    padded = last.repeat(*repeat_shape)
+    return torch.cat([audio_emb_slice, padded], dim=1).contiguous()
+
+
 def seed_kv_from_chunk_tail(
     pipe: Any,
     chunk_video: np.ndarray,
@@ -50,6 +76,7 @@ def seed_kv_from_chunk_tail(
     # [1, C, T, H, W]
     vid = torch.from_numpy(tail).permute(3, 0, 1, 2).unsqueeze(0)
     vid = vid.to(device=pipe.device, dtype=pipe.vae.dtype)
+    from arachne_x.infer_attention import configure_infer_bsa, infer_bsa_enabled
     from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
 
     latents = pipe.normalize_latents(
@@ -58,23 +85,27 @@ def seed_kv_from_chunk_tail(
     if int(latents.shape[2]) > 1:
         latents = latents[:, :, -1:].contiguous()
     n_cond = 1
-    audio_frames = 1
-    audio_cache = (
-        audio_emb_slice[:, :audio_frames]
-        if audio_emb_slice.shape[1] >= audio_frames
-        else audio_emb_slice
-    )
-    effective_cond = pipe._cache_clean_latents(
-        latents,
-        max_sequence_length,
-        offload_kv_cache=False,
-        device=pipe.device,
-        dtype=pipe.dit.dtype,
-        audio_embs=audio_cache,
-        num_cond_latents=n_cond,
-        num_ref_latents=0,
-        ref_img_index=None,
-    )
+    min_audio = _min_audio_frames_for_dit_seed(pipe)
+    audio_cache = _tail_audio_cache_for_seed(audio_emb_slice, min_audio)
+
+    restore_bsa = infer_bsa_enabled()
+    try:
+        configure_infer_bsa(pipe.dit, enabled=False)
+        effective_cond = pipe._cache_clean_latents(
+            latents,
+            max_sequence_length,
+            offload_kv_cache=False,
+            device=pipe.device,
+            dtype=pipe.dit.dtype,
+            audio_embs=audio_cache,
+            num_cond_latents=n_cond,
+            num_ref_latents=0,
+            ref_img_index=None,
+        )
+    finally:
+        if restore_bsa:
+            configure_infer_bsa(pipe.dit, enabled=True)
+
     pipe._cross_chunk_kv_active_cond = int(effective_cond)
     kv = pipe._get_kv_cache_dict()
     if kv:
@@ -85,9 +116,10 @@ def seed_kv_from_chunk_tail(
             rsm.kv_cache_hits += 1
             rsm.cross_chunk_kv_frames += int(n_cond)
         loguru.logger.info(
-            "chunk_kv_seed_ok chunk_idx={} n_cond={} effective_cond={} kv_layers={}",
+            "chunk_kv_seed_ok chunk_idx={} n_cond={} audio_frames={} effective_cond={} kv_layers={}",
             chunk_idx,
             n_cond,
+            int(audio_cache.shape[1]),
             int(effective_cond),
             len(trimmed),
         )

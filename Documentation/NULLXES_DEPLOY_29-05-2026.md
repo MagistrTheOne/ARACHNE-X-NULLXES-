@@ -650,7 +650,18 @@ ffmpeg -y -i "$ARACHNE_AUDIO" -ar 16000 -ac 1 "$ARACHNE_ROOT/output/elena_16k.wa
 
 #### 6.1 Primary: `ai2v` (image + audio → MP4)
 
+**Cross-chunk KV:** требует commit с Wave A2 audio seed fix (`chunk_kv.py`: `n_cond=1` + **min 5 audio frames** для `audio_proj`, BSA off на seed). После `git pull` в логах: `chunk_kv_seed_ok`, chunk1+ `reuse_kv=True`.
+
+**Prompt / lipsync (LongCat Avatar 1.5 parity, см. [HF model card](https://huggingface.co/meituan-longcat/LongCat-Video-Avatar-1.5)):**
+
+- **Audio CFG:** оптимально **3–5**; operational profile уже ставит `--audio_guidance_scale 5.0`. Не опускать ниже 3 без причины.
+- **Prompt:** явные verbal-action cues — *talking, speaking, lips moving*; описание внешности + сцены (длиннее = стабильнее).
+- **`--ref_img_index` / `--mask_frame_range`:** только для **video continuation** (`avc`, multi-segment LongCat); в chunked **ai2v** не экспонируются — continuity через chunk KV seed.
+- **Resolution:** `--resolution 480p` или `720p` (native DiT; 1080 = post ffmpeg upscale, не native).
+
 ```bash
+git pull   # обязательно: c5e87aa+ для chunk KV fix
+
 export ARACHNE_RUNTIME_PROFILE=operational
 export ARACHNE_CHUNK_KV=1
 export NULLXES_IDENTITY_BANK_PATH="$ARACHNE_ROOT/output/elena_identity_bank.pt"
@@ -661,15 +672,36 @@ python scripts/infer.py \
   --runtime_profile operational \
   --image "$ARACHNE_FACE" \
   --audio "$ARACHNE_ROOT/output/elena_16k.wav" \
-  --prompt "Person speaking naturally to camera, stable identity, precise lipsync." \
-  --negative_prompt "blurry, distorted face, bad anatomy, watermark" \
+  --prompt "A professional woman with dark hair is speaking and talking naturally straight to camera, realistic close-up portrait, stable identity, precise lipsync, subtle blinking, corporate interview framing, cinematic lighting." \
+  --negative_prompt "blurry, distorted face, bad anatomy, duplicated mouth, frozen lips, watermark, anime, cartoon" \
+  --audio_guidance_scale 5.0 \
   --identity_bank_path "$ARACHNE_ROOT/output/elena_identity_bank.pt" \
   --identity_id 1 \
-  --resolution 480p \
+  --resolution 720p \
   --output "$ARACHNE_ROOT/output/avatar_ai2v.mp4"
 
-jq '.sampling_metrics' "$ARACHNE_ROOT/output/avatar_ai2v.run.json"
+jq '.sampling_metrics | {kv_cache_hits, cross_chunk_kv_frames, chunk_count, denoise_wall_sec, first_chunk_sec}' \
+  "$ARACHNE_ROOT/output/avatar_ai2v.run.json"
 ```
+
+**Ожидание после fix:** `kv_cache_hits >= 2`, `cross_chunk_kv_frames >= 2`, в stdout `chunk_kv_seed_ok`, chunk1 `reuse_kv=True`.
+
+#### 6.1.1 LongCat Avatar 1.5 A/B (отдельный каталог, не трогать ARACHNE `.venv`)
+
+Сравнение baseline на том же pod; weights ~отдельно от ULTRA runtime:
+
+```bash
+export HF_TOKEN="hf_..."   # если gated
+
+pip install -U "huggingface_hub[cli]"
+huggingface-cli download meituan-longcat/LongCat-Video-Avatar-1.5 \
+  --local-dir "$ARACHNE_ROOT/weights/longcat-avatar-1.5-bench"
+
+git clone --depth 1 --branch main https://github.com/meituan-longcat/LongCat-Video \
+  "$ARACHNE_ROOT/vendor/LongCat-Video"
+```
+
+LongCat infer — **отдельный clone + их `requirements_avatar.txt`**, не смешивать с ARACHNE prod venv. Для ai2v smoke на том же Elena WAV/image см. их `run_demo_avatar_single_audio_to_video.py --stage_1=ai2v --use_distill`.
 
 #### 6.2 Realtime path smoke: `streaming_ai2v`
 
