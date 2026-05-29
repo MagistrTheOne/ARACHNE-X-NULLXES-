@@ -58,19 +58,33 @@ Three deployment layers:
 
 Inference runs **on the Linux GPU pod**, not on Windows. Windows is only your **SSH client**.
 
-### 0.1 RunPod pod setup
+### 0.1 RunPod pod setup (UI)
 
-1. Create a **GPU pod** (recommended: **H200** or H100, ≥250 GB disk).
-2. Template: `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` (or Ubuntu 22.04 + CUDA 12.4).
+> **Edit Pod → Save сбрасывает контейнер.** Данные сохраняются только в **volume mount** (`/workspace`).  
+> Полная таблица полей: [`NULLXES_DEPLOY_29-05-2026.md`](NULLXES_DEPLOY_29-05-2026.md) → RunPod UI.
+
+| Поле UI | Значение |
+|---------|----------|
+| Container image | `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` |
+| Container disk | 750 GB |
+| Volume disk | 1200 GB |
+| Volume mount path | `/workspace` |
+| Expose HTTP ports | `8888,8000,8010,8080,9090` |
+| Expose TCP ports | `22` |
+
+1. Create a **GPU pod** (recommended: **H200** or H100).
+2. **Pods → Edit → Save** with values above.
 3. In RunPod UI → **Connect** → copy **SSH over exposed TCP** command, e.g.:
 
 ```text
 ssh root@<POD_IP> -p <PORT> -i ~/.ssh/id_ed25519
 ```
 
-4. Expose ports when needed:
-   - **9090** — `arachnex-worker` HTTP
-   - **22** — SSH (default)
+4. Ports (HTTP proxy URLs):
+   - **9090** — `arachnex-worker` (**required** for prod)
+   - **8080** — orchestrator gateway (if on same pod)
+   - **8888, 8000, 8010** — optional dev
+   - **22** (TCP) — SSH
 
 ### 0.2 Windows PowerShell (OpenSSH client)
 

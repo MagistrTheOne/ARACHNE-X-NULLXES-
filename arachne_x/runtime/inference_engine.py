@@ -41,6 +41,31 @@ from arachne_x.runtime.sampling_profiles import (
 from arachne_x.runtime.sampling_metrics import RuntimeSamplingMetrics
 
 
+def _finalize_chunked_ai2v_output(out: Any) -> Any:
+    """
+    ``generate_chunked_ai2v`` contains ``yield`` and is therefore always a generator function.
+
+    With ``yield_frames=False`` the stacked video is returned via ``StopIteration.value``, not
+    as a plain return value. Drain the generator before ``save_avatar_mp4``.
+    """
+    import types
+
+    if not isinstance(out, types.GeneratorType):
+        return out
+    try:
+        next(out)
+    except StopIteration as exc:
+        if exc.value is None:
+            raise RuntimeError(
+                "generate_chunked_ai2v finished without stacked video "
+                "(empty chunks or yield_frames=True streaming path)"
+            ) from exc
+        return exc.value
+    raise RuntimeError(
+        "generate_chunked_ai2v yielded frames; caller expected stacked video (yield_frames=False)"
+    )
+
+
 def save_video_numpy(frames: np.ndarray, path: str, fps: int = 30) -> None:
     if frames.dtype != np.uint8:
         frames = (frames * 255).clip(0, 255).astype(np.uint8)
@@ -624,7 +649,8 @@ def execute_infer(args: argparse.Namespace) -> None:
                 if bool(getattr(args, "use_chunked_denoise", False)) and int(args.num_frames) > int(
                     getattr(args, "chunk_frames", 33)
                 ):
-                    out = pipe.generate_chunked_ai2v(
+                    out = _finalize_chunked_ai2v_output(
+                        pipe.generate_chunked_ai2v(
                         image=image,
                         prompt=args.prompt,
                         negative_prompt=args.negative_prompt,
@@ -646,6 +672,7 @@ def execute_infer(args: argparse.Namespace) -> None:
                         chunk_frames=int(getattr(args, "chunk_frames", 33)),
                         chunk_overlap=int(getattr(args, "chunk_overlap", 8)),
                         yield_frames=False,
+                        )
                     )
                 else:
                     out = pipe.generate_ai2v(

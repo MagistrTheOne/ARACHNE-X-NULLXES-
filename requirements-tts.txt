@@ -5,7 +5,7 @@
 # (on top of requirements_orchestrator.txt or requirements_avatar.txt)
 
 # https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-qwen-tts
-soundfile==0.13.1
+#qwen-tts
+#soundfile==0.13.1
 
 # AudioDiT (--tts_provider audiodit): NEVER same venv — use requirements-audiodit.txt
