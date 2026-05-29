@@ -961,7 +961,9 @@ class ArachneXVideoAvatarPipeline(
                 kv_cache_dict = self._get_kv_cache_dict() or {}
                 cond_latents = latents[:, :, :cache_num_cond_latents]
                 latents = latents[:, :, cache_num_cond_latents:]
-                active_num_cond_latents = cache_num_cond_latents
+                active_num_cond_latents = int(
+                    getattr(self, "_cross_chunk_kv_active_cond", None) or cache_num_cond_latents
+                )
                 rsm_kv = getattr(self, "runtime_sampling_metrics", None)
                 if rsm_kv is not None:
                     rsm_kv.kv_cache_hits += 1
@@ -1810,15 +1812,25 @@ class ArachneXVideoAvatarPipeline(
             chunk_videos.append(out)
             if use_kv_cross_chunk:
                 try:
-                    seed_kv_from_chunk_tail(
+                    seeded = seed_kv_from_chunk_tail(
                         self,
                         out,
                         audio_emb_slice=audio_slice,
                         kv_keep_last=kv_keep_last,
                         max_sequence_length=max_sequence_length,
+                        chunk_idx=chunk_idx,
                     )
+                    if not seeded:
+                        loguru.logger.warning(
+                            "chunk KV seed failed (continuing): chunk_idx={} reason=empty_kv_cache",
+                            chunk_idx,
+                        )
                 except Exception as exc:
-                    loguru.logger.warning("chunk KV seed failed (continuing): {}", exc)
+                    loguru.logger.warning(
+                        "chunk KV seed failed (continuing): chunk_idx={} error={}",
+                        chunk_idx,
+                        exc,
+                    )
             if yield_frames:
                 skip_prefix = max(0, min(int(out.shape[0]), int(emitted_until) - int(start)))
                 for fi in range(skip_prefix, out.shape[0]):

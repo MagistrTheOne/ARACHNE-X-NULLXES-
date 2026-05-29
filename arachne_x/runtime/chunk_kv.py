@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+import loguru
 import numpy as np
 import torch
 
@@ -29,15 +30,21 @@ def seed_kv_from_chunk_tail(
     audio_emb_slice: torch.Tensor,
     kv_keep_last: int = 24,
     max_sequence_length: int = 512,
+    chunk_idx: Optional[int] = None,
 ) -> bool:
     """
-    Encode the last ``kv_keep_last`` pixel frames of ``chunk_video`` and run a
-    conditioning forward to populate ``pipe.kv_cache_dict`` (trimmed).
+    Encode the last pixel frame of ``chunk_video`` and run a conditioning forward
+    to populate ``pipe.kv_cache_dict`` for the next chunked pass.
+
+    Cross-chunk ai2v uses the image-to-video path (``num_cond_latents=1``).
+    Multi-frame seed (``kv_keep_last`` > 1) requires video-continuation ref
+    semantics and is not used here.
     """
+    del kv_keep_last  # API retained; seed always uses a single cond latent.
     if chunk_video is None or int(chunk_video.shape[0]) < 1:
         return False
-    keep = max(1, int(kv_keep_last))
-    tail = np.asarray(chunk_video[-keep:], dtype=np.float32)
+
+    tail = np.asarray(chunk_video[-1:], dtype=np.float32)
     if tail.max() > 1.5:
         tail = tail / 255.0
     # [1, C, T, H, W]
@@ -48,14 +55,16 @@ def seed_kv_from_chunk_tail(
     latents = pipe.normalize_latents(
         retrieve_latents(pipe.vae.encode(vid), generator=None, sample_mode="argmax")
     )
-    n_cond = int(latents.shape[2])
-    vae_stride = max(1, int(getattr(pipe, "vae_scale_factor_temporal", 4)))
-    # DiT audio conditioning is indexed in pixel-frame time, while the clean
-    # latents are VAE-temporal. Keep the required 4n+1 audio window instead of
-    # trimming to latent-count, which makes the DiT audio projection invalid.
-    audio_frames = max(1, (n_cond - 1) * vae_stride + 1)
-    audio_cache = audio_emb_slice[:, :audio_frames] if audio_emb_slice.shape[1] >= audio_frames else audio_emb_slice
-    pipe._cache_clean_latents(
+    if int(latents.shape[2]) > 1:
+        latents = latents[:, :, -1:].contiguous()
+    n_cond = 1
+    audio_frames = 1
+    audio_cache = (
+        audio_emb_slice[:, :audio_frames]
+        if audio_emb_slice.shape[1] >= audio_frames
+        else audio_emb_slice
+    )
+    effective_cond = pipe._cache_clean_latents(
         latents,
         max_sequence_length,
         offload_kv_cache=False,
@@ -66,6 +75,7 @@ def seed_kv_from_chunk_tail(
         num_ref_latents=0,
         ref_img_index=None,
     )
+    pipe._cross_chunk_kv_active_cond = int(effective_cond)
     kv = pipe._get_kv_cache_dict()
     if kv:
         trimmed, _ = pipe._compress_kv_cache_dict_temporal(kv, n_cond, 0)
@@ -74,5 +84,12 @@ def seed_kv_from_chunk_tail(
         if rsm is not None:
             rsm.kv_cache_hits += 1
             rsm.cross_chunk_kv_frames += int(n_cond)
+        loguru.logger.info(
+            "chunk_kv_seed_ok chunk_idx={} n_cond={} effective_cond={} kv_layers={}",
+            chunk_idx,
+            n_cond,
+            int(effective_cond),
+            len(trimmed),
+        )
         return True
     return False
