@@ -77,8 +77,9 @@ class Attention(nn.Module):
         if self.enable_bsa and shape[0] > 1: # bsa will not be used in image training / sampling
             assert self.bsa_params is not None
             _, H, W = shape
-            assert H % self.cp_split_hw[0] == 0 and W % self.cp_split_hw[1] == 0
-            H, W = H // self.cp_split_hw[0], W // self.cp_split_hw[1]
+            cp_hw = self.cp_split_hw if self.cp_split_hw is not None else (1, 1)
+            assert H % cp_hw[0] == 0 and W % cp_hw[1] == 0
+            H, W = H // cp_hw[0], W // cp_hw[1]
             Tq = SQ // (H * W)
             Tk = SKV // (H * W)
             latent_shape_q = (Tq, H, W)
