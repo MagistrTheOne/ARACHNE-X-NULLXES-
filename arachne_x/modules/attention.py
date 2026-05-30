@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+import loguru
 import torch
 import torch.nn as nn
 
@@ -56,16 +57,12 @@ class Attention(nn.Module):
         _, _, SKV, _ = k.shape
 
         if self.enable_bsa and shape[0] > 1: # bsa will not be used in image training / sampling
-            assert self.bsa_params is not None
-            _, H, W = shape
-            assert H % self.cp_split_hw[0] == 0 and W % self.cp_split_hw[1] == 0
-            H, W = H // self.cp_split_hw[0], W // self.cp_split_hw[1]
-            Tq = SQ // (H * W)
-            Tk = SKV // (H * W)
-            latent_shape_q = (Tq, H, W)
-            latent_shape_k = (Tk, H, W)
-            x = flash_attn_bsa_3d(q, k, v, latent_shape_q, latent_shape_k, **self.bsa_params)
-        elif self.enable_flashattn3:
+            bsa_out = self._try_bsa_attn(q, k, v, shape, SQ, SKV)
+            if bsa_out is not None:
+                return bsa_out
+            # shape not BSA-applicable -> exact dense fallback below
+
+        if self.enable_flashattn3:
             from flash_attn_interface import flash_attn_func
             q = rearrange(q, "B H S D -> B S H D").contiguous()
             k = rearrange(k, "B H S D -> B S H D").contiguous()
@@ -103,6 +100,42 @@ class Attention(nn.Module):
             raise RuntimeError("Unsupported attention operations.")
 
         return x
+
+    def _warn_bsa_fallback(self, reason: str) -> None:
+        if not getattr(self, "_bsa_fallback_warned", False):
+            self._bsa_fallback_warned = True
+            loguru.logger.warning(
+                "BSA not applicable for this attention layer; falling back to dense (exact). reason={}",
+                reason,
+            )
+
+    def _try_bsa_attn(self, q, k, v, shape, SQ, SKV):
+        """Attempt block-sparse 3D attention; return None to signal exact dense fallback."""
+        assert self.bsa_params is not None
+        _, H, W = shape
+        cp_hw = self.cp_split_hw if self.cp_split_hw is not None else (1, 1)
+        if H % cp_hw[0] != 0 or W % cp_hw[1] != 0:
+            self._warn_bsa_fallback(
+                f"HxW {H}x{W} not divisible by cp_split_hw {tuple(cp_hw)}"
+            )
+            return None
+        Hc, Wc = H // cp_hw[0], W // cp_hw[1]
+        hw = Hc * Wc
+        if hw == 0 or SQ % hw != 0 or SKV % hw != 0:
+            self._warn_bsa_fallback(
+                f"seqlen (SQ={SQ}, SKV={SKV}) not divisible by H*W={hw}"
+            )
+            return None
+        Tq = SQ // hw
+        Tk = SKV // hw
+        latent_shape_q = (Tq, Hc, Wc)
+        latent_shape_k = (Tk, Hc, Wc)
+        out = flash_attn_bsa_3d(q, k, v, latent_shape_q, latent_shape_k, **self.bsa_params)
+        if out is None:
+            self._warn_bsa_fallback(
+                f"latent q={latent_shape_q} k={latent_shape_k} not divisible by bsa chunk params"
+            )
+        return out
 
     def forward(self, x: torch.Tensor, shape=None, num_cond_latents=None, return_kv=False) -> torch.Tensor:
         """

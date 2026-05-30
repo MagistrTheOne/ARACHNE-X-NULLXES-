@@ -1,11 +1,11 @@
-import os
+import loguru
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
 import math
 
-from .common import _attn_fwd_gating, _attn_bwd_preprocess, configs_gating_preset
+from .common import _attn_fwd_gating, _attn_bwd_preprocess, configs_gating_preset, triton_autotune_enabled
 from .flash_attn_bsa_varlen_mask import (
     _attn_fwd_bsa_varlen, _attn_fwd_bsa_varlen_align, _attn_bwd_dkdv_bsa_varlen_wrapper, _attn_bwd_dq_bsa_varlen_wrapper, _attn_bwd_dq_bsa_varlen_align_wrapper,
     configs_fwd_bsa_varlen_preset, configs_fwd_bsa_varlen_align_preset, configs_bwd_dkdv_bsa_varlen_preset, configs_bwd_dq_bsa_varlen_preset, configs_bwd_dq_bsa_varlen_align_preset
@@ -15,7 +15,6 @@ from .communicate import p2p_communicate
 
 from ..context_parallel import context_parallel_util
 
-torch._dynamo.config.cache_size_limit = 32
 
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
@@ -25,10 +24,21 @@ def supports_tma():
 
 HAS_TMA_DESC = "nv_tma_desc_type" in dir(tl)
 
-if HAS_TMA_DESC:
-    print("TMA benchmarks will be running with experimental grid constant TMA descriptor.", )
-else:
-    print("TMA benchmarks will be running without grid constant TMA descriptor.", )
+_BSA_RUNTIME_CONFIGURED = False
+
+
+def configure_bsa_runtime() -> None:
+    """Apply process-wide BSA runtime config once. Called lazily from the BSA entry
+    point so importing this module has no global side effects."""
+    global _BSA_RUNTIME_CONFIGURED
+    if _BSA_RUNTIME_CONFIGURED:
+        return
+    _BSA_RUNTIME_CONFIGURED = True
+    torch._dynamo.config.cache_size_limit = 32
+    if HAS_TMA_DESC:
+        loguru.logger.debug("BSA TMA descriptors available (experimental grid-constant TMA).")
+    else:
+        loguru.logger.debug("BSA TMA descriptors unavailable; running without grid-constant TMA.")
 
 
 # TmaAutoTuneHelper used in htyu's PR #5622
@@ -128,7 +138,7 @@ def create_mask_from_indices_triton(
     )
     return block_mask
 
-@torch.compile
+@torch.compiler.disable
 def create_mask_from_indices_varlen(block_indices, N_cols_mask):
    
     B, H, M, _ = block_indices.shape
@@ -148,7 +158,7 @@ def create_mask_from_indices_varlen(block_indices, N_cols_mask):
     
     return mask
 
-@torch.compile
+@torch.compiler.disable
 def create_indices_k_from_indices_q_varlen(
     block_indices,
     N_cols_mask # indicate the number of the last dimension of the bool mask, since this information cannot be determined by block_indices, which may contain invalid elements
@@ -189,7 +199,7 @@ def cal_score_triton(q, k):
     
     score = torch.empty(B, H, s_q, s_k, device=q.device, dtype=q.dtype)
     
-    kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_gating_preset['default']
+    kernel_config = {} if triton_autotune_enabled() else configs_gating_preset['default']
     
     grid = lambda args: (triton.cdiv(s_q, args["BLOCK_M"]), B * H, 1)
     _attn_fwd_gating[grid](
@@ -309,10 +319,10 @@ def attn_fwd_bsa_varlen_triton(
     config_key = 'BLOCK_N_LG=64' if chunk_size_k == 64 else 'default'
     if chunk_size_k > 128:
         fwd_func = _attn_fwd_bsa_varlen
-        kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_fwd_bsa_varlen_preset[config_key]
+        kernel_config = {} if triton_autotune_enabled() else configs_fwd_bsa_varlen_preset[config_key]
     else:
         fwd_func = _attn_fwd_bsa_varlen_align
-        kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_fwd_bsa_varlen_align_preset[config_key]
+        kernel_config = {} if triton_autotune_enabled() else configs_fwd_bsa_varlen_align_preset[config_key]
     
     block_indices = block_indices.contiguous()
     block_indices_lens = block_indices_lens.contiguous()
@@ -397,7 +407,7 @@ def attn_bwd_bsa_varlen_triton(
     block_indices_k_lens = block_indices_k_lens.contiguous()
 
     config_key = 'BLOCK_N_DQ_LG=64' if chunk_size_k == 64 else 'default'
-    kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_bwd_dkdv_bsa_varlen_preset[config_key]
+    kernel_config = {} if triton_autotune_enabled() else configs_bwd_dkdv_bsa_varlen_preset[config_key]
     
     grid_dkdv = lambda args: (triton.cdiv(arg_k.shape[2], args["BLOCK_N"]), 1, arg_k.shape[0] * arg_k.shape[1])
     _attn_bwd_dkdv_bsa_varlen_wrapper[grid_dkdv](
@@ -429,10 +439,10 @@ def attn_bwd_bsa_varlen_triton(
     config_key = 'BLOCK_N_DQ_LG=64' if chunk_size_k == 64 else 'default'
     if chunk_size_k > 128:
         bwd_dq_func = _attn_bwd_dq_bsa_varlen_wrapper
-        kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_bwd_dq_bsa_varlen_preset[config_key]
+        kernel_config = {} if triton_autotune_enabled() else configs_bwd_dq_bsa_varlen_preset[config_key]
     else:
         bwd_dq_func = _attn_bwd_dq_bsa_varlen_align_wrapper
-        kernel_config = {} if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1' else configs_bwd_dq_bsa_varlen_align_preset[config_key]
+        kernel_config = {} if triton_autotune_enabled() else configs_bwd_dq_bsa_varlen_align_preset[config_key]
         
     grid_dq = lambda args: (triton.cdiv(q.shape[2], args["BLOCK_M"]), 1, q.shape[0] * q.shape[1])
     bwd_dq_func[grid_dq](
@@ -621,6 +631,7 @@ def flash_attn_bsa_3d(
     chunk_3d_shape_q=[4, 4, 8],
     chunk_3d_shape_k=[4, 4, 8], 
 ) -> torch.Tensor:
+    configure_bsa_runtime()
     _, _, Sq, head_dim_q = q.shape
     _, _, Sk, head_dim_k = k.shape
     
@@ -635,10 +646,12 @@ def flash_attn_bsa_3d(
     
     tq, hq, wq = chunk_3d_shape_q
     tk, hk, wk = chunk_3d_shape_k
-    
-    assert Tq % tq == 0 and Hq % hq == 0 and Wq % wq == 0
-    assert Tk % tk == 0 and Hk % hk == 0 and Wk % wk == 0
-    
+
+    if (Tq % tq or Hq % hq or Wq % wq or Tk % tk or Hk % hk or Wk % wk):
+        # Latent grid not divisible by the 3D block shape -> BSA not applicable here.
+        # Return None so the caller falls back to exact dense attention.
+        return None
+
     Ntq = Tq // tq
     Nhq = Hq // hq
     Nwq = Wq // wq

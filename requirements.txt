@@ -9,9 +9,10 @@
 #   6. pip install -r services/arachnex-worker/requirements.txt   # HTTP worker only
 #
 # Orchestrator (src/server, CPU): pip install -r requirements_orchestrator.txt
-# CLI TTS (--speak_text): pip install -r requirements-tts.txt  (separate process recommended)
 # Training / export: pip install -r requirements-training.txt
-# AudioDiT lab TTS: separate venv — requirements-audiodit.txt (transformers>=5.3 conflicts)
+#
+# In-tree TTS (arachne_x.tts / arachne_x.speech) was removed; synthesize speech
+# with an external service and feed audio via --audio (CLI) or PCM (orchestrator).
 #
 # See Documentation/REQUIREMENTS.md
 

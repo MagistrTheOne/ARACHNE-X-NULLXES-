@@ -35,7 +35,9 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         self.proj2 = nn.Linear(intermediate_dim, intermediate_dim)
         self.proj3 = nn.Linear(intermediate_dim, context_tokens * output_dim)
         self.norm = nn.LayerNorm(output_dim) if norm_output_audio else nn.Identity()
-        self.flops = 0.0
+        # ``enable_compile`` retained for constructor/config ABI; FLOPs accounting
+        # was removed because the in-forward ``self.flops`` mutation forced a
+        # Dynamo graph break / CUDA-graph invalidation on the realtime hot path.
         self.enable_compile = enable_compile
 
     def forward(self, audio_embeds, audio_embeds_vf):
@@ -53,15 +55,8 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         audio_embeds_vf = audio_embeds_vf.view(batch_size_vf, window_size_vf * blocks_vf * channels_vf)
 
         # first projection
-        B1, _ = audio_embeds.shape
-        audio_embeds = torch.relu(self.proj1(audio_embeds)) 
-        if not self.enable_compile:
-            self.flops += B1 * self.input_dim * self.intermediate_dim * 2
-
-        B1_vf, _ = audio_embeds_vf.shape
+        audio_embeds = torch.relu(self.proj1(audio_embeds))
         audio_embeds_vf = torch.relu(self.proj1_vf(audio_embeds_vf))
-        if not self.enable_compile:
-            self.flops += B1_vf * self.input_dim_vf * self.intermediate_dim * 2 
 
         audio_embeds = rearrange(audio_embeds, "(bz f) c -> bz f c", bz=B)
         audio_embeds_vf = rearrange(audio_embeds_vf, "(bz f) c -> bz f c", bz=B)
@@ -70,16 +65,10 @@ class AudioProjModel(ModelMixin, ConfigMixin):
         audio_embeds_c = audio_embeds_c.view(batch_size_c*N_t, C_a)
 
         # second projection
-        B2, _ = audio_embeds_c.shape
         audio_embeds_c = torch.relu(self.proj2(audio_embeds_c))
-        if not self.enable_compile:
-            self.flops += B2 * self.intermediate_dim * self.intermediate_dim * 2 
 
         # third projection
-        B3, _ = audio_embeds_c.shape
         context_tokens = self.proj3(audio_embeds_c).reshape(batch_size_c*N_t, self.context_tokens, self.output_dim)
-        if not self.enable_compile:
-            self.flops += B3 * self.intermediate_dim * (self.context_tokens * self.output_dim) * 2 
 
         # normalization and reshape
         context_tokens = self.norm(context_tokens)

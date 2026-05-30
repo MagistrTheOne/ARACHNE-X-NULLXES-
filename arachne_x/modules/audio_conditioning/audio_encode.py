@@ -27,7 +27,7 @@ class AudioEncoderRuntime:
         wav2vec_path: str,
         device: str = "cuda",
     ) -> "AudioEncoderRuntime":
-        audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(device)
+        audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path, device=device)
         audio_encoder.feature_extractor._freeze_parameters()
         feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
             wav2vec_path,

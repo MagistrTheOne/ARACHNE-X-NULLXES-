@@ -109,7 +109,7 @@ cd services/arachnex-worker && uvicorn main:app --host 0.0.0.0 --port 9090
 
 Orchestrator (CPU gateway): `pip install -r requirements_orchestrator.txt` — see RunPod doc §8.
 
-Optional CLI TTS (`--speak_text`): `pip install -r requirements-tts.txt` in a **separate process**.
+In-tree TTS (`arachne_x.tts` / `arachne_x.speech`) was removed. Provide speech audio externally: pass a WAV via `--audio` (CLI) or pre-rendered PCM (orchestrator); wire an external TTS in `src/server/tts_runner.py`.
 
 ---
 
@@ -119,10 +119,8 @@ Optional CLI TTS (`--speak_text`): `pip install -r requirements-tts.txt` in a **
 |------|-----|
 | `requirements.txt` | Core GPU stack (after torch + flash-attn) |
 | `requirements_avatar.txt` | Worker / `infer.py` |
-| `requirements_orchestrator.txt` | `src/server` gateway (aiohttp, whisper, edge-tts) |
-| `requirements-tts.txt` | Optional Qwen TTS |
+| `requirements_orchestrator.txt` | `src/server` gateway (aiohttp, whisper) |
 | `requirements-training.txt` | Latent export / WebDataset (not prod infer) |
-| `requirements-audiodit.txt` | **Separate venv** — transformers ≥5.3 conflicts with core |
 
 Install order is strict. See [`Documentation/REQUIREMENTS.md`](Documentation/REQUIREMENTS.md).
 

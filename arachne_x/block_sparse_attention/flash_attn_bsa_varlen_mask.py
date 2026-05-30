@@ -1,14 +1,13 @@
 import triton
 import triton.language as tl
-import os
 
-from .common import autotune
+from .common import autotune, triton_reevaluate_keys_enabled
 """
 TRITON_REEVALUATE_KEY=1
 - autotune whenever params in reevaluate keys change 
 - use in benchmark script to fine the best config
 
-TRITON_AUTOTUNE_ENBALE=1
+TRITON_AUTOTUNE_ENABLE=1  (legacy alias: TRITON_AUTOTUNE_ENBALE)
 - if set to 0, autotune will not work, and the related params must be passed to the function call.
 """
 
@@ -31,7 +30,7 @@ configs_fwd_bsa_varlen = [
     for w in [4, 8] \
 ]
 
-fwd_bsa_reevaluate_varlen_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_LG', 'SPARSITY'] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+fwd_bsa_reevaluate_varlen_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_LG', 'SPARSITY'] if triton_reevaluate_keys_enabled() else []
 @autotune(list(configs_fwd_bsa_varlen), key=fwd_bsa_reevaluate_varlen_keys)
 @triton.jit
 def _attn_fwd_bsa_varlen(
@@ -168,7 +167,7 @@ configs_fwd_bsa_varlen_align = [
     for w in [4, 8] \
 ]
 
-fwd_bsa_reevaluate_varlen_align_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_LG', 'SPARSITY'] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+fwd_bsa_reevaluate_varlen_align_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_LG', 'SPARSITY'] if triton_reevaluate_keys_enabled() else []
 @autotune(list(configs_fwd_bsa_varlen_align), key=fwd_bsa_reevaluate_varlen_align_keys)
 @triton.jit
 def _attn_fwd_bsa_varlen_align(
@@ -499,7 +498,7 @@ configs_bwd_dkdv_bsa_varlen = [
     for s in [2, 3, 4, 5] \
     for w in [4, 8] \
 ]
-bwd_dkdv_bsa_varlen_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+bwd_dkdv_bsa_varlen_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if triton_reevaluate_keys_enabled() else []
 @autotune(list(configs_bwd_dkdv_bsa_varlen), key=bwd_dkdv_bsa_varlen_reevaluate_keys)
 @triton.jit
 def _attn_bwd_dkdv_bsa_varlen_wrapper(
@@ -659,7 +658,7 @@ configs_bwd_dq_bsa_varlen = [
     for s in [2, 3, 4, 5] \
     for w in [4, 8] \
 ]
-bwd_dq_bsa_varlen_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+bwd_dq_bsa_varlen_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if triton_reevaluate_keys_enabled() else []
 @autotune(list(configs_bwd_dq_bsa_varlen), key=bwd_dq_bsa_varlen_reevaluate_keys)
 @triton.jit
 def _attn_bwd_dq_bsa_varlen_wrapper(
@@ -810,7 +809,7 @@ configs_bwd_dq_bsa_varlen_align = [
     for s in [2, 3, 4, 5] \
     for w in [4, 8] \
 ]
-bwd_dq_bsa_varlen_align_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+bwd_dq_bsa_varlen_align_reevaluate_keys = ['N_CTX', 'BLOCK_M', 'BLOCK_N_DQ_LG', 'SPARSITY'] if triton_reevaluate_keys_enabled() else []
 @autotune(list(configs_bwd_dq_bsa_varlen_align), key=bwd_dq_bsa_varlen_align_reevaluate_keys)
 @triton.jit
 def _attn_bwd_dq_bsa_varlen_align_wrapper(

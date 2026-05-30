@@ -1,3 +1,4 @@
+import loguru
 import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
@@ -21,10 +22,13 @@ def init_context_parallel(context_parallel_size: int = 1,
 
     cp_size = context_parallel_size
     dp_size = world_size//context_parallel_size
-    print(f'[rank {global_rank}] init_device_mesh [dp_size x cp_size]: [{dp_size} x {cp_size}]')
+    loguru.logger.info(
+        "init_context_parallel global_rank={} dp_size={} cp_size={}",
+        global_rank, dp_size, cp_size,
+    )
 
     mesh_2d = init_device_mesh("cuda", (dp_size, cp_size), mesh_dim_names=("dp", "cp"))
-    print(f'[rank {global_rank}] mesh_2d: {mesh_2d}')
+    loguru.logger.debug("init_context_parallel global_rank={} mesh_2d={}", global_rank, mesh_2d)
 
     dp_group = mesh_2d.get_group(mesh_dim="dp")
     cp_group = mesh_2d.get_group(mesh_dim="cp")
@@ -34,7 +38,10 @@ def init_context_parallel(context_parallel_size: int = 1,
     cp_rank = dist.get_rank(group=cp_group)
 
     curr_global_rank = torch.distributed.get_rank()
-    print(f'[rank {curr_global_rank}] [dp_rank, cp_rank]: [{dp_rank}, {cp_rank}],  dp_ranks: {dp_ranks}, cp_ranks: {cp_ranks}')
+    loguru.logger.info(
+        "context_parallel ready global_rank={} dp_rank={} cp_rank={} dp_ranks={} cp_ranks={}",
+        curr_global_rank, dp_rank, cp_rank, dp_ranks, cp_ranks,
+    )
 
 
 def get_cp_size():

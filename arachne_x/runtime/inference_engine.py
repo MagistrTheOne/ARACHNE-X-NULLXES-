@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -29,8 +28,6 @@ from arachne_x.inference_frames import (
     suggest_embedding_fps,
 )
 from arachne_x.pipeline_arachne_x_video_avatar import retrieve_latents
-from arachne_x.tts import create_speech_synthesizer
-from arachne_x.tts.realtime import DEFAULT_MICRO_TURN_SECONDS
 from arachne_x.runtime.prompt_compiler_runtime import apply_prompt_compiler, resolve_imagine_compiler_backend
 from arachne_x.weights_resolve import resolve_weights_root
 from arachne_x.runtime.sampling_profiles import (
@@ -243,79 +240,22 @@ def write_run_metadata(
     print(f"[run-metadata] wrote {path}")
 
 
-def resolve_imagine_speak_text(args: argparse.Namespace, *, source_user_text: str = "") -> str:
-    """
-    TTS line for imagine_i2v: explicit --speak_text, else short user intent, else --audio forbidden path.
-    """
-    explicit = (getattr(args, "speak_text", None) or "").strip()
-    if explicit:
-        return explicit
-    if getattr(args, "audio", None):
-        raise ValueError("imagine_i2v generates speech internally; omit --audio or use --mode audio_i2v")
-    source = (source_user_text or args.prompt or "").strip()
-    if not source:
-        raise ValueError("imagine_i2v requires --prompt or --speak_text")
-    if len(source) > 320:
-        raise ValueError(
-            "imagine_i2v: user prompt too long for auto TTS; pass --speak_text with the spoken line"
-        )
-    return source
-
-
-def synthesize_imagine_wav(args: argparse.Namespace, speak_text: str) -> Tuple[str, bool]:
-    """TTS for imagine_i2v (temp wav)."""
-    saved = dict(
-        speak_text=args.speak_text,
-        audio=args.audio,
-    )
-    try:
-        args.speak_text = speak_text
-        args.audio = None
-        return resolve_avatar_wav_path(args)
-    finally:
-        args.speak_text = saved["speak_text"]
-        args.audio = saved["audio"]
-
-
 def resolve_avatar_wav_path(args: argparse.Namespace) -> Tuple[str, bool]:
-    """Returns (path_to_wav, is_temp). Prefer explicit --audio over --speak_text."""
+    """
+    Returns (path_to_wav, is_temp). Requires explicit --audio.
+
+    In-tree TTS (arachne_x.tts / arachne_x.speech) was removed; synthesize speech
+    with an external service and pass the result via --audio.
+    """
     if getattr(args, "audio", None):
         p = os.path.abspath(args.audio)
         if not os.path.isfile(p):
             raise FileNotFoundError(f"--audio not found: {p}")
         return p, False
-    speak = (getattr(args, "speak_text", None) or "").strip()
-    if not speak:
-        raise ValueError("Provide --audio or non-empty --speak_text for this mode.")
-    tts_kw = {}
-    prov = (args.tts_provider or "").strip().lower()
-    if prov in ("longcat_audiodit", "audiodit"):
-        tts_kw = dict(
-            audiodit_nfe=args.audiodit_nfe,
-            audiodit_guidance_strength=args.audiodit_guidance_strength,
-            audiodit_guidance_method=args.audiodit_guidance_method,
-            audiodit_prompt_audio=args.audiodit_prompt_audio,
-            audiodit_prompt_text=args.audiodit_prompt_text,
-            audiodit_seed=args.audiodit_seed,
-        )
-    synth = create_speech_synthesizer(
-        args.tts_provider,
-        model_id=args.tts_model,
-        device_map=args.tts_device_map,
-        language=args.tts_language,
-        speaker=args.tts_speaker,
-        instruct=args.tts_instruct or None,
-        attn_implementation=args.tts_attn,
-        **tts_kw,
+    raise ValueError(
+        "Provide --audio for this mode. Internal TTS was removed; render speech "
+        "with an external TTS and pass the WAV via --audio."
     )
-    fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="arachne_tts_")
-    os.close(fd)
-    synth.synthesize_to_path(speak, tmp_path)
-    if prov == "qwen":
-        from arachne_x.tts.qwen import release_qwen_tts_cache
-
-        release_qwen_tts_cache()
-    return tmp_path, True
 
 
 def maybe_unlink(path: str) -> None:
@@ -534,8 +474,7 @@ def execute_infer(args: argparse.Namespace) -> None:
             (getattr(args, "_imagine_source_prompt", None) or "").strip()
             or (compiler_meta.get("source_user_text") or "").strip()
         )
-        speak_text = resolve_imagine_speak_text(args, source_user_text=source_prompt)
-        wav_path, wav_is_temp = synthesize_imagine_wav(args, speak_text)
+        wav_path, wav_is_temp = resolve_avatar_wav_path(args)
         try:
             pipe = load_audio_i2v_pipeline(
                 checkpoint_dir,
@@ -563,18 +502,16 @@ def execute_infer(args: argparse.Namespace) -> None:
                 args,
                 {
                     "mode": "imagine_i2v",
-                    "speak_text": speak_text,
                     "source_user_text": source_prompt,
                     "audio_conditioning_scale": scale,
                     "audio_conditioning_adapter": getattr(args, "audio_conditioning_adapter", None),
                     "prompt_compiler": getattr(args, "prompt_compiler", None),
                     "compiler_meta": compiler_meta,
                     "num_frames": args.num_frames,
-                    "tts_provider": args.tts_provider,
                 },
             )
             save_avatar_mp4(out, args.output, wav_path, args)
-            print(f"[imagine-i2v] muxed TTS audio speak_text={speak_text[:96]!r}")
+            print(f"[imagine-i2v] muxed audio from {wav_path}")
         finally:
             if wav_is_temp:
                 maybe_unlink(wav_path)

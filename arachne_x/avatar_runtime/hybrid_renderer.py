@@ -141,7 +141,10 @@ class HybridRendererMixin:
         if hybrid_video.shape[2] <= 1:
             return hybrid_video
 
-        stabilized = hybrid_video.clone()
+        # In-place causal EMA along time. Each step reads only frame i (current value)
+        # and frame i-1 (already updated this pass), so mutating in place is numerically
+        # identical to operating on a clone -- but avoids a full [B,C,T,H,W] copy.
+        stabilized = hybrid_video
         a = float(alpha)
         for i in range(1, stabilized.shape[2]):
             prev = stabilized[:, :, i - 1]
@@ -159,6 +162,11 @@ class HybridRendererMixin:
         boundary_mask: torch.Tensor,
     ) -> None:
         if hybrid_video.shape[2] <= 1:
+            return
+
+        # Budget validation needs host-side scalars (.item() -> GPU sync). Off by default
+        # so the realtime decode path stays sync-free; enable for diagnostics/QA runs.
+        if not getattr(self, "hybrid_renderer_metrics_verbose", False):
             return
 
         g = global_video.to(torch.float32)

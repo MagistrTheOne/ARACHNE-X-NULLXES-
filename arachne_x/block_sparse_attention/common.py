@@ -2,7 +2,26 @@ import triton
 import triton.language as tl
 import os
 
-if os.environ.get('TRITON_AUTOTUNE_ENBALE', '0') == '1':
+
+def _env_flag(*names: str, default: str = '0') -> str:
+    """Read the first env var that is set among ``names`` (supports legacy aliases)."""
+    for name in names:
+        value = os.environ.get(name)
+        if value is not None:
+            return value
+    return default
+
+
+def triton_autotune_enabled() -> bool:
+    # Accept the correct name plus the legacy misspelling for backward compatibility.
+    return _env_flag('TRITON_AUTOTUNE_ENABLE', 'TRITON_AUTOTUNE_ENBALE', default='0') == '1'
+
+
+def triton_reevaluate_keys_enabled() -> bool:
+    return _env_flag('TRITON_REEVALUATE_KEY', default='0') == '1'
+
+
+if triton_autotune_enabled():
     autotune = triton.autotune
 else:
     def autotune(*args, **kwargs):
@@ -27,7 +46,7 @@ configs_gating = [
     for w in [4, 8] \
 ]
 
-gating_reevaluate_keys = ["M", "N"] if os.environ.get('TRITON_REEVALUATE_KEY', '0') == '1' else []
+gating_reevaluate_keys = ["M", "N"] if triton_reevaluate_keys_enabled() else []
 @autotune(configs_gating, key=gating_reevaluate_keys)
 @triton.jit
 def _attn_fwd_gating(

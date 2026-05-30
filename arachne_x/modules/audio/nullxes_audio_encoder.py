@@ -1,16 +1,19 @@
 """
-Shape-compatible audio encoder stub for Phase C training.
+Avatar audio-encoder dispatch.
 
-Output contract matches wav2vec stack in ``get_audio_embedding``:
+Output contract matches the wav2vec stack in ``get_audio_embedding``:
   ``[T, 12, 768]`` (time × hidden_layers × dim).
 
-Until trained weights exist, delegates to the pipeline wav2vec path via inject hook.
+Production uses the wav2vec baseline. ``ARACHNE_AUDIO_ENCODER=nullxes`` selects a
+trained plate encoder if (and only if) the pipeline exposes a loaded
+``_nullxes_audio_encoder`` (duck-typed: ``is_loaded`` / ``encode``); otherwise the
+dispatch falls back to wav2vec. No placeholder encoder is shipped in the runtime.
 """
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -68,36 +71,3 @@ def _encode_wav2vec_baseline(
         )
     audio_emb = torch.stack(embeddings.hidden_states[1:], dim=1).squeeze(0)
     return rearrange(audio_emb, "b s d -> s b d").contiguous()
-
-
-class NullxesAudioEncoder:
-    """
-    Trainable plate placeholder. Load ``safetensors`` into ``self.core`` when ready.
-
-    ``is_loaded`` remains False until weights are present — pipeline falls back to wav2vec.
-    """
-
-    is_loaded: bool = False
-
-    def __init__(self, weights_path: Optional[str] = None) -> None:
-        self.weights_path = weights_path
-        self.core: Any = None
-        if weights_path and os.path.isfile(weights_path):
-            self._try_load(weights_path)
-
-    def _try_load(self, path: str) -> None:
-        del path
-        # Phase C train delivers weights; infer enables ARACHNE_AUDIO_ENCODER=nullxes
-        self.is_loaded = False
-
-    def encode(
-        self,
-        speech_array: np.ndarray,
-        *,
-        fps: float,
-        device: str,
-        sample_rate: int = 16000,
-    ) -> torch.Tensor:
-        if not self.is_loaded or self.core is None:
-            raise RuntimeError("NullxesAudioEncoder weights not loaded")
-        raise NotImplementedError("Nullxes audio plate training not shipped yet")

@@ -1,26 +1,19 @@
 import os
 import json
-import librosa
 import binascii
 import imageio
 import subprocess
 import numpy as np
 import os.path as osp
 from tqdm import tqdm
-import pyloudnorm as pyln
-from einops import rearrange
-import scipy.signal as ss
 
 import torch
 import torch.nn.functional as F
 import torchvision
 
+from einops import rearrange
+
 from ..context_parallel import context_parallel_util
-
-
-def torch_gc():
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
 
 
 def linear_interpolation(features, seq_len):
@@ -31,9 +24,7 @@ def linear_interpolation(features, seq_len):
 
 @torch.compile
 def calculate_x_ref_attn_map(noise_q, ref_k, ref_target_masks, attn_bias=None):
-
-    # compute cross-reference attention maps between query features and reference key features.
-    ref_k = ref_k.to(noise_q.dtype).to(noise_q.device)
+    ref_k = ref_k.to(device=noise_q.device, dtype=noise_q.dtype)
     scale = 1.0 / noise_q.shape[-1] ** 0.5
     noise_q = noise_q * scale
     noise_q = noise_q.transpose(1, 2)
@@ -43,37 +34,22 @@ def calculate_x_ref_attn_map(noise_q, ref_k, ref_target_masks, attn_bias=None):
     if attn_bias is not None:
         attn = attn + attn_bias
 
-    x_ref_attn_map_source = attn.softmax(-1)
+    attn_probs = attn.softmax(-1)
 
-    x_ref_attn_maps = []
-    ref_target_masks = ref_target_masks.to(noise_q.dtype)
-    x_ref_attn_map_source = x_ref_attn_map_source.to(noise_q.dtype)
-
-    for _, ref_target_mask in enumerate(ref_target_masks):
-        torch_gc()
-        ref_target_mask = ref_target_mask[None, None, None, ...]
-        x_ref_attn_map = x_ref_attn_map_source.clone()
-        x_ref_attn_map = x_ref_attn_map * ref_target_mask
-        x_ref_attn_map = x_ref_attn_map.sum(-1) / ref_target_mask.sum() 
-        x_ref_attn_map = x_ref_attn_map.permute(0, 2, 1) 
-        x_ref_attn_map = x_ref_attn_map.mean(-1) 
-        
-        x_ref_attn_maps.append(x_ref_attn_map)
-    
-    del attn
-    del x_ref_attn_map_source
-    torch_gc()
-
-    return torch.concat(x_ref_attn_maps, dim=0)
+    masks = ref_target_masks.to(device=noise_q.device, dtype=noise_q.dtype)
+    denom = masks.sum(-1).clamp_min(1e-6)
+    weighted = attn_probs @ masks.transpose(0, 1)
+    weighted = weighted / denom.view(1, 1, 1, -1)
+    # [B, q, M] -> [M, B, q] -> [M * B, q] (legacy concat dim=0 over mask loop)
+    q_len = weighted.shape[2]
+    return weighted.mean(1).permute(2, 0, 1).reshape(-1, q_len)
 
 
-def get_attn_map_with_target(noise_q, key, shape, ref_target_masks=None, split_num=2, cp_split_hw=None):
-    
+def get_attn_map_with_target(noise_q, key, shape, ref_target_masks=None, split_num=1, cp_split_hw=None):
     N_t, N_h, N_w = shape
     x_seqlens = N_h * N_w
     cp_split_hw = (1, 1) if cp_split_hw is None else tuple(cp_split_hw)
     if cp_split_hw[0] * cp_split_hw[1] > 1:
-        cp_size = context_parallel_util.get_cp_size()
         (split_h, split_w) = cp_split_hw
 
         assert N_h % split_h == 0 and N_w % split_w == 0
@@ -81,31 +57,29 @@ def get_attn_map_with_target(noise_q, key, shape, ref_target_masks=None, split_n
         N_h_ = N_h // split_h
         N_w_ = N_w // split_w
         x_seqlens = N_h_ * N_w_
-    
-    ref_k = key[:, :x_seqlens] # reference image size after cp split
+
+    ref_k = key[:, :x_seqlens]
     noise_q = noise_q.contiguous()
 
-    # gather reference image key features
     if cp_split_hw[0] * cp_split_hw[1] > 1:
         _, _, H, _ = ref_k.shape
         ref_k = ref_k.permute(0, 2, 1, 3)
         ref_k = rearrange(ref_k, "b h m k -> b (h m) k")
-        ref_k = context_parallel_util.gather_cp_2d(ref_k, shape=(H, N_h, N_w), split_hw=cp_split_hw) 
-        ref_k = rearrange(ref_k, "b (h m) k -> b h m k", h=H) 
+        ref_k = context_parallel_util.gather_cp_2d(ref_k, shape=(H, N_h, N_w), split_hw=cp_split_hw)
+        ref_k = rearrange(ref_k, "b (h m) k -> b h m k", h=H)
         ref_k = ref_k.permute(0, 2, 1, 3)
 
-    _, seq_lens, heads, _ = noise_q.shape
-    class_num, _ = ref_target_masks.shape
-    x_ref_attn_maps = torch.zeros(class_num, seq_lens).to(noise_q.device).to(noise_q.dtype)
+    _, seq_lens, _, _ = noise_q.shape
 
-    split_chunk = heads // split_num
-    
-    # calculate attn map within each group and take the mean
-    for i in range(split_num):
-        x_ref_attn_maps_perhead = calculate_x_ref_attn_map(noise_q[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_k[:, :, i*split_chunk:(i+1)*split_chunk, :], ref_target_masks)
-        x_ref_attn_maps += x_ref_attn_maps_perhead
-    
-    return x_ref_attn_maps / split_num
+    if split_num <= 1:
+        return calculate_x_ref_attn_map(noise_q, ref_k, ref_target_masks)
+
+    chunk_len = max(1, (seq_lens + split_num - 1) // split_num)
+    chunks = []
+    for start in range(0, seq_lens, chunk_len):
+        q_chunk = noise_q[:, start:start + chunk_len, :, :]
+        chunks.append(calculate_x_ref_attn_map(q_chunk, ref_k, ref_target_masks))
+    return torch.cat(chunks, dim=-1)
 
 
 def rand_name(length=8, suffix=''):
@@ -116,39 +90,32 @@ def rand_name(length=8, suffix=''):
         name += suffix
     return name
 
+
 def cache_video(tensor,
                 save_file=None,
                 fps=30,
                 suffix='.mp4',
                 nrow=8,
                 normalize=True,
-                value_range=(-1, 1),
-                retry=5):
-    
-    # cache file
+                value_range=(-1, 1)):
     cache_file = osp.join('/tmp', rand_name(
         suffix=suffix)) if save_file is None else save_file
 
-    # save to cache
-    error = None
-    for _ in range(retry):
-       
-        # preprocess
-        tensor = tensor.clamp(min(value_range), max(value_range))
-        tensor = torch.stack([
-                torchvision.utils.make_grid(
-                    u, nrow=nrow, normalize=normalize, value_range=value_range)
-                for u in tensor.unbind(2)
-            ],
-                                 dim=1).permute(1, 2, 3, 0)
-        tensor = (tensor * 255).type(torch.uint8).cpu()
+    tensor = tensor.clamp(min(value_range), max(value_range))
+    tensor = torch.stack([
+            torchvision.utils.make_grid(
+                u, nrow=nrow, normalize=normalize, value_range=value_range)
+            for u in tensor.unbind(2)
+        ],
+                             dim=1).permute(1, 2, 3, 0)
+    tensor = (tensor * 255).type(torch.uint8).cpu()
 
-        # write video
-        writer = imageio.get_writer(cache_file, fps=fps, codec='libx264', quality=10, ffmpeg_params=["-crf", "10"])
-        for frame in tensor.numpy():
-            writer.append_data(frame)
-        writer.close()
-        return cache_file
+    writer = imageio.get_writer(cache_file, fps=fps, codec='libx264', quality=10, ffmpeg_params=["-crf", "10"])
+    for frame in tensor.numpy():
+        writer.append_data(frame)
+    writer.close()
+    return cache_file
+
 
 def get_audio_duration(audio_path):
     cmd = [
@@ -163,6 +130,72 @@ def get_audio_duration(audio_path):
     return float(info["format"]["duration"])
 
 
+def _ffmpeg_subprocess_kwargs(*, quiet: bool) -> dict:
+    if quiet:
+        return {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    return {}
+
+
+def _frame_to_uint8(frame: np.ndarray) -> np.ndarray:
+    frame = np.asarray(frame)
+    if frame.dtype == np.uint8:
+        return frame
+    if frame.max() <= 1.0:
+        return (np.clip(frame, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+
+def _encode_rgb_frames_pipe(
+    frames_uint8: np.ndarray,
+    save_path: str,
+    fps: int,
+    *,
+    crf: int,
+    preset: str,
+    quiet: bool,
+) -> None:
+    if frames_uint8.shape[0] == 0:
+        raise ValueError("no frames to encode")
+
+    height, width = int(frames_uint8.shape[1]), int(frames_uint8.shape[2])
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "pipe:0",
+        "-an",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", str(crf),
+        "-preset", preset,
+        save_path,
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        **_ffmpeg_subprocess_kwargs(quiet=quiet),
+    )
+    frame_iter = frames_uint8 if quiet else tqdm(frames_uint8, desc="Saving video")
+    try:
+        assert proc.stdin is not None
+        for frame in frame_iter:
+            proc.stdin.write(_frame_to_uint8(frame).tobytes())
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+    rc = proc.wait()
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
+
+
+def _imageio_quality_to_crf(quality: int) -> int:
+    quality = int(np.clip(quality, 1, 10))
+    return int(round(32 - (quality - 1) * 2.2))
+
+
 def save_video_ffmpeg(
     gen_video_samples,
     save_path,
@@ -174,22 +207,6 @@ def save_video_ffmpeg(
     *,
     quiet: bool = False,
 ):
-
-    def save_video(frames, save_path, fps, quality=9, ffmpeg_params=None):
-        writer = imageio.get_writer(
-            save_path, fps=fps, quality=quality, ffmpeg_params=ffmpeg_params
-        )
-        for frame in tqdm(frames, desc="Saving video", disable=quiet):
-            frame = np.array(frame)
-            if frame.dtype != np.uint8:
-                frame = np.clip(frame, 0.0, 1.0) if frame.max() <= 1.0 else np.clip(frame, 0.0, 255.0)
-                if frame.max() <= 1.0:
-                    frame = (frame * 255.0).astype(np.uint8)
-                else:
-                    frame = frame.astype(np.uint8)
-            writer.append_data(frame)
-        writer.close()
-
     output_base, output_ext = os.path.splitext(save_path)
     output_base = output_base if output_ext.lower() == ".mp4" else save_path
     final_output_path = output_base + ".mp4"
@@ -202,7 +219,22 @@ def save_video_ffmpeg(
         video_audio = gen_video_samples.detach().cpu().numpy()
     else:
         video_audio = np.asarray(gen_video_samples)
-    save_video(video_audio, save_path_tmp, fps=fps, quality=quality)
+
+    if high_quality_save:
+        encode_crf, encode_preset = 0, "veryslow"
+    elif export_crf is not None:
+        encode_crf, encode_preset = int(export_crf), "slow"
+    else:
+        encode_crf, encode_preset = _imageio_quality_to_crf(quality), "medium"
+
+    _encode_rgb_frames_pipe(
+        video_audio,
+        save_path_tmp,
+        fps=int(fps),
+        crf=encode_crf,
+        preset=encode_preset,
+        quiet=quiet,
+    )
 
     if audio_path is None:
         os.replace(save_path_tmp, final_output_path)
@@ -210,69 +242,60 @@ def save_video_ffmpeg(
     if not os.path.isfile(audio_path):
         raise FileNotFoundError(f"audio_path not found: {audio_path}")
 
-    # crop audio according to video length
     T = int(video_audio.shape[0])
     duration = T / fps
     save_path_crop_audio = output_base + "-cropaudio.wav"
     save_path_crop_tmp = output_base + "-cropvideo.mp4"
 
+    ffmpeg_kwargs = _ffmpeg_subprocess_kwargs(quiet=quiet)
     try:
-        final_command = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            audio_path,
-            "-t",
-            f"{duration}",
-            save_path_crop_audio,
-        ]
-        subprocess.run(final_command, check=True)
-
-        # crop video according to audio length
-        crop_audio_duration = get_audio_duration(save_path_crop_audio)
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", save_path_tmp,
-            "-t", f"{crop_audio_duration}",
-            "-c:v", "copy",
-            "-c:a", "copy",
-            save_path_crop_tmp,
-        ]
-        subprocess.run(cmd, check=True)
-
-        # generate video with audio
-        if high_quality_save:
-            final_command = [
+        subprocess.run(
+            [
                 "ffmpeg",
                 "-y",
-                "-i", save_path_crop_tmp,
-                "-i", save_path_crop_audio,
+                "-i",
+                audio_path,
+                "-t",
+                f"{duration}",
+                save_path_crop_audio,
+            ],
+            check=True,
+            **ffmpeg_kwargs,
+        )
+
+        crop_audio_duration = get_audio_duration(save_path_crop_audio)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i", save_path_tmp,
+                "-t", f"{crop_audio_duration}",
+                "-c:v", "copy",
+                "-c:a", "copy",
+                save_path_crop_tmp,
+            ],
+            check=True,
+            **ffmpeg_kwargs,
+        )
+
+        mux_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", save_path_crop_tmp,
+            "-i", save_path_crop_audio,
+            "-c:a", "aac",
+            "-shortest",
+        ]
+        if high_quality_save:
+            mux_cmd.extend([
                 "-c:v", "libx264",
                 "-crf", "0",
                 "-preset", "veryslow",
-                "-c:a", "aac",
-                "-shortest",
-                final_output_path,
-            ]
+            ])
         else:
-            final_command = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                save_path_crop_tmp,
-                "-i",
-                save_path_crop_audio,
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-shortest",
-            ]
-            if export_crf is not None:
-                final_command.extend(["-crf", str(int(export_crf)), "-preset", "slow"])
-            final_command.append(final_output_path)
-        subprocess.run(final_command, check=True)
+            mux_cmd.extend(["-c:v", "copy"])
+        mux_cmd.append(final_output_path)
+        subprocess.run(mux_cmd, check=True, **ffmpeg_kwargs)
     finally:
         for tmp_path in (save_path_tmp, save_path_crop_tmp, save_path_crop_audio):
             if os.path.exists(tmp_path):

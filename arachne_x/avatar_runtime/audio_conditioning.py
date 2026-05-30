@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import loguru
 import numpy as np
@@ -91,6 +91,11 @@ class AudioConditioningMixin:
         if emotion_intensity <= 0:
             return audio_emb, False
         if audio_emb.ndim != 5:
+            loguru.logger.debug(
+                "emotion channel skipped: expected 5D audio_emb, got ndim={} shape={}",
+                audio_emb.ndim,
+                tuple(audio_emb.shape),
+            )
             return audio_emb, False
 
         ids = self._normalize_emotion_ids(emotion_id, batch_size=batch_size)
@@ -98,10 +103,8 @@ class AudioConditioningMixin:
         for idx in ids:
             expanded_ids.extend([idx] * num_videos_per_prompt)
 
-        emb = self.emotion_embedding(
-            torch.tensor(expanded_ids, dtype=torch.long, device=self.emotion_embedding.weight.device)
-        ).to(device=device, dtype=audio_emb.dtype)
-        emb = self.emotion_proj.to(device=device, dtype=audio_emb.dtype)(emb)
+        ids_tensor = torch.tensor(expanded_ids, dtype=torch.long, device=audio_emb.device)
+        emb = self.emotion_proj(self.emotion_embedding(ids_tensor)).to(dtype=audio_emb.dtype)
 
         B = audio_emb.shape[0]
         emotion_ctx = emb.view(B, 1, 1, 1, -1)
@@ -148,13 +151,12 @@ class AudioConditioningMixin:
         if os.path.exists(cache_path):
             try:
                 with self.metrics.timeit('audio_cache_load'):
-                    npz = np.load(cache_path)
-                    if "audio_emb_final" in npz:
-                        cached = npz["audio_emb_final"]
-                    else:
-                        cached = npz["audio_emb"]
-                    audio_emb = torch.from_numpy(cached).to(device=device)
-                    # return shape (T, B, D)
+                    with np.load(cache_path) as npz:
+                        if "audio_emb_final" in npz:
+                            cached = npz["audio_emb_final"]
+                        else:
+                            cached = npz["audio_emb"]
+                        audio_emb = torch.from_numpy(np.asarray(cached)).to(device=device)
                     return audio_emb
             except Exception as exc:
                 loguru.logger.debug("Audio cache load failed; recomputing. Error: {}", exc)
@@ -170,14 +172,19 @@ class AudioConditioningMixin:
             sample_rate=sample_rate,
         )
 
+        tmp_path: Optional[str] = None
         try:
-            payload = {
-                "audio_emb": audio_emb.cpu().numpy(),
-                "audio_emb_final": audio_emb.cpu().numpy(),
-            }
-            np.savez_compressed(cache_path, **payload)
+            emb_np = audio_emb.detach().cpu().numpy()
+            tmp_path = cache_path + f".tmp.{os.getpid()}"
+            np.savez_compressed(tmp_path, audio_emb_final=emb_np)
+            os.replace(tmp_path, cache_path)
             self.metrics.record('audio_cache_saved', 1)
         except Exception as exc:
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
             loguru.logger.warning("Audio cache save failed; continuing without cache. Error: {}", exc)
 
         return audio_emb
@@ -208,7 +215,18 @@ class AudioConditioningMixin:
             audio_stride,
             device=full_audio_emb.device,
         ).unsqueeze(1) + offsets.unsqueeze(0)
-        center_indices = torch.clamp(center_indices, min=0, max=full_audio_emb.shape[0] - 1)
+        audio_timesteps = int(full_audio_emb.shape[0])
+        max_valid_index = audio_timesteps - 1
+        raw_max_index = int(center_indices.max().item())
+        if raw_max_index > max_valid_index:
+            loguru.logger.warning(
+                "audio/video length mismatch: window indices reach {} but audio_emb has {} timesteps "
+                "(shortfall {} frames); clamping to last audio frame",
+                raw_max_index,
+                audio_timesteps,
+                raw_max_index - max_valid_index,
+            )
+        center_indices = torch.clamp(center_indices, min=0, max=max_valid_index)
 
         windowed = full_audio_emb[center_indices][None, ...]  # [1, T, W, S, C]
         return windowed.to(device=device, dtype=self.dit.dtype)

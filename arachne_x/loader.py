@@ -216,7 +216,7 @@ def load_avatar_pipeline(
     )
 
     wav2vec_path = resolve_wav2vec_checkpoint_path(checkpoint_dir, layout)
-    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path).to(device)
+    audio_encoder = Wav2Vec2ModelWrapper(wav2vec_path, device=device)
     audio_encoder.feature_extractor._freeze_parameters()
 
     wav2vec_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(

@@ -143,14 +143,10 @@ class ArachneXVideoAvatarPipeline(
         self.audio_processor = None
         self.multi_stream_fusion_proj = None
         self.multi_stream_fusion_scale = 0.0
-        self.phoneme_enabled = False
-        self.phoneme_num_classes = 10
-        self.phoneme_stream_scale = 0.0
-        self.phoneme_confidence_floor = 0.10
-        self.phoneme_fallback_to_wav2vec = False
-        self.phoneme_aligner = None
-        self.phoneme_proj = None
-        self.phoneme_alignment_head = None
+        # Pseudo-phoneme conditioning was removed from the avatar runtime graph.
+        # No phoneme aligner / projection / alignment head exists in prod; the CLI
+        # flags (--disable_phoneme_conditioning, --phoneme_stream_scale) are no-ops
+        # and runtime/inference_engine.py force-off is guarded by hasattr().
         audio_embed_dim = 768
         # Step 4: explicit emotion control channel with lip-sync safety guard.
         self.emotion_enabled = True
@@ -182,6 +178,8 @@ class ArachneXVideoAvatarPipeline(
         self.hybrid_renderer_temporal_alpha = 0.70
         self.hybrid_renderer_flicker_budget = 1.40
         self.hybrid_renderer_artifact_budget = 0.08
+        # Budget validation uses .item() (GPU sync); keep off on the realtime path.
+        self.hybrid_renderer_metrics_verbose = False
         self.metrics = MetricsLogger()
         self.runtime_sampling_metrics = None
 
@@ -2195,10 +2193,6 @@ class ArachneXVideoAvatarPipeline(
             self.identity_embedding = self.identity_embedding.to(device, non_blocking=True)
         if self.identity_latent_projector is not None:
             self.identity_latent_projector = self.identity_latent_projector.to(device, non_blocking=True)
-        if self.phoneme_proj is not None:
-            self.phoneme_proj = self.phoneme_proj.to(device, non_blocking=True)
-        if self.phoneme_alignment_head is not None:
-            self.phoneme_alignment_head = self.phoneme_alignment_head.to(device, non_blocking=True)
         if self.emotion_embedding is not None:
             self.emotion_embedding = self.emotion_embedding.to(device, non_blocking=True)
         if self.emotion_proj is not None:

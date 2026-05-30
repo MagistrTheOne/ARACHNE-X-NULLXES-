@@ -131,11 +131,11 @@ Do not substitute `load_audio_i2v_pipeline()` (lab quarantine) for realtime serv
 
 | Process | Owns | Must NOT own |
 |---------|------|--------------|
-| Orchestrator (`src/server/*`) | WS, VAD, ASR, LLM, **TTS**, session state | GPU DiT, model weights |
-| GPU worker (`arachnex-worker`) | DiT inference, wav2vec, VAE decode, NDJSON egress | TTS, Qwen, LLM |
+| Orchestrator (`src/server/*`) | WS, VAD, ASR, LLM, **TTS seam**, session state | GPU DiT, model weights |
+| GPU worker (`arachnex-worker`) | DiT inference, wav2vec, VAE decode, NDJSON egress | TTS, LLM |
 | CLI (`scripts/infer.py`) | Offline/batch avatar + VIDEO modes | — |
 
-TTS in the GPU worker process causes VRAM contention and kills realtime stability. TTS runs in `src/server/tts_runner.py` only.
+TTS in the GPU worker process causes VRAM contention and kills realtime stability. In-tree TTS (`arachne_x.tts` / `arachne_x.speech`) was removed; `src/server/tts_runner.py` is now an external-TTS seam (it raises until an external backend is wired, so the loop degrades to `text_only`). The CLI requires pre-rendered audio via `--audio`.
 
 ---
 
@@ -177,6 +177,7 @@ WebSocket chat.send / voice.pcm16
 - `src/server/avatar_ws_frames.py`, `src/server/avatar_inference_client.py`
 - HTTP `/v1/longcat/generate` and LongCat inference service key aliases
 - TTS inside GPU worker process
+- In-tree TTS backends `arachne_x/tts/` (Qwen + LongCat-AudioDiT) and `arachne_x/speech/` (edge-tts / espeak) — orchestrator now needs an external TTS
 - Pseudo-phoneme conditioning in prod avatar path
 
 STT → LLM → TTS → avatar schema: [`Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md`](Documentation/ARACHNE_AVATAR_STT_LLM_TTS_SCHEMA.md).
@@ -509,7 +510,7 @@ src/server/                             # Orchestrator (CPU)
   avatar_stream_client.py               # NDJSON client + retry
   avatar_worker_router.py               # Multi-worker hash routing
   ws_events.py                          # protocolVersion v1
-  tts_runner.py                         # TTS (NOT in worker)
+  tts_runner.py                         # external TTS seam (in-tree TTS removed)
 
 services/arachnex-worker/             # GPU HTTP worker
   main.py
@@ -524,7 +525,7 @@ scripts/
 
 **Quarantine (not prod realtime):** `pipeline_audio_i2v.py`, `streaming_inference.py` (partial — see classification doc).
 
-**Removed (hardening):** `model_adapter.py`, `config_realtime.py`, `avatar_ws_frames.py`, `avatar_inference_client.py`, phoneme aligner from prod path, LongCat HTTP routes.
+**Removed (hardening):** `model_adapter.py`, `config_realtime.py`, `avatar_ws_frames.py`, `avatar_inference_client.py`, phoneme aligner from prod path, LongCat HTTP routes, in-tree TTS (`arachne_x/tts/`, `arachne_x/speech/`).
 
 ---
 
@@ -538,7 +539,7 @@ flowchart TB
   subgraph orch [Orchestrator CPU]
     WS[realtime_api.py]
     SW[SessionWorker]
-    TTS[tts_runner]
+    TTS[tts_runner external TTS seam]
     SW --> TTS
     WS --> SW
   end

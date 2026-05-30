@@ -4,8 +4,10 @@
 # Install: pip install -r requirements_orchestrator.txt
 # Requires: requirements.txt + requirements_avatar.txt already installed if sharing venv with infer CLI.
 
+# TTS is no longer synthesized in-tree (arachne_x.tts / arachne_x.speech removed).
+# Wire an external TTS service in src/server/tts_runner.py and add its client deps here.
+
 -r requirements_avatar.txt
 
 aiohttp==3.12.15
 faster-whisper==1.1.1
-edge-tts>=6.1.0,<7.0.0

@@ -12,10 +12,8 @@ Install order on Linux RunPod is **mandatory** — see [`NULLXES_ARACHNE_RUNPOD_
 |------|------|------|
 | [`requirements.txt`](../requirements.txt) | After torch + flash-attn | Core GPU stack: torch 2.6, diffusers 0.35.1, transformers **4.41.0**, librosa, soundfile, einops, imageio |
 | [`requirements_avatar.txt`](../requirements_avatar.txt) | GPU worker / `infer.py` | `-r requirements.txt` + soxr (librosa resampling) |
-| [`requirements_orchestrator.txt`](../requirements_orchestrator.txt) | `src/server` gateway | aiohttp, faster-whisper, edge-tts — **not** on dumb GPU-only worker pods |
+| [`requirements_orchestrator.txt`](../requirements_orchestrator.txt) | `src/server` gateway | aiohttp, faster-whisper — **not** on dumb GPU-only worker pods |
 | [`services/arachnex-worker/requirements.txt`](../services/arachnex-worker/requirements.txt) | Worker HTTP | fastapi, uvicorn, pydantic |
-| [`requirements-tts.txt`](../requirements-tts.txt) | Optional `--speak_text` | `qwen-tts` — separate GPU process in prod |
-| [`requirements-audiodit.txt`](../requirements-audiodit.txt) | **Never** same venv as core | AudioDiT lab — transformers ≥5.3 conflicts with 4.41.0 |
 | [`requirements-training.txt`](../requirements-training.txt) | Latent export / WDS | webdataset, opencv, av, sklearn, scikit-image |
 | [`requirements-datasets.txt`](../requirements-datasets.txt) | Dataset prep scripts | HF `datasets`, pandas |
 
@@ -50,8 +48,11 @@ These were in older `requirements*.txt` but **no import** on canonical prod path
 | onnx, onnxruntime, audio-separator | Demo vocal separator path | Removed from prod |
 | aiortc, silero-vad | Demo WebRTC / semiauto | Removed |
 | nvidia-ml-py, tzdata | Listed but not imported (health uses `torch.cuda`) | Removed |
+| qwen-tts, AudioDiT, edge-tts | `arachne_x.tts` / `arachne_x.speech` (deleted) | Removed — in-tree TTS gone; use external TTS |
 
 **Note:** `Kim_Vocal_2.onnx` remains in checkpoint bundle layout; runtime does not load onnxruntime on prod streaming path.
+
+**TTS removed (2026-05-30):** `arachne_x/tts/` (Qwen + LongCat-AudioDiT) and `arachne_x/speech/` (edge-tts / espeak providers) were deleted. The orchestrator (`src/server/tts_runner.py`) is now an external-TTS seam; CLI requires `--audio`.
 
 ---
 
@@ -71,8 +72,7 @@ pip install -r services/arachnex-worker/requirements.txt
 
 ```bash
 pip install -r requirements_orchestrator.txt
-# Optional CLI speak:
-pip install -r requirements-tts.txt
+# TTS: in-tree backends removed — wire an external TTS service and add its client deps.
 ```
 
 ### Training / export only
@@ -83,14 +83,6 @@ pip install -r requirements-training.txt
 pip install -r requirements-datasets.txt
 ```
 
-### AudioDiT lab (separate venv)
-
-```bash
-python -m venv .venv-audiodit
-source .venv-audiodit/bin/activate
-pip install -r requirements-audiodit.txt
-```
-
 ---
 
 ## Version conflict policy
@@ -98,8 +90,6 @@ pip install -r requirements-audiodit.txt
 | Track | transformers | Co-install with avatar core? |
 |-------|--------------|------------------------------|
 | Avatar core | 4.41.0 | Yes |
-| AudioDiT lab | ≥5.3 | **No** — separate container/venv |
-| Qwen TTS | via `qwen-tts` hub deps | Separate **process** recommended (VRAM) |
 
 ---
 
@@ -108,5 +98,5 @@ pip install -r requirements-audiodit.txt
 Verified against repo imports on 2026-05-27:
 
 - **Worker / infer:** `torch`, `transformers`, `diffusers`, `einops`, `librosa`, `soundfile`, `pyloudnorm`, `Pillow`, `imageio`, `tqdm`, `numpy`, `scipy`, `loguru`, `safetensors`, `accelerate`, `huggingface_hub`
-- **Orchestrator:** `aiohttp`, `faster_whisper`, `edge_tts` (+ core stack if shared venv)
+- **Orchestrator:** `aiohttp`, `faster_whisper` (+ core stack if shared venv); TTS client deps added when an external TTS is wired
 - **Worker HTTP:** `fastapi`, `uvicorn`, `pydantic`
