@@ -360,6 +360,17 @@ def execute_infer(args: argparse.Namespace) -> None:
         if s.lstrip("-").isdigit():
             emotion_id = int(s)
 
+    # Avatar runtime is canonical 720p (resolution policy != restoration policy):
+    # avatar modes never run a 480p bucket. Foundation video (t2v/i2v/vc/audio_i2v/
+    # imagine_i2v) keeps its requested resolution untouched (see RFC-002).
+    AVATAR_MODES = {"ai2v", "at2v", "avc", "streaming_ai2v", "enroll_identity"}
+    if args.mode in AVATAR_MODES and str(getattr(args, "resolution", "720p")) != "720p":
+        print(
+            f"[avatar] resolution={args.resolution!r} -> canonical 720p "
+            f"(avatar runtime is 720p-only; upscale is post-processing)"
+        )
+        args.resolution = "720p"
+
     args.height, args.width = get_hw_for_resolution(args.resolution, args.height, args.width)
     mouth_mask_tensor = load_mask_tensor(args.mouth_mask)
 

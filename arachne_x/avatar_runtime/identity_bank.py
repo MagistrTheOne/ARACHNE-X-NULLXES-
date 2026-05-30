@@ -284,7 +284,7 @@ class IdentityBankMixin:
         self,
         image: PipelineImageInput,
         identity_id: Union[int, List[int], torch.Tensor],
-        resolution: Literal["480p", "720p"] = "480p",
+        resolution: Literal["720p"] = "720p",
         resize_mode: str = "crop",
         momentum: float = 1.0,
     ) -> Dict[str, Any]:

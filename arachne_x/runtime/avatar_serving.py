@@ -26,6 +26,32 @@ _gpu_inference_lock = threading.Lock()
 _pipe: Any = None
 _pipe_key: Optional[str] = None
 
+# Avatar runtime is canonical 720p. Resolution policy != restoration policy:
+# the runtime always emits 720p frames; upscaling to 1080p+ is a separate
+# post-processing concern (FrameProcessor chain), never a runtime fallback.
+AVATAR_CANONICAL_RESOLUTION = "720p"
+_resolution_coercion_warned = False
+
+
+def canonical_avatar_resolution(resolution: Optional[str]) -> str:
+    """Coerce any requested resolution to the canonical avatar resolution (720p).
+
+    Avatar runtime never drops to 480p. A non-720p request is honored as a
+    one-time warning, then forced to 720p so API/log/UI never disagree with the
+    actual bucket the pipeline runs.
+    """
+    global _resolution_coercion_warned
+    req = (resolution or "").strip().lower()
+    if req and req != AVATAR_CANONICAL_RESOLUTION and not _resolution_coercion_warned:
+        _resolution_coercion_warned = True
+        logger.warning(
+            "avatar resolution=%r is not canonical; coercing to %s "
+            "(avatar runtime is 720p-only; upscale via post-processing)",
+            resolution,
+            AVATAR_CANONICAL_RESOLUTION,
+        )
+    return AVATAR_CANONICAL_RESOLUTION
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -114,7 +140,7 @@ def _streaming_sampling_args(
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
-    resolution: str = "480p",
+    resolution: str = "720p",
     num_frames: int = 93,
     chunk_frames: Optional[int] = None,
     first_chunk_frames: Optional[int] = None,
@@ -136,7 +162,7 @@ def _streaming_sampling_args(
         num_inference_steps=int(num_inference_steps),
         text_guidance_scale=float(text_guidance_scale),
         audio_guidance_scale=float(audio_guidance_scale),
-        resolution=resolution if resolution in ("480p", "720p") else "480p",
+        resolution=canonical_avatar_resolution(resolution),
         num_frames=int(num_frames),
         chunk_frames=chunk_frames if chunk_frames is not None else 33,
         first_chunk_frames=first_chunk_frames,
@@ -190,7 +216,7 @@ def _iter_streaming_ai2v_frames(
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
-    resolution: str = "480p",
+    resolution: str = "720p",
     num_frames: int = 93,
     runtime_profile: Optional[str] = None,
     chunk_frames: Optional[int] = None,
@@ -264,6 +290,14 @@ def _iter_streaming_ai2v_frames(
 
     import time
 
+    from arachne_x.runtime.frame_post_processing import resolve_chain_from_env
+
+    # Post-processing chain (resolution policy != restoration policy). Empty/no-op
+    # unless NULLXES_FRAME_POSTFX is set, so the hot path pays nothing by default.
+    postfx = resolve_chain_from_env()
+    if log_stream_start and postfx:
+        logger.info("avatar_frames postfx chain=%s", postfx.describe())
+
     stream_start = time.perf_counter() if log_stream_start else 0.0
     first_frame_logged = False
     frame_seq = 0
@@ -291,6 +325,8 @@ def _iter_streaming_ai2v_frames(
             arr = np.asarray(frame)
             if arr.dtype != np.uint8:
                 arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+            if postfx:
+                arr = postfx.process(arr)
             if log_stream_start and not first_frame_logged:
                 first_frame_logged = True
                 frame_seq += 1
@@ -315,7 +351,7 @@ def generate_frames_numpy(
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
-    resolution: str = "480p",
+    resolution: str = "720p",
     num_frames: int = 93,
     runtime_profile: Optional[str] = None,
     chunk_frames: Optional[int] = None,
@@ -362,7 +398,7 @@ def stream_avatar_frames_raw_sync(
     num_inference_steps: int = 8,
     text_guidance_scale: float = 4.0,
     audio_guidance_scale: float = 4.0,
-    resolution: str = "480p",
+    resolution: str = "720p",
     num_frames: int = 93,
     runtime_profile: Optional[str] = None,
     chunk_frames: Optional[int] = None,
@@ -429,7 +465,7 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
     num_inference_steps = int(_job_get(job, "num_inference_steps", "numInferenceSteps", default=8))
     text_guidance_scale = float(_job_get(job, "text_guidance_scale", "textGuidanceScale", default=4.0))
     audio_guidance_scale = float(_job_get(job, "audio_guidance_scale", "audioGuidanceScale", default=4.0))
-    resolution = str(_job_get(job, "resolution", default="480p"))
+    resolution = str(_job_get(job, "resolution", default="720p"))
     num_frames = int(_job_get(job, "num_frames", "numFrames", default=93))
     chunk_frames = _job_get(job, "chunkFrames", "chunk_frames", default=None)
     chunk_overlap = _job_get(job, "chunkOverlap", "chunk_overlap", default=None)

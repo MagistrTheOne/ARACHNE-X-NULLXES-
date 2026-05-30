@@ -60,6 +60,8 @@ WebSocket (chat.send / voice.pcm16)
   → WS avatar.stream.chunk
 ```
 
+**Resolution policy:** avatar runtime is canonical **720p** (no 480p fallback). Upscale to 1080p+ is an opt-in post-processing chain (`NULLXES_FRAME_POSTFX=lanczos:1080`), not a runtime mode — `resolution policy ≠ restoration policy`. Foundation video (`t2v/i2v/vc`) keeps 480p/720p until [`RFC-002`](Documentation/RFC-002-foundation-720p.md).
+
 Details, env vars, and endpoints: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---

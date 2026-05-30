@@ -351,8 +351,8 @@ class ArachneXVideoAvatarPipeline(
         self,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
-        height: int = 480,
-        width: int = 832,
+        height: int = 768,
+        width: int = 1280,
         num_frames: int = 93,
         num_inference_steps: int = 50,
         use_distill: bool = False,
@@ -383,9 +383,10 @@ class ArachneXVideoAvatarPipeline(
                 Text prompt(s) for video content generation.
             negative_prompt (`str or List[str]`, *optional*):
                 Negative prompt(s) for content exclusion. If not provided, uses empty string.
-            height (`int`, *optional*, defaults to 480):
-                Height of each video frame. Must be divisible by 16.
-            width (`int`, *optional*, defaults to 832):
+            height (`int`, *optional*, defaults to 768):
+                Height of each video frame. Must be divisible by 16. Canonical avatar
+                runtime is 720p; defaults reflect the 720p portrait bucket.
+            width (`int`, *optional*, defaults to 1280):
                 Width of each video frame. Must be divisible by 16.
             num_frames (`int`, *optional*, defaults to 93):
                 Number of frames to generate for the video. Should satisfy (num_frames - 1) % vae_scale_factor_temporal == 0.
@@ -682,12 +683,12 @@ class ArachneXVideoAvatarPipeline(
         image: PipelineImageInput,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
-        resolution: Literal["480p", "720p"] = "480p",
-        num_frames: int = 93,
+        resolution: Literal["720p"] = "720p",
+        num_frames: int = 100,
         num_inference_steps: int = 50,
         use_distill: bool = False,
-        text_guidance_scale: float = 4.0,
-        audio_guidance_scale: float = 4.0,
+        text_guidance_scale: float = 3.0,
+        audio_guidance_scale: float = 3.5,
         num_videos_per_prompt: Optional[int] = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
@@ -724,8 +725,9 @@ class ArachneXVideoAvatarPipeline(
                 Text prompt(s) for video content generation.
             negative_prompt (`str or List[str]`, *optional*):
                 Negative prompt(s) for content exclusion. If not provided, uses empty string.
-            resolution (`Literal["480p", "720p"]`, *optional*, defaults to "480p"):
-                Target video resolution. Determines output frame size.
+            resolution (`Literal["720p"]`, *optional*, defaults to "720p"):
+                Canonical avatar resolution. Avatar runtime is 720p-only; upscaling
+                to 1080p+ is a separate post-processing concern, not a runtime mode.
             num_frames (`int`, *optional*, defaults to 93):
                 Number of frames to generate for the video. Should satisfy (num_frames - 1) % vae_scale_factor_temporal == 0.
             num_inference_steps (`int`, *optional*, defaults to 50):
@@ -1122,8 +1124,8 @@ class ArachneXVideoAvatarPipeline(
         video_latent: torch.Tensor,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
-        height: int = 480,
-        width: int = 832,
+        height: int = 768,
+        width: int = 1280,
         num_frames: int = 93,
         num_cond_frames: int = 13,
         num_inference_steps: int = 50,
@@ -1586,7 +1588,7 @@ class ArachneXVideoAvatarPipeline(
         image: PipelineImageInput,
         prompt: Union[str, List[str]] = None,
         negative_prompt: Union[str, List[str]] = None,
-        resolution: Literal["480p", "720p"] = "480p",
+        resolution: Literal["720p"] = "720p",
         num_frames: int = 93,
         num_inference_steps: int = 12,
         use_distill: bool = True,
@@ -1853,7 +1855,7 @@ class ArachneXVideoAvatarPipeline(
         image: PipelineImageInput,
         prompt: Union[str, List[str]] = None,
         audio_stream=None,  # Generator yielding audio chunks
-        resolution: Literal["480p", "720p"] = "480p",
+        resolution: Literal["720p"] = "720p",
         num_frames: int = 93,
         num_inference_steps: int = 8,  # Distilled: 8 steps instead of 50
         use_distill: Optional[bool] = None,
@@ -1885,7 +1887,7 @@ class ArachneXVideoAvatarPipeline(
             image: Input image for video generation.
             prompt: Text prompt(s) for video content generation.
             audio_stream: Optional generator yielding audio chunks [sample_rate=16000].
-            resolution: "480p" or "720p".
+            resolution: canonical "720p" (avatar runtime is 720p-only).
             num_frames: Number of frames to generate.
             num_inference_steps: Denoising steps (8 = distilled fast mode).
             text_guidance_scale: CFG scale for text.

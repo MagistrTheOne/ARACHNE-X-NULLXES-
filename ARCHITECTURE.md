@@ -366,6 +366,19 @@ Audio CFG (prod lipsync): **5.0–5.5** (`audio_guidance_scale`).
 
 ---
 
+## Resolution & restoration policy
+
+**Doctrine: resolution policy ≠ restoration policy.**
+
+- **Avatar runtime is canonical 720p.** Modes `ai2v / at2v / avc / streaming_ai2v / enroll_identity` always run the 720p bucket. There is no 480p fallback: `avatar_serving.canonical_avatar_resolution()` coerces any request to `720p` (one-time warn), and `inference_engine` forces `720p` for avatar modes before `get_hw_for_resolution`, so API / log / UI never disagree with the bucket actually executed. The legacy `(480,832)` default sentinel is dead on the avatar path.
+- **Foundation video (`t2v / i2v / vc / audio_i2v / imagine_i2v`) keeps 480p/720p.** Shared `bucket_config` (`ASPECT_RATIO_627*`) and latent caches stay until [RFC-002](Documentation/RFC-002-foundation-720p.md).
+- **Restoration / upscale is a post-processing chain**, not a runtime mode. `arachne_x/runtime/frame_post_processing.py` provides `ProcessorRegistry` + `FrameProcessorChain` (ordered, per-frame, budget-bounded, graceful bypass). The chain runs *after* generation and knows nothing about the generator.
+  - Opt-in via `NULLXES_FRAME_POSTFX` (e.g. `lanczos:1080`), budget via `NULLXES_FRAME_POSTFX_BUDGET_MS`. Empty by default → hot path pays nothing.
+  - Built-in stages: `passthrough`, `lanczos` (dependency-light baseline). Heavy restorers attach via `REGISTRY.register` only when their backend is present (no shipped weights, no stubs).
+  - Realtime tier: RealESRGAN-compact + TensorRT/FP16. MP4/offline tier: SeedVR2 (separate worker/queue/GPU pool, never in the realtime contour). FlashVSR tracked as a future streaming-VSR candidate.
+
+---
+
 ## Startup paths
 
 | Path | Entry | Notes |
