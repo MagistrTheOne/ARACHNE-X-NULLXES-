@@ -296,8 +296,13 @@ def _write_manifest(samples: list[dict[str, Any]], args: argparse.Namespace) -> 
         f"export ARACHNE_FOUNDATION_CKPT={manifest['training']['checkpoint_foundation'] or '/workspace/weights/ARACHNE-FOUNDATION-50B'}",
         f"export ARACHNE_DATASET_MANIFEST={out_root / 'manifest.json'}",
         f"export ARACHNE_LATENTS_DIR={out_root / 'latents'}",
-        "# Full 50B train needs multi-GPU; smoke on 13.6B:",
-        "# python $ARACHNE_ROOT/scripts/train_lora_base.py --manifest $ARACHNE_DATASET_MANIFEST --latents_dir $ARACHNE_LATENTS_DIR",
+        "# 13.6B LoRA smoke (single GPU):",
+        "# python $ARACHNE_ROOT/scripts/train_arachne_dit.py --model base13b --mode lora \\",
+        "#     --latents_dir $ARACHNE_LATENTS_DIR --out /workspace/runs/base13b-lora --max_steps 500",
+        "# 50B foundation continued-pretrain (multi-GPU, FSDP full-shard):",
+        "# torchrun --standalone --nproc_per_node=8 $ARACHNE_ROOT/scripts/train_arachne_dit.py \\",
+        "#     --model foundation --mode full --grad_checkpointing \\",
+        "#     --latents_dir $ARACHNE_LATENTS_DIR --out /workspace/runs/foundation-cpt --max_steps 20000",
     ]
     (out_root / "train_launch.env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     print(f"Wrote {out_root / 'manifest.json'} ({len(samples)} samples)", flush=True)

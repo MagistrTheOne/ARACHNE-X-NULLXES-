@@ -379,6 +379,47 @@ Audio CFG (prod lipsync): **5.0–5.5** (`audio_guidance_scale`).
 
 ---
 
+## Training (continued pretrain / LoRA)
+
+The runtime is inference-first, but the DiT is trainable from precomputed
+flow-match latents. **No VAE / text encoder is needed at train time** — exported
+samples already bake `latents` (noisy z_t), `noise` (eps target), `timesteps`,
+and `prompt_embeds` / `prompt_mask`. This is why the foundation repo (DiT-only
+safetensors) is trainable without the full runtime tree.
+
+| Stage | File | Role |
+|-------|------|------|
+| Data + QC | `scripts/prepare_foundation_train_pack.py` | OpenVid pull → QC filter → `manifest.json` + latents |
+| Latent export | `arachne_x/training_latent_export*.py` | VAE-encode → normalize `z0` → flow-match `scale_noise` → `.pt` sample |
+| Loss | `arachne_x/training_lora_loss.py` | flow-match MSE(noise_pred, eps) + Min-SNR weighting |
+| **Trainer (driver)** | **`scripts/train_arachne_dit.py`** | the gradient loop: DiT + scheduler → optimizer steps |
+
+Trainer targets `--model {foundation,base13b}` × `--mode {lora,full}`. LoRA is
+attention-only (NULLXES policy, `lora_utils.avatar_attention_only_lora_filter`).
+`full` uses **FSDP full-shard (bf16)** under `torchrun` for the 50B; single-GPU
+for 13B smoke.
+
+```bash
+# 13B LoRA smoke — single H200
+python scripts/train_arachne_dit.py --model base13b --mode lora \
+    --latents_dir /workspace/datasets/arachne-foundation-smoke/latents \
+    --out /workspace/runs/base13b-lora --micro_bsz 1 --grad_accum 8 --max_steps 500
+
+# 50B foundation continued-pretrain — N GPUs, FSDP full-shard + activation checkpointing
+torchrun --standalone --nproc_per_node=8 scripts/train_arachne_dit.py \
+    --model foundation --mode full --grad_checkpointing \
+    --latents_dir /workspace/datasets/arachne-foundation-smoke/latents \
+    --out /workspace/runs/foundation-cpt --micro_bsz 1 --grad_accum 16 --max_steps 20000
+```
+
+`ARACHNE_FOUNDATION_CKPT` → 50B DiT dir; `NULLXES_CHECKPOINT_DIR` → 13B runtime
+tree (`/dit`, `/scheduler`). The scheduler is loaded from the *same* config used
+at export (`$NULLXES_CHECKPOINT_DIR/scheduler`) so Min-SNR timestep mapping stays
+aligned. Each exported `.pt` bakes one timestep per clip — re-export with more t
+for production-grade sigma coverage.
+
+---
+
 ## Startup paths
 
 | Path | Entry | Notes |
