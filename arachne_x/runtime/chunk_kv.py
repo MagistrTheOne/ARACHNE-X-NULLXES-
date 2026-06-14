@@ -16,10 +16,10 @@ import torch
 def chunk_kv_enabled() -> bool:
     import os
 
-    v = os.environ.get("ARACHNE_CHUNK_KV", "1").strip().lower()
-    if v in ("0", "false", "no"):
+    v = os.environ.get("ARACHNE_CHUNK_KV", "0").strip().lower()
+    if v in ("0", "false", "no", ""):
         return False
-    return v in ("1", "true", "yes", "")
+    return v in ("1", "true", "yes")
 
 
 def seed_kv_from_chunk_tail(

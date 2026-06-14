@@ -139,8 +139,12 @@ class StubMediaSink:
 
 def media_backend_from_env(num_slots: int) -> MediaLayerBackend:
     """``NULLXES_MEDIA_BACKEND=pulse`` (default) or ``stub``."""
+    from arachne_x.runtime.prod_guard import is_production
+
     kind = os.environ.get("NULLXES_MEDIA_BACKEND", "pulse").lower().strip()
     if kind == "stub":
+        if is_production():
+            raise RuntimeError("NULLXES_MEDIA_BACKEND=stub is not allowed when NULLXES_PRODUCTION=1")
         return StubPulseBackend(num_slots=num_slots)
     return MediaLayerBackend(num_slots=num_slots)
 

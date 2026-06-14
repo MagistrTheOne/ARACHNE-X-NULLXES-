@@ -30,8 +30,8 @@
     "backend": "nullxes_worker_http",
     "backend_legacy_aliases": ["longcat_worker_http"],
     "inference_url_env": "NULLXES_AVATAR_INFERENCE_URL",
-    "video_model_id": "meituan-longcat/LongCat-Video",
-    "avatar_model_id": "meituan-longcat/LongCat-Video-Avatar",
+    "video_model_id": "MagistrTheOne/ARACHNE-X-ULTRA-VIDEO",
+    "avatar_model_id": "MagistrTheOne/ARACHNE-X-ULTRA-AVATAR",
     "use_async_jobs_env": "NULLXES_AVATAR_INFERENCE_ASYNC"
   },
   "webrtc": {

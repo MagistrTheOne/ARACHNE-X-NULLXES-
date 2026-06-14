@@ -10,6 +10,7 @@ from arachne_x.runtime.sampling_profiles import (  # noqa: PLC0415 — avoid run
     apply_sampling_profile,
     cap_num_frames_for_profile,
     get_profile,
+    resolve_operational_resolution,
     resolve_use_distill,
 )
 
@@ -22,6 +23,7 @@ def test_operational_profile_defaults():
     assert p.chunk_overlap == 8
     assert p.use_chunked_denoise is True
     assert p.num_frames_cap == 65
+    assert p.resolution == "480p"
 
 
 def test_apply_profile_respects_explicit_cli():
@@ -55,6 +57,10 @@ def test_resolve_use_distill_steps():
     assert resolve_use_distill(args) is True
     args.num_inference_steps = 35
     assert resolve_use_distill(args) is False
+
+
+def test_resolve_operational_resolution_80gb():
+    assert resolve_operational_resolution(80.0, "operational", "720p") == "480p"
 
 
 def test_unknown_profile_raises():

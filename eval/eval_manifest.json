@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "codename": "ARACHNE-X-ULTRA-V3 NIGHTCORE",
+  "release_tag": "v3-nightcore",
+  "profiles": {
+    "operational": {
+      "resolution_80gb": "480p",
+      "resolution_h200": "480p",
+      "runtime_profile": "operational",
+      "chunk_frames": 33,
+      "use_chunked_denoise": true
+    },
+    "cinematic": {
+      "resolution_h200": "720p",
+      "runtime_profile": "cinematic",
+      "note": "H200 only; not default on 80GB tiers"
+    }
+  },
+  "gates": {
+    "streaming_mode_required": "chunked_ai2v",
+    "prod_doctor_before_traffic": true,
+    "eval_script": "scripts/gpu/eval_stability_bench.py"
+  },
+  "ndjson_fields": ["seq", "tsMs", "encoding", "width", "height", "frameBase64"]
+}

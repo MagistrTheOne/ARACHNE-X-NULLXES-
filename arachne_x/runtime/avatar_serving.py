@@ -86,6 +86,14 @@ def get_avatar_pipeline():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
         raise RuntimeError("Avatar inference requires CUDA; no GPU visible to PyTorch.")
+    if torch.cuda.is_available():
+        vram_gb = float(torch.cuda.get_device_properties(0).total_memory) / (1024**3)
+        if vram_gb <= 45.0:
+            raise RuntimeError(
+                f"Full avatar inference requires >45GB VRAM (detected {vram_gb:.1f} GiB). "
+                "A100-40 / similar tiers are train/LoRA/latent-export only — "
+                "use scripts/train_lora_avatar.py on this pod."
+            )
     key = f"{ckpt}|{device}"
     with _lock:
         if _pipe is not None and _pipe_key == key:
@@ -123,7 +131,12 @@ def _streaming_sampling_args(
     use_distill: Optional[bool] = None,
 ) -> argparse.Namespace:
     """Build args namespace and apply operational/cinematic profile (explicit job fields win)."""
-    from arachne_x.runtime.sampling_profiles import apply_sampling_profile, resolve_use_distill
+    from arachne_x.runtime.sampling_profiles import (
+        apply_sampling_profile,
+        cuda_vram_gb,
+        resolve_operational_resolution,
+        resolve_use_distill,
+    )
 
     profile = (
         runtime_profile
@@ -146,6 +159,8 @@ def _streaming_sampling_args(
         num_frames_mode="sync",
     )
     apply_sampling_profile(ns, argv=[])
+    profile_name = str(getattr(ns, "_sampling_profile_name", profile) or profile).lower()
+    ns.resolution = resolve_operational_resolution(cuda_vram_gb(), profile_name, str(ns.resolution))
     if use_chunked_denoise is not None:
         ns.use_chunked_denoise = bool(use_chunked_denoise)
     if use_distill is not None:
@@ -290,30 +305,30 @@ def generate_frames_numpy(
                 yield c
 
     out: List[np.ndarray] = []
-    with _lock:
-        for frame in pipe.generate_streaming_ai2v(
-            image=img,
-            prompt=compiled_pos,
-            audio_stream=audio_stream(),
-            resolution=samp.resolution,
-            num_frames=samp.num_frames,
-            num_inference_steps=samp.num_inference_steps,
-            use_distill=bool(samp.use_distill),
-            text_guidance_scale=float(samp.text_guidance_scale),
-            audio_guidance_scale=float(samp.audio_guidance_scale),
-            chunk_frames=int(samp.chunk_frames),
-            first_chunk_frames=(
-                int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
-            ),
-            chunk_overlap=int(samp.chunk_overlap),
-            use_chunked_denoise=bool(samp.use_chunked_denoise),
-            identity_id=identity_id,
-            mouth_zone_masks=mouth_mask,
-        ):
-            arr = np.asarray(frame)
-            if arr.dtype != np.uint8:
-                arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
-            out.append(arr)
+    for frame in pipe.generate_streaming_ai2v(
+        image=img,
+        prompt=compiled_pos,
+        negative_prompt=compiled_neg,
+        audio_stream=audio_stream(),
+        resolution=samp.resolution,
+        num_frames=samp.num_frames,
+        num_inference_steps=samp.num_inference_steps,
+        use_distill=bool(samp.use_distill),
+        text_guidance_scale=float(samp.text_guidance_scale),
+        audio_guidance_scale=float(samp.audio_guidance_scale),
+        chunk_frames=int(samp.chunk_frames),
+        first_chunk_frames=(
+            int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
+        ),
+        chunk_overlap=int(samp.chunk_overlap),
+        use_chunked_denoise=bool(samp.use_chunked_denoise),
+        identity_id=identity_id,
+        mouth_zone_masks=mouth_mask,
+    ):
+        arr = np.asarray(frame)
+        if arr.dtype != np.uint8:
+            arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out.append(arr)
     return out
 
 
@@ -368,7 +383,7 @@ def stream_avatar_frames_raw_sync(
     configure_realtime_pipe(pipe, mouth_mask)
     _attach_pipe_sampling_metrics(pipe, getattr(samp, "_sampling_profile_name", None))
     audio_dur = float(audio_f32.size) / 16000.0
-    compiled_pos, _compiled_neg = compile_prompt_for_job(
+    compiled_pos, compiled_neg = compile_prompt_for_job(
         prompt or "A person speaking clearly to camera.",
         negative_prompt=negative_prompt,
         mode="streaming_ai2v",
@@ -399,45 +414,45 @@ def stream_avatar_frames_raw_sync(
         int(audio_f32.size),
         identity_id,
     )
-    with _lock:
-        for frame in pipe.generate_streaming_ai2v(
-            image=img,
-            prompt=compiled_pos,
-            audio_stream=audio_stream(),
-            resolution=samp.resolution,
-            num_frames=samp.num_frames,
-            num_inference_steps=samp.num_inference_steps,
-            use_distill=bool(samp.use_distill),
-            text_guidance_scale=float(samp.text_guidance_scale),
-            audio_guidance_scale=float(samp.audio_guidance_scale),
-            chunk_frames=int(samp.chunk_frames),
-            first_chunk_frames=(
-                int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
-            ),
-            chunk_overlap=int(samp.chunk_overlap),
-            use_chunked_denoise=bool(samp.use_chunked_denoise),
-            identity_id=identity_id,
-            mouth_zone_masks=mouth_mask,
-        ):
-            seq += 1
-            arr = np.asarray(frame)
-            if arr.dtype != np.uint8:
-                arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
-            if arr.ndim != 3 or arr.shape[2] != 3:
-                continue
-            h, w, _c = arr.shape
-            raw = np.ascontiguousarray(arr).tobytes()
-            if not first_frame_logged:
-                first_frame_logged = True
-                elapsed = time.perf_counter() - stream_start
-                sampling = getattr(pipe, "runtime_sampling_metrics", None)
-                logger.info(
-                    "avatar_frames first_frame seq=%s ttff_sec=%.4f sampling=%s",
-                    seq,
-                    elapsed,
-                    sampling.to_dict() if sampling is not None else None,
-                )
-            yield seq, raw, int(w), int(h)
+    for frame in pipe.generate_streaming_ai2v(
+        image=img,
+        prompt=compiled_pos,
+        negative_prompt=compiled_neg,
+        audio_stream=audio_stream(),
+        resolution=samp.resolution,
+        num_frames=samp.num_frames,
+        num_inference_steps=samp.num_inference_steps,
+        use_distill=bool(samp.use_distill),
+        text_guidance_scale=float(samp.text_guidance_scale),
+        audio_guidance_scale=float(samp.audio_guidance_scale),
+        chunk_frames=int(samp.chunk_frames),
+        first_chunk_frames=(
+            int(samp.first_chunk_frames) if getattr(samp, "first_chunk_frames", None) is not None else None
+        ),
+        chunk_overlap=int(samp.chunk_overlap),
+        use_chunked_denoise=bool(samp.use_chunked_denoise),
+        identity_id=identity_id,
+        mouth_zone_masks=mouth_mask,
+    ):
+        seq += 1
+        arr = np.asarray(frame)
+        if arr.dtype != np.uint8:
+            arr = (np.clip(arr, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            continue
+        h, w, _c = arr.shape
+        raw = np.ascontiguousarray(arr).tobytes()
+        if not first_frame_logged:
+            first_frame_logged = True
+            elapsed = time.perf_counter() - stream_start
+            sampling = getattr(pipe, "runtime_sampling_metrics", None)
+            logger.info(
+                "avatar_frames first_frame seq=%s ttff_sec=%.4f sampling=%s",
+                seq,
+                elapsed,
+                sampling.to_dict() if sampling is not None else None,
+            )
+        yield seq, raw, int(w), int(h)
 
 
 def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
@@ -473,10 +488,12 @@ def generate_mp4_bytes_from_job(job: dict[str, Any]) -> bytes:
     identity_id = _job_get(job, "identityId", "identity_id", default=None)
     identity_bank_path = _job_get(job, "identityBankPath", "identity_bank_path", default=None)
     mouth_mask_b64 = _job_get(job, "mouthMaskBase64", "mouth_mask_base64", default=None)
+    negative_prompt = str(_job_get(job, "negative_prompt", "negativePrompt", default="") or "")
     frames = generate_frames_numpy(
         image_bytes=image_bytes,
         prompt=prompt,
         audio_f32=audio_f32,
+        negative_prompt=negative_prompt,
         prompt_compiler=prompt_compiler,
         num_inference_steps=num_inference_steps,
         text_guidance_scale=text_guidance_scale,

@@ -16,7 +16,7 @@ Production **GPU avatar** HTTP service for **RunPod Linux** (H200 primary, H100 
 
 Инференс грузит веса через `arachne_x.loader` из **`arachne_x/modules/arachne_video_dit.py`** (базовое видео) и **`arachne_x/modules/avatar/arachne_avatar_dit.py`** (аватар). Файлы `longcat_video_dit*.py` — **thin shim** для обратной совместимости импортов; публичные имена классов (`LongCatVideoTransformer3DModel`, …) не менялись (ABI чекпоинтов).
 
-Скрипт **`longcat_generate_once.py`** в этом каталоге — **deprecated**: ориентирован на внешний пакет `longcat_video.*`, не на `arachne_x`; **не** использовать в RunPod / `GTM_ONE_SHOT_DEPLOY` (см. docstring в файле).
+Скрипт **`legacy/longcat_generate_once.py`** — **deprecated**: ориентирован на внешний пакет `longcat_video.*`, не на `arachne_x`; **не** использовать в RunPod / `GTM_ONE_SHOT_DEPLOY` (см. docstring в файле).
 
 ## Обязательные переменные (prod)
 

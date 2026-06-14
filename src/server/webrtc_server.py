@@ -46,6 +46,9 @@ def _auto_start_webhook() -> bool:
 
 
 def create_app(pipeline_cfg: Dict[str, Any] | None = None) -> web.Application:
+    from arachne_x.runtime.prod_guard import validate_production_boot
+
+    validate_production_boot(role="orchestrator")
     app = web.Application(client_max_size=8 * 1024 * 1024)
     app["pipeline_cfg"] = dict(pipeline_cfg or {})
     max_slots = _max_sessions()

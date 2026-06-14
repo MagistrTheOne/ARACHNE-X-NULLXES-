@@ -34,7 +34,7 @@ PROFILES: dict[str, SamplingProfile] = {
         num_frames_cap=65,
         text_guidance_scale=4.0,
         audio_guidance_scale=5.0,
-        resolution="720p",
+        resolution="480p",
         chunk_frames=33,
         chunk_overlap=8,
         use_chunked_denoise=True,
@@ -52,6 +52,30 @@ PROFILES: dict[str, SamplingProfile] = {
         use_chunked_denoise=False,
     ),
 }
+
+
+def resolve_operational_resolution(vram_gb: float, profile_name: str, base_resolution: str) -> str:
+    """
+    Clamp operational profile to 480p on <=80GB GPUs; cinematic keeps profile resolution.
+    """
+    name = (profile_name or "operational").strip().lower()
+    if name == "cinematic":
+        return base_resolution if base_resolution in ("480p", "720p") else "720p"
+    if vram_gb <= 85.0:
+        return "480p"
+    return base_resolution if base_resolution in ("480p", "720p") else "480p"
+
+
+def cuda_vram_gb() -> float:
+    """Total VRAM on cuda:0 in GiB, or 0 when CUDA unavailable."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 0.0
+        return float(torch.cuda.get_device_properties(0).total_memory) / (1024**3)
+    except Exception:
+        return 0.0
 
 
 def get_profile(name: str) -> SamplingProfile:

@@ -121,6 +121,10 @@ class StreamFramesBody(BaseModel):
 
 
 def _check_key(expected: Optional[str], hdr: Optional[str]) -> None:
+    from arachne_x.runtime.prod_guard import is_production
+
+    if is_production() and not expected:
+        raise HTTPException(status_code=503, detail="inference service key required in production")
     if not expected:
         return
     if (hdr or "").strip() != expected:
@@ -144,6 +148,10 @@ def _validate_body(body: GenerateBody) -> None:
             raise ValueError("imageBase64 required for audio-image-to-video")
     if body.task == "video-continuation" and not (body.continuationState or "").strip():
         raise ValueError("continuationState (base64-encoded mp4) required for video-continuation")
+
+
+class UnsupportedInferenceTaskError(RuntimeError):
+    """Worker task mode not implemented (HTTP 501)."""
 
 
 def run_generate_sync(body: GenerateBody) -> bytes:
@@ -202,7 +210,7 @@ def run_generate_sync(body: GenerateBody) -> bytes:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    raise RuntimeError(
+    raise UnsupportedInferenceTaskError(
         f"Task {task!r} is not supported by the in-process worker "
         "(only audio-image-to-video and audio-text-to-video). "
         "Use a dedicated batch service for text-to-video / image-to-video / continuation."
@@ -313,6 +321,9 @@ def _ndjson_stream(body: StreamFramesBody) -> Iterator[bytes]:
 
 @asynccontextmanager
 async def _lifespan(_app: object):
+    from arachne_x.runtime.prod_guard import validate_production_boot
+
+    validate_production_boot(role="worker")
     job_queue.set_executor(execute_inference_from_dict)
     job_queue.start_worker()
     yield
@@ -355,6 +366,8 @@ async def generate(
         data = await asyncio.to_thread(run_generate_sync, body)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except UnsupportedInferenceTaskError as e:
+        raise HTTPException(status_code=501, detail=str(e)[:8000]) from e
     except RuntimeError as e:
         msg = str(e)
         if "not supported" in msg or "CUDA" in msg or "checkpoint" in msg.lower():

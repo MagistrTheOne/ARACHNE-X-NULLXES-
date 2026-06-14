@@ -98,6 +98,4 @@ class NullxesAudioEncoder:
         device: str,
         sample_rate: int = 16000,
     ) -> torch.Tensor:
-        if not self.is_loaded or self.core is None:
-            raise RuntimeError("NullxesAudioEncoder weights not loaded")
-        raise NotImplementedError("Nullxes audio plate training not shipped yet")
+        raise RuntimeError("NullxesAudioEncoder weights not loaded — use wav2vec (ARACHNE_AUDIO_ENCODER=wav2vec)")

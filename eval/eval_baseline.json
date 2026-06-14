@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "checkpoint_sha": "REPLACE_WITH_HUB_REVISION_OR_LOCAL_MANIFEST_SHA",
+  "arachne_infer_enable_bsa": "1",
+  "tiers": {
+    "h100_80gb": {
+      "gpu_name_pattern": "H100",
+      "vram_gb_min": 70,
+      "vram_gb_max": 85,
+      "operational_resolution": "480p",
+      "ttff_max_sec": 4.0,
+      "identity_cosine_min": 0.88,
+      "streaming_mode": "chunked_ai2v"
+    },
+    "a100_80gb": {
+      "gpu_name_pattern": "A100",
+      "vram_gb_min": 70,
+      "vram_gb_max": 85,
+      "operational_resolution": "480p",
+      "ttff_max_sec": 4.5,
+      "identity_cosine_min": 0.87,
+      "streaming_mode": "chunked_ai2v"
+    },
+    "h200": {
+      "gpu_name_pattern": "H200",
+      "vram_gb_min": 130,
+      "operational_resolution": "480p",
+      "cinematic_720p_optional": true,
+      "ttff_max_sec": 3.5,
+      "identity_cosine_min": 0.88,
+      "streaming_mode": "chunked_ai2v"
+    },
+    "a100_40gb_train_only": {
+      "vram_gb_max": 45,
+      "avatar_infer_allowed": false,
+      "train_lora_smoke_required": true
+    }
+  }
+}

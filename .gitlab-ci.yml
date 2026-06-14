@@ -1,0 +1,13 @@
+stages:
+  - test
+
+nightcore_cpu_contract:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - pip install --quiet pytest pydantic fastapi
+  script:
+    - pytest tests/test_prod_guard.py tests/test_sampling_profiles.py tests/test_nightcore_contract.py tests/test_weights_doctor.py -q
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH

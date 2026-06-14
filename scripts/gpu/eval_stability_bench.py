@@ -37,6 +37,12 @@ def main() -> int:
     parser.add_argument("--mouth_mask", type=str, default=None)
     parser.add_argument("--ttff_max_sec", type=float, default=4.0)
     parser.add_argument("--identity_cosine_min", type=float, default=0.88)
+    parser.add_argument(
+        "--tier",
+        choices=("80gb", "h200"),
+        default="80gb",
+        help="80gb → operational @ 480p; h200 → operational 480p + cinematic 720p gate",
+    )
     args = parser.parse_args()
 
     root = _repo_root()
@@ -62,7 +68,7 @@ def main() -> int:
 
     import argparse as ap
 
-    def run_profile(profile: str, out_mp4: str) -> dict:
+    def run_profile(profile: str, out_mp4: str, *, resolution: str) -> dict:
         ns = ap.Namespace(
             checkpoint_dir=ckpt,
             mode="ai2v",
@@ -72,7 +78,7 @@ def main() -> int:
             audio=args.audio,
             output=out_mp4,
             runtime_profile=profile,
-            resolution="720p",
+            resolution=resolution,
             num_frames_mode="sync",
             num_frames=93,
             num_inference_steps=12,
@@ -97,10 +103,12 @@ def main() -> int:
                 return json.load(f)
         return {}
 
+    op_res = "480p"
+    cin_res = "720p" if args.tier == "h200" else "480p"
     op_mp4 = os.path.join(args.output_dir, "operational.mp4")
     cin_mp4 = os.path.join(args.output_dir, "cinematic.mp4")
-    op_meta = run_profile("operational", op_mp4)
-    cin_meta = run_profile("cinematic", cin_mp4)
+    op_meta = run_profile("operational", op_mp4, resolution=op_res)
+    cin_meta = run_profile("cinematic", cin_mp4, resolution=cin_res)
 
     sm = op_meta.get("sampling_metrics") or {}
     drift_min = sm.get("identity_drift_min")
@@ -112,6 +120,9 @@ def main() -> int:
     report = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "checkpoint_dir": ckpt,
+        "tier": args.tier,
+        "operational_resolution": op_res,
+        "cinematic_resolution": cin_res,
         "operational": {"output": op_mp4, "metadata": op_meta},
         "cinematic": {"output": cin_mp4, "metadata": cin_meta},
         "gate": gate,

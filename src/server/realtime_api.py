@@ -52,18 +52,38 @@ WS_CHAT_ASSISTANT_FIXED_REPLY_ENV = "NULLXES_WS_CHAT_ASSISTANT_FIXED_REPLY"
 ROUTE_VIA_SESSION_WORKER_ENV = "NULLXES_REALTIME_ROUTE_VIA_SESSION_WORKER"
 
 
-def _http_chat_assistant_text(content: str) -> str:
-    fixed = os.environ.get(CHAT_ASSISTANT_FIXED_REPLY_ENV, "").strip()
+def _assistant_reply_text(user_text: str, app: web.Application, *, ws: bool = False) -> str:
+    """LLM reply when configured; explicit failure in production (no echo)."""
+    from arachne_x.runtime.prod_guard import is_production
+
+    fixed_env = WS_CHAT_ASSISTANT_FIXED_REPLY_ENV if ws else CHAT_ASSISTANT_FIXED_REPLY_ENV
+    fixed = os.environ.get(fixed_env, "").strip()
     if fixed:
         return fixed[:8000]
-    return (content or "")[:8000]
+    pipeline_cfg = app.get("pipeline_cfg") or {}
+    llm_cfg = dict(pipeline_cfg.get("llm") or {})
+    failure = str(
+        llm_cfg.get("failure_reply") or "I am temporarily unable to respond. Please try again."
+    )[:8000]
+    try:
+        from src.server.llm_runner import generate_reply_sync
+
+        system = str(llm_cfg.get("system_prompt") or "")
+        msgs = [{"role": "user", "content": (user_text or "")[:8000]}]
+        return generate_reply_sync(msgs, llm_cfg, system_prompt=system)[:8000]
+    except Exception as e:
+        logger.warning("assistant LLM failed (%s): %s", "ws" if ws else "http", e)
+        if is_production():
+            return failure
+        return failure
 
 
-def _ws_assistant_reply_text(user_text: str) -> str:
-    fixed = os.environ.get(WS_CHAT_ASSISTANT_FIXED_REPLY_ENV, "").strip()
-    if fixed:
-        return fixed[:8000]
-    return (user_text or "")[:8000]
+def _http_chat_assistant_text(content: str, app: web.Application) -> str:
+    return _assistant_reply_text(content, app, ws=False)
+
+
+def _ws_assistant_reply_text(user_text: str, app: web.Application) -> str:
+    return _assistant_reply_text(user_text, app, ws=True)
 
 
 def _service_key(app: web.Application) -> Optional[str]:
@@ -72,8 +92,13 @@ def _service_key(app: web.Application) -> Optional[str]:
 
 
 def _verify_service_request(request: web.Request) -> bool:
+    from arachne_x.runtime.prod_guard import is_production
+
     expected = _service_key(request.app)
     if not expected:
+        if is_production():
+            logger.error("%s required in production", SERVICE_KEY_ENV)
+            return False
         logger.warning("%s unset — realtime token/chat auth skipped (dev only)", SERVICE_KEY_ENV)
         return True
     hdr = request.headers.get(SERVICE_KEY_HEADER, "").strip()
@@ -221,16 +246,18 @@ async def handle_chat(request: web.Request) -> web.Response:
             },
         )
         await resp.prepare(request)
-        chunk = json.dumps({"delta": _http_chat_assistant_text(content)[:200]}, ensure_ascii=False)
+        reply = await asyncio.to_thread(_http_chat_assistant_text, content, request.app)
+        chunk = json.dumps({"delta": reply[:200]}, ensure_ascii=False)
         await resp.write(f"data: {chunk}\n\n".encode("utf-8"))
         await resp.write_eof()
         return resp
+    reply = await asyncio.to_thread(_http_chat_assistant_text, content, request.app)
     return web.json_response(
         {
             "message": {
                 "id": f"chat_{_now_ms()}",
                 "role": "assistant",
-                "content": _http_chat_assistant_text(content),
+                "content": reply,
             }
         },
         headers=cors,
@@ -573,14 +600,23 @@ def _ws_avatar_stream_effective_mode() -> str:
     video — JPEG base64 from NULLXES_AVATAR_PREVIEW_ASSET_PATH (local mp4).
     inference — GPU worker: NULLXES_AVATAR_INFERENCE_URL → NDJSON JPEG stream (no MP4).
 
-    NULLXES_WS_AVATAR_STREAM_STUB=0 forces off (backward compatible).
-    If MODE is unset: inference when INFERENCE_URL set; else video if preview asset file exists; else off.
+    Production (NULLXES_PRODUCTION=1): inference only when inference URL is set; stub/video blocked.
     """
+    from arachne_x.runtime.prod_guard import dev_stub_allowed, is_production
+
+    explicit = os.environ.get(WS_AVATAR_STREAM_MODE_ENV, "").strip().lower()
+    if explicit == "off":
+        return "off"
+    if is_production():
+        if inference_base_url():
+            return "inference"
+        return "off"
     stub_raw = os.environ.get(WS_AVATAR_STREAM_STUB_ENV, "1").strip().lower()
     if stub_raw in ("0", "false", "no", "off"):
         return "off"
-    explicit = os.environ.get(WS_AVATAR_STREAM_MODE_ENV, "").strip().lower()
     if explicit in ("off", "stub", "video", "inference"):
+        if explicit == "stub" and not dev_stub_allowed():
+            return "off"
         return explicit
     if inference_base_url():
         return "inference"
@@ -784,15 +820,26 @@ async def _run_avatar_ws_playback(
         )
         return
     if mode == "video":
+        from arachne_x.runtime.prod_guard import dev_stub_allowed, is_production
+
+        if is_production() or not dev_stub_allowed():
+            await _send_error(ws, "avatar_preview_video_disabled_in_production")
+            return
         if asset_path and os.path.isfile(asset_path):
             frames, fps = load_jpeg_frames_from_mp4(asset_path)
             if frames:
                 await _video_avatar_ws_playback(ws, frames, fps)
                 return
-            logger.info("avatar ws: video mode but zero frames from %s, using stub", asset_path)
+            logger.info("avatar ws: video mode but zero frames from %s", asset_path)
         else:
-            logger.debug("avatar ws: video mode but no readable asset path, using stub")
-    if mode in ("stub", "video"):
+            logger.debug("avatar ws: video mode but no readable asset path")
+        return
+    if mode == "stub":
+        from arachne_x.runtime.prod_guard import dev_stub_allowed, is_production
+
+        if is_production() or not dev_stub_allowed():
+            await _send_error(ws, "avatar_stub_disabled")
+            return
         await _stub_avatar_ws_playback(ws)
 
 
@@ -819,6 +866,7 @@ async def _handle_ws_text(
         if _route_chat_via_session_worker() and w is not None and w.running:
             await w.enqueue_user_text(text)
             return
+        reply_text = await asyncio.to_thread(_ws_assistant_reply_text, text, app)
         await _send_json(
             ws,
             {
@@ -827,7 +875,7 @@ async def _handle_ws_text(
                 "message": {
                     "id": f"reply_{cid}",
                     "from": "assistant",
-                    "text": _ws_assistant_reply_text(text),
+                    "text": reply_text,
                 },
             },
         )

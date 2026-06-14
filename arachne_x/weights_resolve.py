@@ -88,3 +88,52 @@ def add_resolve_args(parser) -> None:
         default=None,
         help="Optional HF hub cache / local_dir parent for snapshot_download.",
     )
+
+
+def doctor_checkpoint_layout(checkpoint_dir: str) -> list[str]:
+    """Return list of layout errors (empty when OK). Does not load DiT."""
+    errors: list[str] = []
+    root = Path(checkpoint_dir).expanduser()
+    if not root.is_dir():
+        return [f"checkpoint dir not found: {root}"]
+    for sub in ("tokenizer", "text_encoder", "vae", "scheduler", "avatar_single"):
+        if not (root / sub).is_dir():
+            errors.append(f"missing subdir: {sub}")
+    audio_ok = (root / "audio" / "wav2vec2" / "config.json").is_file() or (
+        root / "chinese-wav2vec2-base" / "config.json"
+    ).is_file()
+    if not audio_ok:
+        errors.append("missing wav2vec weights (audio/wav2vec2 or chinese-wav2vec2-base)")
+    return errors
+
+
+def main_doctor(argv: Optional[list[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ARACHNE-X weights layout doctor (no DiT load)")
+    parser.add_argument("checkpoint_dir", type=str, nargs="?", default=None)
+    args = parser.parse_args(argv)
+    ckpt = args.checkpoint_dir or os.environ.get("NULLXES_CHECKPOINT_DIR") or os.environ.get(
+        "ARACHNE_CHECKPOINT_DIR"
+    )
+    if not ckpt:
+        print("usage: python -m arachne_x.weights_resolve --doctor /path/to/weights", file=__import__("sys").stderr)
+        return 2
+    errors = doctor_checkpoint_layout(ckpt)
+    if errors:
+        print("FAIL:")
+        for e in errors:
+            print(f"  - {e}")
+        return 1
+    print(f"OK: weights layout valid at {ckpt}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--doctor":
+        sys.argv.pop(1)
+        raise SystemExit(main_doctor())
+    print("Usage: python -m arachne_x.weights_resolve --doctor [CHECKPOINT_DIR]", file=sys.stderr)
+    raise SystemExit(2)

@@ -161,7 +161,12 @@ class LongCatVideoAvatarPipeline:
         self.multi_stream_fusion_proj = nn.Linear(1024, 768)
         self.multi_stream_fusion_scale = 0.2
         # Step 3: phoneme-conditioned stream with robust wav2vec fallback.
-        self.phoneme_enabled = True
+        self.phoneme_enabled = os.environ.get("ARACHNE_PHONEME_ENABLED", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
         self.phoneme_num_classes = 10
         self.phoneme_stream_scale = 0.20
         self.phoneme_confidence_floor = 0.10
@@ -242,9 +247,10 @@ class LongCatVideoAvatarPipeline:
         
         # CUDA optimizations for H200
         CUDAOptimizer.enable_flash_attention()
-        if hasattr(torch, 'compile'):
-            self.dit = CUDAOptimizer.compile_model(self.dit, mode='reduce-overhead')
-            self.vae = CUDAOptimizer.compile_model(self.vae, mode='reduce-overhead')
+        if os.environ.get("ARACHNE_TORCH_COMPILE", "0").strip().lower() in ("1", "true", "yes", "on"):
+            if hasattr(torch, "compile"):
+                self.dit = CUDAOptimizer.compile_model(self.dit, mode="reduce-overhead")
+                self.vae = CUDAOptimizer.compile_model(self.vae, mode="reduce-overhead")
 
     def _get_t5_prompt_embeds(
         self,
@@ -3460,6 +3466,7 @@ class LongCatVideoAvatarPipeline:
         self,
         image: PipelineImageInput,
         prompt: Union[str, List[str]] = None,
+        negative_prompt: Union[str, List[str], None] = None,
         audio_stream=None,  # Generator yielding audio chunks
         resolution: Literal["480p", "720p"] = "480p",
         num_frames: int = 93,
@@ -3599,7 +3606,7 @@ class LongCatVideoAvatarPipeline:
             for frame_np in self.generate_chunked_ai2v(
                 image=image,
                 prompt=prompt,
-                negative_prompt="",
+                negative_prompt=negative_prompt or "",
                 resolution=resolution,
                 num_frames=num_frames,
                 num_inference_steps=num_inference_steps,
@@ -3644,7 +3651,7 @@ class LongCatVideoAvatarPipeline:
         latents = self.generate_ai2v(
             image=image,
             prompt=prompt,
-            negative_prompt="",
+            negative_prompt=negative_prompt or "",
             resolution=resolution,
             num_frames=num_frames,
             num_inference_steps=num_inference_steps,
